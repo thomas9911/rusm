@@ -102,7 +102,9 @@ impl SyntheticSource {
                 name: None,
                 status: status_from(rng.next_unit()),
                 mailbox_depth: rng.range(0, 16) as u32,
-                memory_bytes: rng.range(64 * 1024, 1024 * 1024),
+                // Lightweight: a small Wasm-instance heap (KB-scale, like a BEAM
+                // process), so tens of thousands of processes stay well under a few GiB.
+                memory_bytes: rng.range(4 * 1024, 64 * 1024),
                 reductions: rng.next_u64() % 1_000_000,
             })
             .collect();
