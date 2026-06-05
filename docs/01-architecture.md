@@ -51,9 +51,13 @@ RUSM's heart is the **Erlang/OTP actor model in pure Rust**, and it must stay th
 way: **Wasm must not bleed into code where it is irrelevant.**
 
 - **`crates/rusm-otp`** — the core: processes, mailboxes, `Signal`s, links,
-  monitors, supervisors, registry, scheduler. Generic over an abstract process
-  **body**. **It must not depend on `wasmtime` or name any Wasm type.** It is
-  usable on its own as a native-Rust OTP/actor library (an "rustOTP").
+  monitors, supervisors, registry, scheduler, and native connectivity. Generic
+  over an abstract process **body**. **It must not depend on `wasmtime` or name
+  any Wasm type.** It is usable on its own as a native-Rust OTP/actor library (an
+  "rustOTP"). It is **built incrementally across Phases 1–5** (process core →
+  messaging → supervision → management → connectivity) — the OTP layer is the
+  whole of those phases, not just Phase 1. (Networking may live in a sibling
+  Wasm-free crate, e.g. `rusm-net`, but is part of this layer.)
 - **`crates/rusm-wasm`** — the *optional* execution backend (Phase 6): implements
   the body trait with Wasmtime instances. The **only** crate that touches `wasmtime`.
 - **`rusm`** — the runtime = `rusm-otp` + `rusm-wasm` + host APIs + CLI.

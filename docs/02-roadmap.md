@@ -11,6 +11,10 @@ data to real measurements.
 > layer is designed wasm-ready, so swapping a process body from a native closure to
 > a sandboxed Wasm instance is additive, not a rewrite. That's also when
 > "task-level" fault isolation becomes "true memory isolation".
+>
+> **Crate mapping:** Phases 1–5 build the Wasm-free OTP core (`rusm-otp` — usable
+> standalone); Phase 6 adds the `rusm-wasm` backend; the `rusm` runtime composes
+> them. The OTP layer is *all* of Phases 1–5, not just Phase 1.
 
 | Phase | Theme | Graduates to real data |
 | --- | --- | --- |
