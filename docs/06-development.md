@@ -35,7 +35,7 @@ bunx prettier --check src
 - **Dashboard**: pure logic in `*.ts` with `*.test.ts` beside it; presentational
   `.tsx` is excluded from the coverage gate.
 
-## Recipe: add a host function (phase 3+)
+## Recipe: add a host function (phase 6+)
 
 1. Write a failing test: a `.wat`/guest module that imports `rusm::<module>::<fn>`
    and asserts the host-observable effect.

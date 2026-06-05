@@ -1,4 +1,4 @@
-# Distributed model & live attach (planned — phase 10)
+# Distributed model & live attach (planned — phase 9)
 
 RUSM chases the two BEAM superpowers that matter most.
 

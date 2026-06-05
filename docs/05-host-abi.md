@@ -4,20 +4,21 @@ RUSM guests will be plain `wasm32-wasip1` modules that import host functions
 under the `rusm::*` namespace (mirroring Lunatic's `lunatic::*`). This page is the
 reference for that ABI and **grows phase by phase**.
 
-> **Phase 0:** no guest ABI exists yet — there is no Wasmtime engine until
-> Phase 1 and no host functions until Phase 3. The wire protocol below is the
-> only "ABI" today: how the benchmark node talks to its clients.
+> **Foundation-first:** each Erlang capability is built as a **native Rust API
+> first** (Phases 1–5), then **exposed to Wasm guests** as the `rusm::*` host ABI
+> once the Wasmtime backend is slotted in at **Phase 6** (WASI at Phase 7). In
+> Phase 0 there is no guest ABI at all — the only "ABI" today is the wire protocol
+> below (how the benchmark node talks to its clients).
 
-## Planned host modules (by phase)
+## Host modules — native capability vs guest ABI
 
-| Module | Phase | Functions (sketch) |
+| Module | Native capability | Exposed to guests |
 | --- | --- | --- |
-| `rusm::process` | 3 | `id()`, `spawn()`, `spawn_link()`, `cancel()`, `wait()` |
-| `rusm::message` | 4 | `create()`, `write_data()`, `send(pid)`, `receive()`, `read_data()` |
-| `rusm::timer` | 8 | `sleep(ms)`, `after(ms)` |
-| `rusm::registry` | 8 | `register(name)`, `lookup(name)` |
-| `rusm::net` | 8 | `tcp_listen()`, `tcp_accept()`, `tcp_connect()`, `read()`, `write()` |
-| WASI preview1 | 7 | clocks, random, env, stdio, scoped fs |
+| `rusm::process` — `id`, `spawn`, `spawn_link`, `cancel`, `wait` | Phase 1 | Phase 6 |
+| `rusm::message` — `create`, `write_data`, `send`, `receive`, `read_data` | Phase 2 | Phase 6 |
+| `rusm::timer` / `rusm::registry` — `sleep`/`after`, `register`/`lookup` | Phase 4 | Phase 6 |
+| `rusm::net` — `tcp_listen`/`accept`/`connect`, `read`/`write` | Phase 5 | Phase 6 |
+| WASI preview1 — clocks, random, env, stdio, scoped fs | — | Phase 7 |
 
 ## Today's wire protocol (node ↔ clients)
 

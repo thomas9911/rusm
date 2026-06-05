@@ -11,12 +11,12 @@ A menu of scenarios and a **Run** button. Each tick streams: throughput
 
 | Scenario | Headline | Real after |
 | --- | --- | --- |
-| Spawn storm | spawns/sec, memory/process | phase 2 |
-| Message ping-pong | msgs/sec, round-trip latency | phase 5 |
-| Fairness under tight loop | bystanders keep progressing | phase 5 |
-| Fault recovery | restarts/sec, recovery latency | phase 6 |
-| **Connection storm (300k/s proof)** | conns/sec, peak, latency | phase 8 |
-| Distributed fan-out | cross-node latency | phase 10 |
+| Spawn storm | spawns/sec, memory/process | phase 1 |
+| Message ping-pong | msgs/sec, round-trip latency | phase 2 |
+| Fault recovery | restarts/sec, recovery latency | phase 3 |
+| **Connection storm (300k/s proof)** | conns/sec, peak, latency | phase 5 (native), re-measured phase 6 |
+| Fairness under tight loop | bystanders keep progressing | phase 6 |
+| Distributed fan-out | cross-node latency | phase 9 |
 
 ## Live observer view
 
