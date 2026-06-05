@@ -23,7 +23,7 @@ Wasmtime switches the fiber back in and the guest call returns, none the wiser.
 
 Lunatic cites a libfringe-inspired stack switcher. Wasmtime's fiber support is
 the same idea — stack switching — but battle-tested and safe, so RUSM uses it
-first (a hand-rolled version is a Phase 11 stretch). See also
+first (a hand-rolled version is a Phase 10 stretch). See also
 [epoch preemption](./epoch-preemption.md) for *fair* scheduling on top of this.
 
-> Implemented in Phase 5.
+> Implemented in Phase 6 (Wasmtime backend).

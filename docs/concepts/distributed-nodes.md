@@ -32,4 +32,4 @@ hex package the author wrote to do this for Elixir.)
 You can also attach to any running node to inspect it live — see
 [live attach](./live-attach.md).
 
-> Implemented in Phase 10.
+> Implemented in Phase 9.

@@ -4,20 +4,27 @@ Each phase writes the failing test first, then implements until green, and leave
 `cargo test` passing. Every phase "graduates" a dashboard scenario from synthetic
 data to real measurements.
 
-| Phase | Theme | Concept it teaches |
+> **Foundation-first ordering.** The Erlang model — processes, messaging,
+> supervision/fault-tolerance, management, connectivity — is the foundation and
+> comes first, built on **native Rust process bodies** so it's real and measurable
+> early. **Wasmtime is the execution *backend*, slotted in at Phase 6**: the actor
+> layer is designed wasm-ready, so swapping a process body from a native closure to
+> a sandboxed Wasm instance is additive, not a rewrite. That's also when
+> "task-level" fault isolation becomes "true memory isolation".
+
+| Phase | Theme | Graduates to real data |
 | --- | --- | --- |
-| **0 ✅** | Docs + benchmark dashboard + harness (synthetic) | the observability + load harness we measure everything with |
-| 1 | Embed Wasmtime | Engine/Module/Store/Linker/Instance, host imports |
-| 2 | Process = Wasm instance + Tokio task | instance↔task mapping, spawn throughput |
-| 3 | Host ABI + per-process state | reading/writing guest memory from the host |
-| 4 | Message passing & mailboxes | copying across isolated memories; receive suspends |
-| 5 | Preemption & blocking→async | fibers = stack switching; epoch fairness |
-| 6 | Links, traps & supervision | "let it crash"; restart strategies |
-| 7 | WASI + per-process permissions | fine-grained per-actor sandboxing |
-| 8 | Timers, registry, TCP networking | real servers; **300k/s connection proof** |
-| 9 | `rusm-rs` guest crate | ergonomic `spawn`/`Mailbox`/`AbstractProcess` |
-| 10 | Distributed clusters + live attach | secure nodes; hook into a running node |
-| 11 | Stretch | 300k/s hardening, hot reload, hand-rolled stack switching |
+| **0 ✅** | Observability + benchmark dashboard (synthetic) | — |
+| 1 | **Process & scheduler core** — task + mailbox + biased signal loop, pluggable body | **spawn-storm** |
+| 2 | **Mailboxes & message passing** — byte+resource messages, selective receive | **ping-pong** |
+| 3 | **Links, monitors, supervision, fault tolerance** — "let it crash" (task-panic isolation) | **fault-recovery** |
+| 4 | **Process management** — registry, lifecycle, timers, graceful shutdown | — |
+| 5 | **Connectivity: TCP/TLS** — process-per-connection | **connection-storm** (native) |
+| 6 | **Embed Wasmtime as the process backend** — instance-per-process, host ABI, fuel/epoch | **fairness**; spawn/conn re-measured |
+| 7 | **WASI + per-process sandbox/permissions** — true memory isolation | — |
+| 8 | **`rusm-rs` guest crate** — ergonomic spawn/Mailbox/AbstractProcess/Supervisor | — |
+| 9 | **Distributed clusters + live attach** — QUIC+TLS, remote spawn, global registry | **distributed-fanout** |
+| 10 | **Performance & hardening** — pooling alloc + CoW + epoch toward 300k/s, hot reload | — |
 
 ## Phase 0 deliverables (done)
 

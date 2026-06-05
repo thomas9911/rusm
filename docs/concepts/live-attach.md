@@ -32,4 +32,4 @@ control/observer channel over WebSocket, and both the dashboard and `rusm attach
 connect to it. The processes are synthetic for now; the transport, the protocol,
 and the two clients are real.
 
-> Full cross-node attach lands in Phase 10; the local channel exists today.
+> Full cross-node attach lands in Phase 9; the local channel exists today.

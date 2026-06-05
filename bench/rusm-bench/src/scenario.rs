@@ -66,7 +66,7 @@ impl Scenario {
                     "Watch per-process memory: cheap, small processes are what make massive concurrency viable — the BEAM runs millions; so should we.",
                     "Why it matters: if spawning is cheap, you can model every request/connection/job as its own crash-isolated process.",
                 ],
-                2,
+                1,
             ),
             Scenario::PingPong => (
                 "Message ping-pong",
@@ -77,7 +77,7 @@ impl Scenario {
                     "Messages are copied across isolated memories by the host; nothing is shared, exactly like Erlang.",
                     "Low, stable round-trip latency under load means wakeups are cheap and scheduling is fair.",
                 ],
-                5,
+                2,
             ),
             Scenario::Fairness => (
                 "Fairness under tight loop",
@@ -88,7 +88,7 @@ impl Scenario {
                     "Tokio scheduling is cooperative; RUSM adds Wasmtime epoch interruption so even an infinite loop yields — the analogue of the BEAM's reduction counting.",
                     "If bystanders stall, one hot process could starve the system. They must not.",
                 ],
-                5,
+                6,
             ),
             Scenario::FaultRecovery => (
                 "Fault recovery",
@@ -99,7 +99,7 @@ impl Scenario {
                     "A trap tears down only the failing Wasm instance; a supervisor restarts a clean one and the rest of the system never notices.",
                     "Background: per-process isolation is what makes crashes survivable rather than fatal.",
                 ],
-                6,
+                3,
             ),
             Scenario::ConnectionStorm => (
                 "Connection storm",
@@ -111,7 +111,7 @@ impl Scenario {
                     "Each connection gets its own lightweight process; cheap spawn + async I/O is the entire game.",
                     "Tip: compare observer-on vs observer-off to confirm live introspection is nearly free.",
                 ],
-                8,
+                5,
             ),
             Scenario::DistributedFanout => (
                 "Distributed fan-out",
@@ -124,7 +124,7 @@ impl Scenario {
                     "Why it matters: a single machine has limits; horizontal scale needs cheap, secure node-to-node messaging.",
                     "Background: nodes connect like Node.connect/1, and a global registry resolves process names cluster-wide.",
                 ],
-                10,
+                9,
             ),
         };
         ScenarioMeta {
@@ -176,7 +176,7 @@ mod tests {
             assert!(!meta.description.is_empty());
             assert!(meta.details.len() >= 3, "{} needs real detail", meta.id);
             assert!(meta.details.iter().all(|d| !d.is_empty()));
-            assert!((2..=10).contains(&meta.real_after_phase));
+            assert!((1..=10).contains(&meta.real_after_phase));
         }
     }
 

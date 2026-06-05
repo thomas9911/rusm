@@ -21,8 +21,8 @@ accounting — which suits a hot path with hundreds of thousands of processes.
 
 ## The test that proves it
 
-Phase 5 ships a fairness test: spawn a process with an infinite loop alongside
+Phase 6 ships a fairness test: spawn a process with an infinite loop alongside
 others that must keep making progress (e.g. still receive messages). With epoch
 interruption on, the bystanders are never starved.
 
-> Implemented in Phase 5.
+> Implemented in Phase 6 (needs the Wasmtime backend).

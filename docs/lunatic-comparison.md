@@ -23,15 +23,16 @@ RUSM as *planned (Phase N)*. The value is in the **efficiency playbook** below.
 > before the engine exists. Lunatic genuinely runs them; RUSM does not yet.
 >
 > The "superiority" targets below are **intent, to be proven on the dashboard** —
-> not achievements. The real race begins at **Phase 2** (process = Wasm instance +
-> Tokio task), and the levers meant to beat Lunatic are pooling allocation,
-> copy-on-write memory init, and epoch preemption (see §2 and §1).
+> not achievements. The actor model is built first (Phases 1–5, native bodies);
+> the lightweight-process *efficiency* race begins when Wasmtime becomes the
+> backend at **Phase 6**, where the levers meant to beat Lunatic kick in: pooling
+> allocation, copy-on-write memory init, and epoch preemption (see §2 and §1).
 
 ## Snapshot
 
 | | RUSM (today) | Lunatic |
 | --- | --- | --- |
-| Status | Active, Phase 0 of 11 | Dormant since 2023 (v0.13.0) |
+| Status | Active, Phase 0 of 10 | Dormant since 2023 (v0.13.0) |
 | Rust LOC | ~2,560 (4 crates) + 790 TS | ~15,150 (20 crates) |
 | Tests | 87 Rust + 18 TS, ~99.5% cov | ~26 test annotations |
 | Wasmtime | none yet (target: modern) | v8 (2023) |
@@ -42,22 +43,24 @@ RUSM as *planned (Phase N)*. The value is in the **efficiency playbook** below.
 
 ✅ implemented · ⚠️ partial/synthetic · ❌ not yet · 🅛 Lunatic-only · 🅡 RUSM-only
 
+Foundation-first order: the actor model (native bodies) comes first; Wasmtime is
+the backend at Phase 6.
+
 | Area | RUSM | Lunatic | RUSM phase |
 | --- | :---: | :---: | --- |
-| Wasm engine (Wasmtime) | ❌ | ✅ | 1 |
-| Process = instance + Tokio task | ⚠️ synthetic | ✅ `WasmProcess` | 2 |
-| Scheduler (Tokio M:N) | ⚠️ server only | ✅ | 2 |
-| Preemption | ❌ → epoch | ✅ **fuel** | 5 |
-| Message passing + mailboxes | ❌ | ✅ selective-receive | 4 |
-| Links / monitors / supervision | ❌ | ✅ `Signal` enum | 6 |
-| Trap → failure propagation | ❌ | ✅ | 6 |
+| Process core (task + mailbox + signal loop) | ⚠️ synthetic | ✅ `WasmProcess` | 1 |
+| Scheduler (Tokio M:N) | ⚠️ server only | ✅ | 1 |
+| Message passing + mailboxes | ❌ | ✅ selective-receive | 2 |
+| Links / monitors / supervision | ❌ | ✅ `Signal` enum | 3 |
+| Fault tolerance | ❌ | ✅ | 3 (task) / 7 (memory) |
+| Process management (registry, timers, lifecycle) | ❌ | ✅ | 4 |
+| TCP / UDP / DNS / TLS | ⚠️ WS (dashboard) | ✅ | 5 |
+| Wasm engine + process = real instance | ❌ | ✅ | 6 |
+| Preemption | ❌ → epoch | ✅ **fuel** | 6 |
 | WASI + per-process sandbox | ❌ | ✅ | 7 |
-| TCP / UDP / DNS / TLS | ⚠️ WS (dashboard) | ✅ | 8 |
-| Timers / named registry | ❌ | ✅ | 8 |
-| Distributed (QUIC cluster) | ❌ | ✅ | 10 |
-| Control plane | ❌ | ✅ (Axum + Submillisecond) | 10 |
+| Guest crate | ❌ → `rusm-rs` | 🅛 `lunatic-rs` (separate repo) | 8 |
+| Distributed (QUIC) + control plane | ❌ | ✅ (Axum + Submillisecond) | 9 |
 | SQLite host API | ❌ | 🅛 | — |
-| Guest crate | ❌ → `rusm-rs` | 🅛 `lunatic-rs` (separate repo) | 9 |
 | HdrHistogram metrics | 🅡 ✅✅ | ⚠️ passthrough facade | done |
 | Live observer + REPL attach | 🅡 ✅✅ | ❌ | done |
 | Web dashboard | 🅡 ✅✅ | ❌ | done |
@@ -76,7 +79,7 @@ and **RUSM's plan** — adopt the good ideas, modernize the dated ones.
 | --- | --- | --- | --- |
 | One `tokio::select!` loop per process, **`biased`** — signals checked before advancing the Wasm future | `lunatic-process/src/lib.rs` (exec loop) | Deterministic signal priority; no starvation; cancellation-safe | **Adopt.** Same biased signal-vs-run loop. |
 | Process interaction only via a single **`Signal`** enum (Message/Link/Monitor/Kill/…) over an mpsc `signal_mailbox` | `lunatic-process/src/lib.rs` | One channel handles messages *and* control — simple, uniform | **Adopt** the unified signal channel. |
-| Preemption via **Wasmtime fuel** (`consume_fuel`, `out_of_fuel_async_yield`, 100k-instruction units) | `runtimes/wasmtime.rs:166,56` | Works, but fuel **injects per-unit accounting into compiled code** — steady-state overhead | **Beat: use epoch interruption.** A periodically-bumped atomic checked at backedges ≈ near-zero overhead. Validate fuel-vs-epoch on the dashboard (Phase 5). |
+| Preemption via **Wasmtime fuel** (`consume_fuel`, `out_of_fuel_async_yield`, 100k-instruction units) | `runtimes/wasmtime.rs:166,56` | Works, but fuel **injects per-unit accounting into compiled code** — steady-state overhead | **Beat: use epoch interruption.** A periodically-bumped atomic checked at backedges ≈ near-zero overhead. Validate fuel-vs-epoch on the dashboard (Phase 6). |
 | Unbounded signal mailbox (`UnboundedSender<Signal>`) | `lunatic-process/src/lib.rs` | Erlang-style, but unbounded → memory-growth/stability risk under flood | **Beat (stability): observable + optionally bounded** mailboxes, with depth surfaced in the observer (already modeled). |
 
 ## 2. Memory footprint & spawn cost  ← biggest superiority opportunity
@@ -157,14 +160,15 @@ dashboard is built to *prove* the delta (spawn storm scenario, memory/process).
 
 | Phase | Borrow (inspired by) | Modernize / beat |
 | --- | --- | --- |
-| 1 Engine | `InstancePre`, Arc'd `Module`, `async_support` | pooling + CoW config |
-| 2 Process | `WasmProcess` + biased `select!` signal loop | pooled instantiation |
-| 4 Messaging | `DataMessage` Arc-resources, selective-receive mailbox | — |
-| 5 Preemption | (concept) Wasmtime-level yielding | **epoch** instead of fuel |
-| 6 Supervision | `Signal::{Link,Monitor,LinkDied}`, `die_when_link_dies` | — |
+| 1 Process core | biased `select!` signal loop, `Signal` channel, `HashMapId` | native body first (wasm-ready) |
+| 2 Messaging | `DataMessage` Arc-resources, selective-receive mailbox | — |
+| 3 Supervision | `Signal::{Link,Monitor,LinkDied}`, `die_when_link_dies` | task-panic isolation now, trap-level at Phase 7 |
+| 4 Management | registry `RwLock`, timer `BinaryHeap` + `HashMapId` | — |
+| 5 Connectivity | owned half split, `HashMapId` resources, TLS root setup | `RwLock` timeouts, TLS session resumption |
+| 6 Wasm backend | `InstancePre`, Arc'd `Module`, `async_support` | **pooling + CoW**; **epoch** not fuel |
 | 7 Sandbox | WASI preopens, stdout capture | finer per-process limits |
-| 8 Net | owned half split, `HashMapId` resources, TLS root setup | `RwLock` timeouts, session resumption |
-| 10 Distributed | QUIC 1-conn/node + stream pool, chunking, cert-authz, `DashMap` | quinn 0.11+, adaptive chunks, push discovery |
+| 8 Guest crate | `lunatic-rs` API shape | — |
+| 9 Distributed | QUIC 1-conn/node + stream pool, chunking, cert-authz, `DashMap` | quinn 0.11+, adaptive chunks, push discovery |
 
 # Maintaining this document
 

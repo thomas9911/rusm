@@ -28,4 +28,5 @@ process, the supervisor restarts a clean one, the rest of the system never notic
 The fault-recovery scenario surfaces restarts/sec and recovery latency; the
 observer shows `crashed` processes in red.
 
-> Implemented in Phase 6.
+> Implemented in Phase 3 (task-panic isolation); upgraded to memory/trap-level
+> isolation once the Wasmtime backend lands in Phase 6–7.

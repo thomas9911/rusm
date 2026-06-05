@@ -53,5 +53,6 @@ coverage ≥98% (mostly 100%); dashboard `bun test --coverage` 100% on logic;
 
 ## Next
 
-[Phase 1](../02-roadmap.md): embed Wasmtime and run a trivial module — the first
-real step toward processes.
+[Phase 1](../02-roadmap.md): the **process & scheduler core** — a process =
+Tokio task + mailbox + biased signal loop, running a native Rust body. The first
+real step toward the actor model; Wasmtime arrives as the *backend* in Phase 6.
