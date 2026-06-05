@@ -2,10 +2,15 @@ use rusm_metrics::{LatencyHistogram, TimeSeries};
 use rusm_observer::{NodeSample, Observer};
 
 use crate::engine::SpawnStormEngine;
+use crate::profile::ResourceProfile;
 use crate::protocol::Frame;
 use crate::sample::Sample;
 use crate::scenario::Scenario;
 use crate::synthetic::SyntheticSource;
+
+fn available_cores() -> usize {
+    std::thread::available_parallelism().map_or(4, |n| n.get())
+}
 
 #[derive(Debug, Clone, Copy)]
 pub struct RunnerConfig {
@@ -23,14 +28,17 @@ pub struct RunnerConfig {
 
 impl Default for RunnerConfig {
     fn default() -> Self {
+        // Spawn knobs come from the default (Balanced) resource profile.
+        let (spawn_workers, spawn_max_in_flight) =
+            ResourceProfile::default().tuning(available_cores());
         Self {
             scheduler_count: 8,
             max_detail: 64,
             latency_samples: 64,
             throughput_window: 120,
             ticks_per_second: 20,
-            spawn_workers: std::thread::available_parallelism().map_or(4, |n| n.get()),
-            spawn_max_in_flight: 50_000,
+            spawn_workers,
+            spawn_max_in_flight,
         }
     }
 }
@@ -82,6 +90,7 @@ struct RunState {
 /// clock-free makes the whole pipeline deterministic and unit-testable.
 pub struct Runner {
     config: RunnerConfig,
+    profile: ResourceProfile,
     observer: Observer,
     latency: LatencyHistogram,
     throughput: TimeSeries,
@@ -95,7 +104,25 @@ impl Runner {
             latency: LatencyHistogram::new(),
             throughput: TimeSeries::new(config.throughput_window),
             run: None,
+            profile: ResourceProfile::default(),
             config,
+        }
+    }
+
+    pub fn resource_profile(&self) -> ResourceProfile {
+        self.profile
+    }
+
+    /// Switches the resource profile — re-resolving how many spawn workers and
+    /// how large an in-flight cap the storm uses — and re-applies it to a live
+    /// spawn-storm run.
+    pub fn set_resource_profile(&mut self, profile: ResourceProfile) {
+        let (workers, cap) = profile.tuning(available_cores());
+        self.config.spawn_workers = workers;
+        self.config.spawn_max_in_flight = cap;
+        self.profile = profile;
+        if self.scenario() == Some(Scenario::SpawnStorm) {
+            self.start(Scenario::SpawnStorm);
         }
     }
 
@@ -149,6 +176,7 @@ impl Runner {
                 uptime_ms,
                 ops_per_sec: 0.0,
                 peak_concurrent: 0,
+                profile: self.profile.id().to_string(),
                 latency: self.latency.snapshot(),
                 throughput: self.throughput.snapshot(),
                 observer: self.observer.snapshot(uptime_ms, idle),
@@ -184,6 +212,7 @@ impl Runner {
             uptime_ms,
             ops_per_sec: t.ops_per_sec,
             peak_concurrent,
+            profile: self.profile.id().to_string(),
             latency: self.latency.snapshot(),
             throughput: self.throughput.snapshot(),
             observer: self.observer.snapshot(uptime_ms, sample),
@@ -288,6 +317,16 @@ mod tests {
         assert!(frame.observer.process_count > 0);
     }
 
+    #[test]
+    fn resource_profile_defaults_to_balanced_and_can_change() {
+        let mut r = runner();
+        assert_eq!(r.resource_profile(), ResourceProfile::Balanced);
+        r.set_resource_profile(ResourceProfile::Light);
+        assert_eq!(r.resource_profile(), ResourceProfile::Light);
+        // Reflected in the frame.
+        assert_eq!(r.tick(0).profile, "light");
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn spawn_storm_runs_real_processes() {
         // The spawn-storm scenario uses the real rusm-otp engine (continuous
@@ -299,6 +338,11 @@ mod tests {
         assert_eq!(frame.scenario.as_deref(), Some("spawn-storm"));
         assert!(frame.ops_per_sec > 0.0);
         assert!(frame.latency.count > 0);
+
+        // Changing the profile mid-run restarts the storm with the new tuning.
+        r.set_resource_profile(ResourceProfile::Max);
+        assert_eq!(r.scenario(), Some(Scenario::SpawnStorm));
+        assert_eq!(r.resource_profile(), ResourceProfile::Max);
     }
 
     #[test]

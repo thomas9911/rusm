@@ -3,7 +3,7 @@ use rusm_bench::{summarize_frame, ServerMessage};
 /// Renders a server message as a line (or block) for the REPL display.
 pub fn render_message(message: &ServerMessage) -> String {
     match message {
-        ServerMessage::Hello { scenarios } => {
+        ServerMessage::Hello { scenarios, .. } => {
             let mut out = String::from("connected. scenarios:");
             for s in scenarios {
                 out.push_str(&format!("\n  {:<20} {}", s.id, s.label));

@@ -45,6 +45,7 @@ export interface Frame {
   uptime_ms: number;
   ops_per_sec: number;
   peak_concurrent: number;
+  profile: string;
   latency: LatencySnapshot;
   throughput: TimeSeriesSnapshot;
   observer: ObserverSnapshot;
@@ -58,12 +59,19 @@ export interface ScenarioMeta {
   real_after_phase: number;
 }
 
+export interface ResourceProfileMeta {
+  id: string;
+  label: string;
+  description: string;
+}
+
 export type ServerMessage =
-  | { type: 'hello'; scenarios: ScenarioMeta[] }
+  | { type: 'hello'; scenarios: ScenarioMeta[]; profiles: ResourceProfileMeta[] }
   | { type: 'tick'; frame: Frame }
   | { type: 'error'; message: string };
 
 export type ClientCommand =
   | { type: 'run'; scenario: string }
   | { type: 'stop' }
-  | { type: 'set_observer_detail'; enabled: boolean };
+  | { type: 'set_observer_detail'; enabled: boolean }
+  | { type: 'set_resource_profile'; profile: string };

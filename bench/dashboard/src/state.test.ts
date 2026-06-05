@@ -16,6 +16,7 @@ function frame(overrides: Partial<Frame> = {}): Frame {
     uptime_ms: 0,
     ops_per_sec: 1000,
     peak_concurrent: 0,
+    profile: 'balanced',
     latency: { count: 0, min_ns: 0, max_ns: 0, mean_ns: 0, p50_ns: 0, p95_ns: 0, p99_ns: 0 },
     throughput: { points: [], capacity: 120 },
     observer: {
@@ -50,14 +51,16 @@ test('setConnected toggles connection without touching the rest', () => {
   expect(s.frame).toBeNull();
 });
 
-test('hello populates the scenario menu', () => {
+test('hello populates the scenario and profile menus', () => {
   const s = applyMessage(initialState(), {
     type: 'hello',
     scenarios: [
       { id: 'ping-pong', label: 'Ping', description: 'd', details: ['x'], real_after_phase: 5 },
     ],
+    profiles: [{ id: 'balanced', label: 'Balanced', description: 'd' }],
   });
   expect(s.scenarios).toHaveLength(1);
+  expect(s.profiles).toHaveLength(1);
 });
 
 test('error records the message', () => {

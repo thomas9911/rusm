@@ -26,6 +26,10 @@ export const setObserverDetailCommand = (enabled: boolean): ClientCommand => ({
   type: 'set_observer_detail',
   enabled,
 });
+export const setResourceProfileCommand = (profile: string): ClientCommand => ({
+  type: 'set_resource_profile',
+  profile,
+});
 
 export function encodeCommand(command: ClientCommand): string {
   return JSON.stringify(command);

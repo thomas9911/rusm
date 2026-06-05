@@ -222,7 +222,21 @@ body {
 }
 .metrics-bar {
   display: flex;
-  justify-content: flex-end;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.seg-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.seg-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
 }
 .seg {
   display: inline-flex;

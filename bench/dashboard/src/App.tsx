@@ -4,7 +4,12 @@ import { ObserverPanel } from './components/ObserverPanel';
 import { ScenarioInfo } from './components/ScenarioInfo';
 import { ScenarioMenu } from './components/ScenarioMenu';
 import { StatGrid, type MetricMode } from './components/StatGrid';
-import { runCommand, setObserverDetailCommand, stopCommand } from './protocol';
+import {
+  runCommand,
+  setObserverDetailCommand,
+  setResourceProfileCommand,
+  stopCommand,
+} from './protocol';
 import { averages } from './state';
 import { useNode } from './useNode';
 
@@ -34,6 +39,7 @@ export function App() {
 
   const hasData = state.frame !== null || state.history.length > 0;
   const selectedMeta = state.scenarios.find((s) => s.id === selected);
+  const activeProfile = state.frame?.profile ?? 'balanced';
 
   return (
     <div className="app">
@@ -73,19 +79,37 @@ export function App() {
         <main className="main">
           <ScenarioInfo scenario={selectedMeta} />
           <div className="metrics-bar">
-            <div className="seg" role="group" aria-label="metric mode">
-              <button
-                className={mode === 'current' ? 'seg-on' : ''}
-                onClick={() => setMode('current')}
-              >
-                Current
-              </button>
-              <button
-                className={mode === 'average' ? 'seg-on' : ''}
-                onClick={() => setMode('average')}
-              >
-                Average
-              </button>
+            <div className="seg-group">
+              <span className="seg-label">resources</span>
+              <div className="seg" role="group" aria-label="resource profile">
+                {state.profiles.map((p) => (
+                  <button
+                    key={p.id}
+                    className={activeProfile === p.id ? 'seg-on' : ''}
+                    title={p.description}
+                    onClick={() => send(setResourceProfileCommand(p.id))}
+                  >
+                    {p.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="seg-group">
+              <span className="seg-label">metrics</span>
+              <div className="seg" role="group" aria-label="metric mode">
+                <button
+                  className={mode === 'current' ? 'seg-on' : ''}
+                  onClick={() => setMode('current')}
+                >
+                  Current
+                </button>
+                <button
+                  className={mode === 'average' ? 'seg-on' : ''}
+                  onClick={() => setMode('average')}
+                >
+                  Average
+                </button>
+              </div>
             </div>
           </div>
           <StatGrid frame={state.frame} averages={averages(state)} mode={mode} />

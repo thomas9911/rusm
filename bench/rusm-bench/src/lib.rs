@@ -3,6 +3,7 @@
 //! server feeding the dashboard and the `rusm attach` REPL.
 
 mod engine;
+mod profile;
 mod protocol;
 mod report;
 mod runner;
@@ -11,6 +12,7 @@ mod scenario;
 mod server;
 mod synthetic;
 
+pub use profile::{ResourceProfile, ResourceProfileMeta};
 pub use protocol::{ClientCommand, Frame, ServerMessage};
 pub use report::summarize_frame;
 pub use runner::{Runner, RunnerConfig};

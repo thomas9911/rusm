@@ -6,6 +6,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::broadcast;
 use tokio_tungstenite::tungstenite::Message;
 
+use crate::profile::ResourceProfile;
 use crate::protocol::{ClientCommand, ServerMessage};
 use crate::runner::{Runner, RunnerConfig};
 use crate::scenario::{Scenario, ScenarioMeta};
@@ -34,6 +35,7 @@ impl Node {
     pub fn hello(&self) -> ServerMessage {
         ServerMessage::Hello {
             scenarios: self.scenarios.clone(),
+            profiles: ResourceProfile::all_meta(),
         }
     }
 
@@ -56,6 +58,11 @@ impl Node {
             }
             ClientCommand::Stop => runner.stop(),
             ClientCommand::SetObserverDetail { enabled } => runner.set_observer_detail(enabled),
+            ClientCommand::SetResourceProfile { profile } => {
+                let profile = ResourceProfile::from_id(&profile)
+                    .ok_or_else(|| format!("unknown profile: {profile}"))?;
+                runner.set_resource_profile(profile);
+            }
         }
         Ok(())
     }
@@ -158,10 +165,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn hello_lists_every_scenario() {
+    fn hello_lists_scenarios_and_profiles() {
         let node = Node::new(RunnerConfig::default());
         let hello = node.hello();
         assert_eq!(hello.scenarios().unwrap().len(), Scenario::ALL.len());
+        assert_eq!(hello.profiles().unwrap().len(), ResourceProfile::ALL.len());
+    }
+
+    #[test]
+    fn apply_set_resource_profile() {
+        let node = Node::new(RunnerConfig::default());
+        node.apply(ClientCommand::SetResourceProfile {
+            profile: "light".to_string(),
+        })
+        .unwrap();
+        assert_eq!(node.tick_message().tick_frame().unwrap().profile, "light");
+
+        let err = node
+            .apply(ClientCommand::SetResourceProfile {
+                profile: "nope".to_string(),
+            })
+            .unwrap_err();
+        assert!(err.contains("unknown profile"));
     }
 
     #[test]

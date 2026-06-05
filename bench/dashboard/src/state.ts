@@ -1,4 +1,4 @@
-import type { Frame, ScenarioMeta, ServerMessage } from './types';
+import type { Frame, ResourceProfileMeta, ScenarioMeta, ServerMessage } from './types';
 
 /** Running sums over a run, for computing averages. */
 export interface Totals {
@@ -23,6 +23,7 @@ export interface Averages {
 export interface DashboardState {
   connected: boolean;
   scenarios: ScenarioMeta[];
+  profiles: ResourceProfileMeta[];
   running: boolean;
   scenario: string | null;
   frame: Frame | null;
@@ -47,6 +48,7 @@ export function initialState(): DashboardState {
   return {
     connected: false,
     scenarios: [],
+    profiles: [],
     running: false,
     scenario: null,
     frame: null,
@@ -64,7 +66,7 @@ export function setConnected(state: DashboardState, connected: boolean): Dashboa
 export function applyMessage(state: DashboardState, message: ServerMessage): DashboardState {
   switch (message.type) {
     case 'hello':
-      return { ...state, scenarios: message.scenarios };
+      return { ...state, scenarios: message.scenarios, profiles: message.profiles };
     case 'error':
       return { ...state, error: message.message };
     case 'tick':
