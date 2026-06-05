@@ -15,8 +15,10 @@ pub struct RunnerConfig {
     pub throughput_window: usize,
     /// Sampling rate; ties `ops_per_sec` to a per-tick operation count.
     pub ticks_per_second: u32,
-    /// Processes the real spawn-storm engine spawns per tick.
-    pub spawn_batch: usize,
+    /// Background spawner tasks for the real spawn-storm engine (one per core).
+    pub spawn_workers: usize,
+    /// Spawn-storm backpressure: max live processes before spawners pause.
+    pub spawn_max_in_flight: usize,
 }
 
 impl Default for RunnerConfig {
@@ -27,7 +29,8 @@ impl Default for RunnerConfig {
             latency_samples: 64,
             throughput_window: 120,
             ticks_per_second: 20,
-            spawn_batch: 2000,
+            spawn_workers: std::thread::available_parallelism().map_or(4, |n| n.get()),
+            spawn_max_in_flight: 50_000,
         }
     }
 }
@@ -43,8 +46,9 @@ impl Engine {
     fn for_scenario(scenario: Scenario, config: &RunnerConfig) -> Self {
         match scenario {
             Scenario::SpawnStorm => Engine::SpawnStorm(SpawnStormEngine::new(
-                config.spawn_batch,
+                config.spawn_workers,
                 config.scheduler_count,
+                config.spawn_max_in_flight,
             )),
             _ => Engine::Synthetic(SyntheticSource::new(scenario)),
         }
@@ -284,16 +288,16 @@ mod tests {
         assert!(frame.observer.process_count > 0);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn spawn_storm_runs_real_processes() {
-        // The spawn-storm scenario uses the real rusm-otp engine (needs a Tokio
-        // runtime), unlike the synthetic scenarios above.
+        // The spawn-storm scenario uses the real rusm-otp engine (continuous
+        // background spawners, needs a Tokio runtime), unlike the synthetic ones.
         let mut r = runner();
         r.start(Scenario::SpawnStorm);
-        let frame = r.tick(0);
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await; // warm up
+        let frame = r.tick(50);
         assert_eq!(frame.scenario.as_deref(), Some("spawn-storm"));
         assert!(frame.ops_per_sec > 0.0);
-        // Real spawns were timed and recorded.
         assert!(frame.latency.count > 0);
     }
 

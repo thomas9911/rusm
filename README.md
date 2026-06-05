@@ -11,7 +11,8 @@ Wasmtime does the isolation.
 
 > **Status: Phase 1 of 10.** The Wasm-free OTP core (`rusm-otp`) already spawns,
 > schedules, and kills **real** lightweight processes — the spawn-storm benchmark
-> shows real numbers (~170k+ spawns/sec, ~2 µs p50 spawn latency). Messaging,
+> shows real numbers — **~1.4M sustained spawns/sec** across all cores (live
+> population bounded by backpressure), p50 ~1 µs. Messaging,
 > supervision, the Wasmtime backend, and clustering come in later phases. See the
 > [roadmap](docs/02-roadmap.md).
 

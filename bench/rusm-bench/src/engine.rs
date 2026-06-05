@@ -1,47 +1,86 @@
 use std::time::Instant;
 
 use rusm_otp::Runtime;
+use tokio::task::JoinHandle;
 
 use crate::sample::Sample;
 
-/// A **real** spawn-storm: spawns a batch of `rusm-otp` processes per tick and
-/// measures the achieved spawn rate and per-spawn latency.
+/// Latency samples taken per tick (fresh, timed spawns).
+const LATENCY_SAMPLE: usize = 64;
+/// Background spawners yield this often so the trivial processes they create get
+/// scheduled and reaped, and so the in-flight cap is re-checked.
+const YIELD_EVERY: u32 = 256;
+
+/// A **real, continuous, multi-core** spawn storm: one background spawner task
+/// per core hammers `rusm-otp` as fast as possible; [`tick`](Self::tick) samples
+/// the achieved rate (Δspawned / Δt) plus a few timed spawns for latency.
 ///
-/// Unlike the synthetic source, the numbers here are measured — `ops_per_sec` is
-/// real spawn throughput and `latencies_ns` are real per-spawn timings. Native
-/// processes have no per-instance linear memory, so `total_memory_bytes` is 0
-/// until the Wasm backend (Phase 6) gives processes a measurable footprint.
-///
-/// `tick` must be called from within a Tokio runtime (it uses `tokio::spawn`).
+/// A sequential per-tick loop is capped by one core; a real storm uses them all.
+/// `max_in_flight` is backpressure: spawners pause until the live population
+/// drains below it, so memory stays bounded and we measure *sustainable*
+/// create-and-reap throughput, not an unbounded pile-up. `total_memory_bytes` is
+/// 0 — native processes have no per-instance footprint until the Wasm backend
+/// (Phase 6). Must be constructed inside a Tokio runtime.
 pub struct SpawnStormEngine {
     runtime: Runtime,
-    batch: usize,
+    workers: Vec<JoinHandle<()>>,
+    last_spawned: u64,
+    last_at: Instant,
     scheduler_count: usize,
 }
 
 impl SpawnStormEngine {
-    pub fn new(batch: usize, scheduler_count: usize) -> Self {
+    pub fn new(workers: usize, scheduler_count: usize, max_in_flight: usize) -> Self {
+        let runtime = Runtime::new();
+        let workers = (0..workers.max(1))
+            .map(|_| {
+                let rt = runtime.clone();
+                tokio::spawn(async move {
+                    let mut n: u32 = 0;
+                    loop {
+                        let _ = rt.spawn(|_| async {});
+                        n = n.wrapping_add(1);
+                        if n % YIELD_EVERY == 0 {
+                            tokio::task::yield_now().await;
+                            // Backpressure: let the live population drain so memory
+                            // stays bounded (sustainable create-and-reap).
+                            while rt.process_count() > max_in_flight {
+                                tokio::task::yield_now().await;
+                            }
+                        }
+                    }
+                })
+            })
+            .collect();
         Self {
-            runtime: Runtime::new(),
-            batch: batch.max(1),
+            runtime,
+            workers,
+            last_spawned: 0,
+            last_at: Instant::now(),
             scheduler_count,
         }
     }
 
     pub fn tick(&mut self) -> Sample {
-        let start = Instant::now();
-        let mut latencies_ns = Vec::with_capacity(self.batch);
-        for _ in 0..self.batch {
-            let spawned_at = Instant::now();
-            // A trivial process that completes immediately; the handle is dropped
-            // (detached) — spawn-storm measures creation throughput, not lifetime.
-            let _ = self.runtime.spawn(|_| async {});
-            latencies_ns.push(spawned_at.elapsed().as_nanos() as u64);
-        }
-        let elapsed = start.elapsed().as_secs_f64().max(f64::MIN_POSITIVE);
-        let ops_per_sec = self.batch as f64 / elapsed;
-        let process_count = self.runtime.process_count() as u64;
+        let now = Instant::now();
+        let spawned = self.runtime.spawned();
+        let dt = now
+            .duration_since(self.last_at)
+            .as_secs_f64()
+            .max(f64::MIN_POSITIVE);
+        let ops_per_sec = spawned.saturating_sub(self.last_spawned) as f64 / dt;
+        self.last_spawned = spawned;
+        self.last_at = now;
 
+        let latencies_ns = (0..LATENCY_SAMPLE)
+            .map(|_| {
+                let started = Instant::now();
+                let _ = self.runtime.spawn(|_| async {});
+                started.elapsed().as_nanos() as u64
+            })
+            .collect();
+
+        let process_count = self.runtime.process_count() as u64;
         Sample {
             ops_per_sec,
             process_count,
@@ -55,34 +94,42 @@ impl SpawnStormEngine {
     }
 }
 
+impl Drop for SpawnStormEngine {
+    fn drop(&mut self) {
+        for worker in &self.workers {
+            worker.abort();
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[tokio::test]
-    async fn tick_spawns_a_real_batch_and_measures_it() {
-        let mut engine = SpawnStormEngine::new(64, 4);
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn storm_spawns_continuously_across_workers() {
+        let mut engine = SpawnStormEngine::new(4, 4, 50_000);
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         let sample = engine.tick();
-        // Let the runtime drive the spawned (trivial) processes to completion.
-        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-        assert_eq!(sample.latencies_ns.len(), 64);
         assert!(sample.ops_per_sec > 0.0);
+        assert_eq!(sample.latencies_ns.len(), LATENCY_SAMPLE);
         assert_eq!(sample.scheduler_load.len(), 4);
-        // Native processes report no per-instance memory yet.
         assert_eq!(sample.total_memory_bytes, 0);
+        assert!(engine.runtime.spawned() > 0);
     }
 
-    #[tokio::test]
-    async fn batch_is_at_least_one() {
-        let mut engine = SpawnStormEngine::new(0, 1);
-        assert_eq!(engine.tick().latencies_ns.len(), 1);
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn backpressure_keeps_the_population_bounded() {
+        // A tiny cap forces the drain loop; the live count must stay near it,
+        // not run away into the millions.
+        let mut engine = SpawnStormEngine::new(4, 2, 200);
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        assert!(engine.tick().process_count < 20_000);
     }
 
-    #[tokio::test]
-    async fn spawn_count_accumulates_across_ticks() {
-        let mut engine = SpawnStormEngine::new(10, 2);
-        engine.tick();
-        engine.tick();
-        assert_eq!(engine.runtime.spawned(), 20);
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn worker_count_is_at_least_one() {
+        let engine = SpawnStormEngine::new(0, 1, 50_000);
+        assert_eq!(engine.workers.len(), 1);
     }
 }

@@ -1,8 +1,8 @@
-use std::collections::HashMap;
 use std::future::Future;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
+use dashmap::DashMap;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use tokio::task::JoinHandle;
 
@@ -51,9 +51,9 @@ struct Inner {
     next_id: AtomicU64,
     spawned: AtomicU64,
     finished: AtomicU64,
-    // A single Mutex<HashMap> is fine for correctness; at 300k+ spawns/s it's a
-    // contention point — shard it (or a concurrent map) in the Phase-10 perf pass.
-    table: Mutex<HashMap<u64, UnboundedSender<Signal>>>,
+    // Sharded concurrent map: spawners and completers mostly touch different
+    // shards, so the process table isn't a global-lock bottleneck under a storm.
+    table: DashMap<u64, UnboundedSender<Signal>>,
 }
 
 /// Spawns and tracks lightweight processes. Cheap to clone — clones share the
@@ -78,11 +78,7 @@ impl Runtime {
     {
         let pid = Pid(self.inner.next_id.fetch_add(1, Ordering::Relaxed));
         let (signals, rx) = unbounded_channel();
-        self.inner
-            .table
-            .lock()
-            .unwrap()
-            .insert(pid.0, signals.clone());
+        self.inner.table.insert(pid.0, signals.clone());
         self.inner.spawned.fetch_add(1, Ordering::Relaxed);
 
         let body = body(Context { pid });
@@ -92,7 +88,7 @@ impl Runtime {
 
     /// Number of currently-live processes.
     pub fn process_count(&self) -> usize {
-        self.inner.table.lock().unwrap().len()
+        self.inner.table.len()
     }
 
     /// Total processes ever spawned.
@@ -106,12 +102,12 @@ impl Runtime {
     }
 
     pub fn is_alive(&self, pid: Pid) -> bool {
-        self.inner.table.lock().unwrap().contains_key(&pid.0)
+        self.inner.table.contains_key(&pid.0)
     }
 
     /// Signals `pid` to stop. Returns `false` if there is no such live process.
     pub fn kill(&self, pid: Pid) -> bool {
-        match self.inner.table.lock().unwrap().get(&pid.0) {
+        match self.inner.table.get(&pid.0) {
             Some(signals) => {
                 let _ = signals.send(Signal::Shutdown);
                 true
@@ -130,7 +126,7 @@ struct ProcessGuard {
 
 impl Drop for ProcessGuard {
     fn drop(&mut self) {
-        self.inner.table.lock().unwrap().remove(&self.pid.0);
+        self.inner.table.remove(&self.pid.0);
         self.inner.finished.fetch_add(1, Ordering::Relaxed);
     }
 }

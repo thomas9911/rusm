@@ -192,7 +192,7 @@ mod tests {
     fn apply_stop_and_detail_toggle() {
         let node = Node::new(RunnerConfig::default());
         node.apply(ClientCommand::Run {
-            scenario: "spawn-storm".to_string(),
+            scenario: "ping-pong".to_string(), // synthetic — no Tokio runtime needed here
         })
         .unwrap();
         node.apply(ClientCommand::SetObserverDetail { enabled: false })
