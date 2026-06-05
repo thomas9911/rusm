@@ -35,6 +35,7 @@ process table — culminating in proving the **"300k/s connections"** claim
 (observer-on vs observer-off, to show observability is nearly free).
 
 We build it in small, test-driven phases (see [the roadmap](./02-roadmap.md)),
-each one teaching one concept. Phase 0 — this milestone — builds the dashboard
-and observability foundation on synthetic data, so every later phase has
-something to measure with.
+each one teaching one concept. Phase 0 built the dashboard and observability
+foundation on synthetic data, so every later phase has something to measure
+with; Phase 1 made the process core real. See the [roadmap](./02-roadmap.md) for
+where things stand.

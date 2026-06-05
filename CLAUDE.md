@@ -8,11 +8,12 @@ distributed clusters you can hook into live. See `README.md` for the pitch and
 
 ## Status
 
-**Phase 0 — observability foundation.** Built: the metrics core, the live
-observer model, the benchmark harness + WebSocket server, the `rusm` CLI, the
-React dashboard, and runnable examples — all on synthetic data. The runtime
-internals (Wasmtime engine, processes, host ABI, …) arrive in later phases; see
-`docs/02-roadmap.md`.
+**Phase 1 of 10 — complete.** The Wasm-free OTP core (`rusm-otp`) spawns,
+schedules, and kills **real** lightweight processes; the spawn-storm benchmark
+shows real data (~170k+ spawns/sec, ~2 µs p50). Phase 0 (metrics, live observer,
+benchmark harness + WebSocket server, `rusm` CLI, React dashboard, examples) is
+done. Messaging, supervision, the Wasmtime backend, and clustering are later
+phases; see `docs/02-roadmap.md`.
 
 ## Tech stack
 

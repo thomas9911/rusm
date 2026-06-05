@@ -10,10 +10,11 @@
 
 ## How to read this
 
-This is not apples-to-apples. RUSM today is **Phase 0** — an observability
-foundation (metrics, live observer, benchmark dashboard) on synthetic data, with
-**no Wasm execution yet**. Lunatic is the full runtime. So most runtime rows show
-RUSM as *planned (Phase N)*. The value is in the **efficiency playbook** below.
+This is not apples-to-apples. RUSM is at **Phase 1 of 10**: the Wasm-free OTP
+core spawns real lightweight processes (spawn-storm shows real data), atop the
+Phase-0 observability foundation — but there is still **no Wasm execution** (the
+Wasmtime backend is Phase 6). Lunatic is the full runtime. So most runtime rows
+show RUSM as *planned (Phase N)*. The value is in the **efficiency playbook** below.
 
 > ### Does RUSM handle lightweight processes as efficiently as Lunatic — today?
 >
@@ -32,7 +33,7 @@ RUSM as *planned (Phase N)*. The value is in the **efficiency playbook** below.
 
 | | RUSM (today) | Lunatic |
 | --- | --- | --- |
-| Status | Active, Phase 0 of 10 | Dormant since 2023 (v0.13.0) |
+| Status | Active, Phase 1 of 10 complete | Dormant since 2023 (v0.13.0) |
 | Rust LOC | ~2,560 (4 crates) + 790 TS | ~15,150 (20 crates) |
 | Tests | 87 Rust + 18 TS, ~99.5% cov | ~26 test annotations |
 | Wasmtime | none yet (target: modern) | v8 (2023) |

@@ -1,7 +1,8 @@
 # RUSM examples
 
-Small, ready-to-run programs — each demonstrates one capability. In Phase 0 they
-run against synthetic data; the same code keeps working as the real runtime lands.
+Small, ready-to-run programs — each demonstrates one capability. Spawn-storm runs
+**real** `rusm-otp` processes; the other scenarios are synthetic until their
+phase lands — the same code keeps working as each part of the runtime arrives.
 
 ## Runnable example apps
 
