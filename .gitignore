@@ -1,0 +1,21 @@
+# Rust
+/target
+**/*.rs.bk
+*.profraw
+
+# Coverage
+/coverage
+/lcov.info
+
+# Node / Bun (we use Bun, never npm/Node — but ignore both ecosystems' artifacts)
+node_modules
+dist
+.vite
+*.tsbuildinfo
+
+# VitePress build cache (the published site under docs/.vitepress/dist is committed)
+docs/.vitepress/cache
+
+# OS / editor
+.DS_Store
+*.swp
