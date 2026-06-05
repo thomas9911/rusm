@@ -45,6 +45,25 @@ even an infinite-loop guest to yield. See
 | `Node.connect` / epmd | QUIC + TLS node transport (later phase) |
 | `iex --remsh` / observer | `rusm attach` + dashboard observer |
 
+## Architectural invariant — a Wasm-free core
+
+RUSM's heart is the **Erlang/OTP actor model in pure Rust**, and it must stay that
+way: **Wasm must not bleed into code where it is irrelevant.**
+
+- **`crates/rusm-otp`** — the core: processes, mailboxes, `Signal`s, links,
+  monitors, supervisors, registry, scheduler. Generic over an abstract process
+  **body**. **It must not depend on `wasmtime` or name any Wasm type.** It is
+  usable on its own as a native-Rust OTP/actor library (an "rustOTP").
+- **`crates/rusm-wasm`** — the *optional* execution backend (Phase 6): implements
+  the body trait with Wasmtime instances. The **only** crate that touches `wasmtime`.
+- **`rusm`** — the runtime = `rusm-otp` + `rusm-wasm` + host APIs + CLI.
+
+The dependency graph **enforces** the boundary: because `rusm-otp` has no
+`wasmtime` dependency, the compiler *guarantees* the actor model stands alone and
+Wasmtime is a swappable backend — a structural fact, not a claim. Even messages
+stay Wasm-agnostic: bytes plus opaque resource handles (`Arc<dyn Any + Send +
+Sync>`), no Wasm types.
+
 ## Phase 0 shape
 
 Phase 0 builds the **observability + harness** that every later phase plugs into:

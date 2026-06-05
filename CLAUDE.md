@@ -30,6 +30,12 @@ internals (Wasmtime engine, processes, host ABI, …) arrive in later phases; se
 - **Formatting**: `cargo fmt` + Prettier. No required linter.
 - **Senior, idiomatic, reference-quality** code. Self-review every change for
   weak tests, readability, DRY, and separation of concerns.
+- **Wasm-free core (hard boundary).** The Erlang/OTP core (`rusm-otp`:
+  processes, messaging, supervision, registry, scheduler) must **never** depend on
+  or reference Wasmtime. All Wasm lives in `rusm-wasm` (Phase 6). Wasm must not
+  bleed into Wasm-irrelevant code; the dependency graph enforces it.
+- **Total awareness on sweeping changes.** For any rename/renumber/API change,
+  grep the *entire* repo, fix every hit, then re-grep to prove zero stragglers.
 
 ## Commands
 
