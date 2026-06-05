@@ -1,0 +1,14 @@
+[package]
+name = "rusm-otp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "The Wasm-free Erlang/OTP core of RUSM: processes, scheduling, signals."
+
+# Invariant: this crate must NOT depend on `wasmtime` or any Wasm type — the
+# actor model stands alone. Wasm is a separate, optional backend (`rusm-wasm`).
+[dependencies]
+tokio = { version = "1.52.3", features = ["rt", "rt-multi-thread", "sync", "macros"] }

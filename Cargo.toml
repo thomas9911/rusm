@@ -7,6 +7,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/rusm-otp",
     "crates/rusm-metrics",
     "crates/rusm-observer",
     "bench/rusm-bench",
