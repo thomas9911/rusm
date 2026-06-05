@@ -356,6 +356,7 @@ dependencies = [
  "futures-util",
  "rusm-metrics",
  "rusm-observer",
+ "rusm-otp",
  "serde",
  "serde_json",
  "tokio",

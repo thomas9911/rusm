@@ -9,7 +9,7 @@ real runtime exists.
 
 - Constructing a `SyntheticSource` for a scenario.
 - Calling `tick(index, latency_samples, max_processes, scheduler_count)` to get a
-  `SyntheticTick` (ops/sec, peak concurrency, latency samples, a process sample).
+  `Sample` (ops/sec, process count, latency samples, a process sample).
 - That re-running the **same** tick yields byte-identical output.
 
 ## Run

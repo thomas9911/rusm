@@ -65,6 +65,7 @@ impl Scenario {
                     "These are NOT OS processes or threads: hundreds of thousands run cooperatively over a handful of OS threads — the schedulers (roughly one per CPU core).",
                     "Watch per-process memory: cheap, small processes are what make massive concurrency viable — the BEAM runs millions; so should we.",
                     "Why it matters: if spawning is cheap, you can model every request/connection/job as its own crash-isolated process.",
+                    "Phase 1: these are REAL native rusm-otp processes — spawns/sec and spawn latency are measured live. Per-process memory shows 0 until processes become Wasm instances (Phase 6).",
                 ],
                 1,
             ),

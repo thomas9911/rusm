@@ -2,9 +2,11 @@
 //! a runner that aggregates ticks into transportable frames, and the WebSocket
 //! server feeding the dashboard and the `rusm attach` REPL.
 
+mod engine;
 mod protocol;
 mod report;
 mod runner;
+mod sample;
 mod scenario;
 mod server;
 mod synthetic;
@@ -12,6 +14,7 @@ mod synthetic;
 pub use protocol::{ClientCommand, Frame, ServerMessage};
 pub use report::summarize_frame;
 pub use runner::{Runner, RunnerConfig};
+pub use sample::Sample;
 pub use scenario::{Scenario, ScenarioMeta};
 pub use server::{serve, serve_on, Node};
-pub use synthetic::{SyntheticSource, SyntheticTick};
+pub use synthetic::SyntheticSource;

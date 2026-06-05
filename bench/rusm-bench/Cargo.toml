@@ -13,6 +13,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 rusm-metrics = { path = "../../crates/rusm-metrics" }
 rusm-observer = { path = "../../crates/rusm-observer" }
+rusm-otp = { path = "../../crates/rusm-otp" }
 tokio = { version = "1.52.3", features = ["rt-multi-thread", "macros", "sync", "time", "net"] }
 tokio-tungstenite = "0.29.0"
 futures-util = "0.3.32"

@@ -1,23 +1,7 @@
 use rusm_observer::{ProcessInfo, ProcessStatus};
 
+use crate::sample::Sample;
 use crate::scenario::Scenario;
-
-/// One tick of synthetic load for a scenario: the signals the runner records.
-///
-/// `process_count` (and `running`/`waiting`/`total_memory_bytes`) are the full,
-/// authoritative totals for this tick; `processes` is only a capped *sample* for
-/// the observer's detail table. They are intentionally different scales.
-#[derive(Debug, Clone, PartialEq)]
-pub struct SyntheticTick {
-    pub ops_per_sec: f64,
-    pub process_count: u64,
-    pub running: u64,
-    pub waiting: u64,
-    pub total_memory_bytes: u64,
-    pub latencies_ns: Vec<u64>,
-    pub processes: Vec<ProcessInfo>,
-    pub scheduler_load: Vec<f32>,
-}
 
 /// Deterministic synthetic data source.
 ///
@@ -84,7 +68,7 @@ impl SyntheticSource {
         latency_samples: usize,
         max_processes: usize,
         scheduler_count: usize,
-    ) -> SyntheticTick {
+    ) -> Sample {
         let mut rng = Rng::new(mix(self.scenario as u64).wrapping_add(tick));
         let r = self.ranges();
 
@@ -125,7 +109,7 @@ impl SyntheticSource {
             .map(|_| rng.next_unit() as f32)
             .collect();
 
-        SyntheticTick {
+        Sample {
             ops_per_sec,
             process_count,
             running,

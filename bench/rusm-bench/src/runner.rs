@@ -1,7 +1,9 @@
 use rusm_metrics::{LatencyHistogram, TimeSeries};
 use rusm_observer::{NodeSample, Observer};
 
+use crate::engine::SpawnStormEngine;
 use crate::protocol::Frame;
+use crate::sample::Sample;
 use crate::scenario::Scenario;
 use crate::synthetic::SyntheticSource;
 
@@ -13,6 +15,8 @@ pub struct RunnerConfig {
     pub throughput_window: usize,
     /// Sampling rate; ties `ops_per_sec` to a per-tick operation count.
     pub ticks_per_second: u32,
+    /// Processes the real spawn-storm engine spawns per tick.
+    pub spawn_batch: usize,
 }
 
 impl Default for RunnerConfig {
@@ -23,12 +27,45 @@ impl Default for RunnerConfig {
             latency_samples: 64,
             throughput_window: 120,
             ticks_per_second: 20,
+            spawn_batch: 2000,
+        }
+    }
+}
+
+/// The per-scenario data source: synthetic for most scenarios, a real
+/// `rusm-otp` spawn engine for spawn-storm.
+enum Engine {
+    Synthetic(SyntheticSource),
+    SpawnStorm(SpawnStormEngine),
+}
+
+impl Engine {
+    fn for_scenario(scenario: Scenario, config: &RunnerConfig) -> Self {
+        match scenario {
+            Scenario::SpawnStorm => Engine::SpawnStorm(SpawnStormEngine::new(
+                config.spawn_batch,
+                config.scheduler_count,
+            )),
+            _ => Engine::Synthetic(SyntheticSource::new(scenario)),
+        }
+    }
+
+    fn tick(&mut self, tick: u64, config: &RunnerConfig) -> Sample {
+        match self {
+            Engine::Synthetic(source) => source.tick(
+                tick,
+                config.latency_samples,
+                config.max_detail,
+                config.scheduler_count,
+            ),
+            Engine::SpawnStorm(engine) => engine.tick(),
         }
     }
 }
 
 struct RunState {
-    source: SyntheticSource,
+    scenario: Scenario,
+    engine: Engine,
     tick: u64,
     peak_concurrent: u64,
 }
@@ -63,7 +100,7 @@ impl Runner {
     }
 
     pub fn scenario(&self) -> Option<Scenario> {
-        self.run.as_ref().map(|r| r.source.scenario())
+        self.run.as_ref().map(|r| r.scenario)
     }
 
     /// Starts (or restarts) `scenario`, resetting all metrics to a clean slate.
@@ -73,7 +110,8 @@ impl Runner {
         self.latency.clear();
         self.throughput.clear();
         self.run = Some(RunState {
-            source: SyntheticSource::new(scenario),
+            scenario,
+            engine: Engine::for_scenario(scenario, &self.config),
             tick: 0,
             peak_concurrent: 0,
         });
@@ -113,15 +151,10 @@ impl Runner {
             };
         };
 
-        let t = state.source.tick(
-            state.tick,
-            self.config.latency_samples,
-            self.config.max_detail,
-            self.config.scheduler_count,
-        );
+        let t = state.engine.tick(state.tick, &self.config);
         state.tick += 1;
         state.peak_concurrent = state.peak_concurrent.max(t.process_count);
-        let scenario = state.source.scenario();
+        let scenario = state.scenario;
         let peak_concurrent = state.peak_concurrent;
 
         for latency_ns in &t.latencies_ns {
@@ -230,10 +263,10 @@ mod tests {
         for tick in 0..10 {
             r.tick(tick);
         }
-        r.start(Scenario::SpawnStorm);
-        // A fresh run starts with empty latency history until the first tick.
+        r.start(Scenario::Fairness);
+        // A fresh run accumulates from scratch — one tick of synthetic samples.
         let frame = r.tick(0);
-        assert_eq!(frame.scenario.as_deref(), Some("spawn-storm"));
+        assert_eq!(frame.scenario.as_deref(), Some("fairness"));
         assert_eq!(
             frame.latency.count as usize,
             RunnerConfig::default().latency_samples
@@ -244,11 +277,24 @@ mod tests {
     fn observer_detail_toggle_persists_across_restart() {
         let mut r = runner();
         r.set_observer_detail(false);
-        r.start(Scenario::SpawnStorm);
+        r.start(Scenario::ConnectionStorm);
         assert!(!r.observer_detail_enabled());
         let frame = r.tick(0);
         assert!(frame.observer.processes.is_empty());
         assert!(frame.observer.process_count > 0);
+    }
+
+    #[tokio::test]
+    async fn spawn_storm_runs_real_processes() {
+        // The spawn-storm scenario uses the real rusm-otp engine (needs a Tokio
+        // runtime), unlike the synthetic scenarios above.
+        let mut r = runner();
+        r.start(Scenario::SpawnStorm);
+        let frame = r.tick(0);
+        assert_eq!(frame.scenario.as_deref(), Some("spawn-storm"));
+        assert!(frame.ops_per_sec > 0.0);
+        // Real spawns were timed and recorded.
+        assert!(frame.latency.count > 0);
     }
 
     #[test]
