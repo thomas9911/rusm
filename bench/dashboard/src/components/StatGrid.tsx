@@ -1,11 +1,16 @@
 import { formatBytes, formatCount, formatDuration, formatRate } from '../format';
+import type { Averages } from '../state';
 import type { Frame } from '../types';
+
+export type MetricMode = 'current' | 'average';
 
 interface StatGridProps {
   frame: Frame | null;
+  averages: Averages | null;
+  mode: MetricMode;
 }
 
-type Hint = 'higher is better' | 'lower is better' | 'in-host, not OS';
+type Hint = 'higher is better' | 'lower is better' | 'in-host, not OS' | 'session peak';
 
 function Stat({
   label,
@@ -29,39 +34,43 @@ function Stat({
   );
 }
 
-export function StatGrid({ frame }: StatGridProps) {
+export function StatGrid({ frame, averages, mode }: StatGridProps) {
+  // Use averages only in 'average' mode and only once a sample exists.
+  const avg = mode === 'average' ? averages : null;
   const o = frame?.observer;
+  const prefix = avg ? 'avg ' : '';
+
   return (
     <div className="stat-grid">
       <Stat
-        label="throughput"
-        value={frame ? formatRate(frame.ops_per_sec) : '—'}
+        label={`${prefix}throughput`}
+        value={avg ? formatRate(avg.opsPerSec) : frame ? formatRate(frame.ops_per_sec) : '—'}
         hint="higher is better"
         accent
       />
       <Stat
         label="peak concurrent"
         value={frame ? formatCount(frame.peak_concurrent) : '—'}
-        hint="higher is better"
+        hint="session peak"
       />
       <Stat
-        label="p50 latency"
-        value={frame ? formatDuration(frame.latency.p50_ns) : '—'}
+        label={`${prefix}p50 latency`}
+        value={avg ? formatDuration(avg.p50Ns) : frame ? formatDuration(frame.latency.p50_ns) : '—'}
         hint="lower is better"
       />
       <Stat
-        label="p99 latency"
-        value={frame ? formatDuration(frame.latency.p99_ns) : '—'}
+        label={`${prefix}p99 latency`}
+        value={avg ? formatDuration(avg.p99Ns) : frame ? formatDuration(frame.latency.p99_ns) : '—'}
         hint="lower is better"
       />
       <Stat
-        label="processes"
-        value={o ? formatCount(o.process_count) : '—'}
+        label={`${prefix}processes`}
+        value={avg ? formatCount(avg.processCount) : o ? formatCount(o.process_count) : '—'}
         hint="in-host, not OS"
       />
       <Stat
-        label="memory"
-        value={o ? formatBytes(o.total_memory_bytes) : '—'}
+        label={`${prefix}memory`}
+        value={avg ? formatBytes(avg.memoryBytes) : o ? formatBytes(o.total_memory_bytes) : '—'}
         hint="lower is better"
       />
     </div>

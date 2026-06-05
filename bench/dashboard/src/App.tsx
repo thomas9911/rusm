@@ -3,8 +3,9 @@ import { Chart } from './components/Chart';
 import { ObserverPanel } from './components/ObserverPanel';
 import { ScenarioInfo } from './components/ScenarioInfo';
 import { ScenarioMenu } from './components/ScenarioMenu';
-import { StatGrid } from './components/StatGrid';
+import { StatGrid, type MetricMode } from './components/StatGrid';
 import { runCommand, setObserverDetailCommand, stopCommand } from './protocol';
+import { averages } from './state';
 import { useNode } from './useNode';
 
 const DEFAULT_URL = 'ws://127.0.0.1:4000';
@@ -14,6 +15,7 @@ export function App() {
   const { state, send, reset } = useNode(DEFAULT_URL);
   const [selected, setSelected] = useState<string | null>(null);
   const [detail, setDetail] = useState(true);
+  const [mode, setMode] = useState<MetricMode>('current');
 
   useEffect(() => {
     if (!selected && state.scenarios.length > 0) setSelected(state.scenarios[0].id);
@@ -70,7 +72,23 @@ export function App() {
 
         <main className="main">
           <ScenarioInfo scenario={selectedMeta} />
-          <StatGrid frame={state.frame} />
+          <div className="metrics-bar">
+            <div className="seg" role="group" aria-label="metric mode">
+              <button
+                className={mode === 'current' ? 'seg-on' : ''}
+                onClick={() => setMode('current')}
+              >
+                Current
+              </button>
+              <button
+                className={mode === 'average' ? 'seg-on' : ''}
+                onClick={() => setMode('average')}
+              >
+                Average
+              </button>
+            </div>
+          </div>
+          <StatGrid frame={state.frame} averages={averages(state)} mode={mode} />
           <Chart data={state.history} label="throughput (ops/sec)" color={ACCENT} />
           <ObserverPanel
             observer={state.frame?.observer ?? null}

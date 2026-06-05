@@ -220,6 +220,30 @@ body {
 .scenario-info-details li::marker {
   color: var(--accent);
 }
+.metrics-bar {
+  display: flex;
+  justify-content: flex-end;
+}
+.seg {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  overflow: hidden;
+}
+.seg button {
+  background: transparent;
+  color: var(--muted);
+  border: none;
+  padding: 6px 16px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.seg button.seg-on {
+  background: var(--accent-dim);
+  color: var(--accent);
+}
+
 .stat-grid {
   display: grid;
   grid-template-columns: repeat(6, 1fr);
@@ -232,7 +256,9 @@ body {
   background: var(--panel);
   display: flex;
   flex-direction: column;
+  align-items: flex-end;
   gap: 6px;
+  text-align: right;
 }
 .stat--accent {
   border-color: var(--accent);
@@ -241,6 +267,8 @@ body {
   font-family: var(--mono);
   font-size: 22px;
   font-weight: 600;
+  /* Right-aligned + tabular figures so changing digit widths don't shift the layout. */
+  font-variant-numeric: tabular-nums;
 }
 .stat--accent .stat-value {
   color: var(--accent);

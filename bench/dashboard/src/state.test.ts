@@ -1,5 +1,12 @@
 import { expect, test } from 'bun:test';
-import { applyMessage, HISTORY_LIMIT, initialState, resetData, setConnected } from './state';
+import {
+  applyMessage,
+  averages,
+  HISTORY_LIMIT,
+  initialState,
+  resetData,
+  setConnected,
+} from './state';
 import type { Frame, ServerMessage } from './types';
 
 function frame(overrides: Partial<Frame> = {}): Frame {
@@ -86,11 +93,31 @@ test('an idle tick keeps the last run on screen, only flipping running off', () 
   expect(s.scenario).toBe('connection-storm');
 });
 
-test('resetData clears the displayed run', () => {
+test('resetData clears the displayed run and the averages', () => {
   let s = applyMessage(initialState(), tick(frame({ ops_per_sec: 100 })));
   s = resetData(s);
   expect(s.running).toBe(false);
   expect(s.frame).toBeNull();
   expect(s.history).toEqual([]);
   expect(s.scenario).toBeNull();
+  expect(averages(s)).toBeNull();
+});
+
+test('averages is null before any sample', () => {
+  expect(averages(initialState())).toBeNull();
+});
+
+test('averages are the mean of the run', () => {
+  let s = applyMessage(initialState(), tick(frame({ ops_per_sec: 100 })));
+  s = applyMessage(s, tick(frame({ ops_per_sec: 300 })));
+  const avg = averages(s);
+  expect(avg).not.toBeNull();
+  expect(avg!.opsPerSec).toBe(200);
+});
+
+test('idle ticks do not contribute to averages', () => {
+  let s = applyMessage(initialState(), tick(frame({ ops_per_sec: 100 })));
+  s = applyMessage(s, tick(frame({ running: false, ops_per_sec: 0 })));
+  // Still just the one running sample.
+  expect(averages(s)!.opsPerSec).toBe(100);
 });
