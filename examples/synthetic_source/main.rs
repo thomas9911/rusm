@@ -12,9 +12,9 @@ fn main() {
     for tick in 0..5 {
         let t = source.tick(tick, 4, 3, 4);
         println!(
-            "tick {tick}: {:>9.0} ops/s, peak {:>6}, {} latency samples",
+            "tick {tick}: {:>9.0} ops/s, {:>6} procs, {} latency samples",
             t.ops_per_sec,
-            t.peak_concurrent,
+            t.process_count,
             t.latencies_ns.len(),
         );
     }

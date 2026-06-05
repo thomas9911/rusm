@@ -54,6 +54,7 @@ export interface ScenarioMeta {
   id: string;
   label: string;
   description: string;
+  details: string[];
   real_after_phase: number;
 }
 

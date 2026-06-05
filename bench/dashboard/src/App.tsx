@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Chart } from './components/Chart';
 import { ObserverPanel } from './components/ObserverPanel';
+import { ScenarioInfo } from './components/ScenarioInfo';
 import { ScenarioMenu } from './components/ScenarioMenu';
 import { StatGrid } from './components/StatGrid';
 import { runCommand, setObserverDetailCommand, stopCommand } from './protocol';
@@ -30,6 +31,7 @@ export function App() {
   };
 
   const hasData = state.frame !== null || state.history.length > 0;
+  const selectedMeta = state.scenarios.find((s) => s.id === selected);
 
   return (
     <div className="app">
@@ -67,6 +69,7 @@ export function App() {
         </aside>
 
         <main className="main">
+          <ScenarioInfo scenario={selectedMeta} />
           <StatGrid frame={state.frame} />
           <Chart data={state.history} label="throughput (ops/sec)" color={ACCENT} />
           <ObserverPanel

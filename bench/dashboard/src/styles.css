@@ -174,6 +174,52 @@ body {
   flex-direction: column;
   gap: 20px;
 }
+
+/* Scenario info */
+.scenario-info {
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius);
+  background: var(--panel);
+  padding: 16px 20px;
+}
+.scenario-info-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.scenario-info-head h2 {
+  margin: 0;
+  font-size: 18px;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--text);
+}
+.phase-badge {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 3px 10px;
+  white-space: nowrap;
+}
+.scenario-info-desc {
+  margin: 8px 0 10px;
+  color: var(--text);
+}
+.scenario-info-details {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.7;
+}
+.scenario-info-details li::marker {
+  color: var(--accent);
+}
 .stat-grid {
   display: grid;
   grid-template-columns: repeat(6, 1fr);
@@ -201,6 +247,20 @@ body {
 }
 .stat-label {
   font-size: 12px;
+  color: var(--muted);
+}
+.stat-hint {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.stat-hint--higher {
+  color: var(--accent);
+}
+.stat-hint--lower {
+  color: #fbbf24;
+}
+.stat-hint--info {
   color: var(--muted);
 }
 

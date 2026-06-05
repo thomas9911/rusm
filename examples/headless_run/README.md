@@ -24,7 +24,10 @@ cargo run -p rusm-bench --example headless_run
 ```
 running `connection-storm` for 10 ticks:
 
-[connection-storm]       324559 ops/s  peak    4552  p50     284µs  p99     498µs  procs 64
+[connection-storm]       324559 ops/s  peak    4552  p50     284µs  p99     498µs  procs 4552
+[connection-storm]       332552 ops/s  peak    4552  p50     275µs  p99     497µs  procs 2276
+[connection-storm]       284960 ops/s  peak    4552  p50     253µs  p99     498µs  procs 4003
 ...
 ```
-(numbers vary per tick but stay within the scenario's synthetic ranges.)
+`procs` is the live process count this tick; `peak` is the high-water mark.
+Numbers vary per tick but stay within the scenario's synthetic ranges.

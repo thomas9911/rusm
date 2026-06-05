@@ -3,10 +3,17 @@ use rusm_observer::{ProcessInfo, ProcessStatus};
 use crate::scenario::Scenario;
 
 /// One tick of synthetic load for a scenario: the signals the runner records.
+///
+/// `process_count` (and `running`/`waiting`/`total_memory_bytes`) are the full,
+/// authoritative totals for this tick; `processes` is only a capped *sample* for
+/// the observer's detail table. They are intentionally different scales.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SyntheticTick {
     pub ops_per_sec: f64,
-    pub peak_concurrent: u64,
+    pub process_count: u64,
+    pub running: u64,
+    pub waiting: u64,
+    pub total_memory_bytes: u64,
     pub latencies_ns: Vec<u64>,
     pub processes: Vec<ProcessInfo>,
     pub scheduler_load: Vec<f32>,
@@ -82,13 +89,14 @@ impl SyntheticSource {
         let r = self.ranges();
 
         let ops_per_sec = rng.range(r.ops.0, r.ops.1) as f64;
-        let peak_concurrent = rng.range(r.processes.0, r.processes.1);
+        let process_count = rng.range(r.processes.0, r.processes.1);
         let latencies_ns = (0..latency_samples)
             .map(|_| rng.range(r.latency_ns.0, r.latency_ns.1))
             .collect();
 
-        let detail = (peak_concurrent as usize).min(max_processes);
-        let processes = (0..detail)
+        // The detail table is only a sample of the (possibly huge) process set.
+        let sample_size = (process_count as usize).min(max_processes);
+        let processes: Vec<ProcessInfo> = (0..sample_size)
             .map(|i| ProcessInfo {
                 id: i as u64,
                 name: None,
@@ -99,13 +107,28 @@ impl SyntheticSource {
             })
             .collect();
 
+        // Aggregates are at full scale: per-process memory averaged over the
+        // sample, multiplied by the true count; status split ~80% / ~12%.
+        let avg_memory = processes
+            .iter()
+            .map(|p| p.memory_bytes)
+            .sum::<u64>()
+            .checked_div(processes.len() as u64)
+            .unwrap_or(0);
+        let total_memory_bytes = avg_memory.saturating_mul(process_count);
+        let running = process_count * 4 / 5;
+        let waiting = process_count * 3 / 25;
+
         let scheduler_load = (0..scheduler_count)
             .map(|_| rng.next_unit() as f32)
             .collect();
 
         SyntheticTick {
             ops_per_sec,
-            peak_concurrent,
+            process_count,
+            running,
+            waiting,
+            total_memory_bytes,
             latencies_ns,
             processes,
             scheduler_load,
@@ -189,7 +212,9 @@ mod tests {
             for tick in 0..100 {
                 let t = src.tick(tick, 16, 10, 2);
                 assert!((r.ops.0..=r.ops.1).contains(&(t.ops_per_sec as u64)));
-                assert!((r.processes.0..=r.processes.1).contains(&t.peak_concurrent));
+                assert!((r.processes.0..=r.processes.1).contains(&t.process_count));
+                assert!(t.running <= t.process_count);
+                assert!(t.waiting <= t.process_count);
                 for l in &t.latencies_ns {
                     assert!((r.latency_ns.0..=r.latency_ns.1).contains(l));
                 }
@@ -207,11 +232,23 @@ mod tests {
     }
 
     #[test]
-    fn detail_is_capped_by_peak_when_smaller_than_max() {
+    fn detail_is_capped_by_count_when_smaller_than_max() {
         // PingPong only ever has 2 processes, below the max_processes cap.
         let t = SyntheticSource::new(Scenario::PingPong).tick(0, 4, 100, 2);
-        assert_eq!(t.peak_concurrent, 2);
+        assert_eq!(t.process_count, 2);
         assert_eq!(t.processes.len(), 2);
+    }
+
+    #[test]
+    fn aggregates_are_full_scale_not_the_sample_size() {
+        // Regression guard: a thousands-of-processes scenario must report the true
+        // count and a total memory far larger than the small sampled table.
+        let t = SyntheticSource::new(Scenario::SpawnStorm).tick(0, 4, 16, 4);
+        assert!(t.process_count >= 5_000);
+        assert_eq!(t.processes.len(), 16);
+        assert!(t.process_count > t.processes.len() as u64);
+        let sample_memory: u64 = t.processes.iter().map(|p| p.memory_bytes).sum();
+        assert!(t.total_memory_bytes > sample_memory);
     }
 
     #[test]

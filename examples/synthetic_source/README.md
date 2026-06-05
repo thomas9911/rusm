@@ -21,11 +21,11 @@ cargo run -p rusm-bench --example synthetic_source
 ## Expected output
 
 ```
-tick 0:    258456 ops/s, peak  27597, 4 latency samples
-tick 1:    292953 ops/s, peak  17517, 4 latency samples
-tick 2:    297454 ops/s, peak  38319, 4 latency samples
-tick 3:    328098 ops/s, peak  44179, 4 latency samples
-tick 4:    260541 ops/s, peak  19954, 4 latency samples
+tick 0:    258456 ops/s,  27597 procs, 4 latency samples
+tick 1:    292953 ops/s,  17517 procs, 4 latency samples
+tick 2:    297454 ops/s,  38319 procs, 4 latency samples
+tick 3:    328098 ops/s,  44179 procs, 4 latency samples
+tick 4:    260541 ops/s,  19954 procs, 4 latency samples
 
 re-running tick 0 produced byte-identical data ✓
 ```

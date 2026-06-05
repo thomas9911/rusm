@@ -2,7 +2,24 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use rusm_metrics::Counter;
 
-use crate::types::{ObserverSnapshot, ProcessInfo, ProcessStatus};
+use crate::types::{ObserverSnapshot, ProcessInfo};
+
+/// A node's live numbers for one snapshot: authoritative aggregate totals plus a
+/// (possibly capped) **sample** of processes for the detail table.
+///
+/// The aggregates (`process_count`, `running`, …) are the real cluster-scale
+/// figures — the runtime tracks them cheaply. `processes` is only a sample, so
+/// the observer never infers totals from it (a 5k-process node still reports
+/// 5,000, while the table shows at most `max_detail` rows).
+#[derive(Debug, Clone, Copy)]
+pub struct NodeSample<'a> {
+    pub process_count: usize,
+    pub running: usize,
+    pub waiting: usize,
+    pub total_memory_bytes: u64,
+    pub scheduler_load: &'a [f32],
+    pub processes: &'a [ProcessInfo],
+}
 
 /// Aggregates a node's live state into [`ObserverSnapshot`]s.
 ///
@@ -66,45 +83,35 @@ impl Observer {
         self.scheduler_count
     }
 
-    pub fn snapshot(
-        &self,
-        uptime_ms: u64,
-        processes: &[ProcessInfo],
-        scheduler_load: &[f32],
-    ) -> ObserverSnapshot {
-        let mut running = 0;
-        let mut waiting = 0;
-        let mut total_memory_bytes = 0;
-        for p in processes {
-            match p.status {
-                ProcessStatus::Running => running += 1,
-                ProcessStatus::Waiting => waiting += 1,
-                _ => {}
-            }
-            total_memory_bytes += p.memory_bytes;
-        }
-
-        let detail = if self.detail_enabled() {
-            processes.iter().take(self.max_detail).cloned().collect()
+    pub fn snapshot(&self, uptime_ms: u64, sample: NodeSample) -> ObserverSnapshot {
+        // Aggregates come from the authoritative totals; the per-instance table is
+        // only the sample, optionally suppressed, and never exceeds max_detail.
+        let processes = if self.detail_enabled() {
+            sample
+                .processes
+                .iter()
+                .take(self.max_detail)
+                .cloned()
+                .collect()
         } else {
             Vec::new()
         };
 
-        let mut load = scheduler_load.to_vec();
-        load.truncate(self.scheduler_count);
-        load.resize(self.scheduler_count, 0.0);
+        let mut scheduler_load = sample.scheduler_load.to_vec();
+        scheduler_load.truncate(self.scheduler_count);
+        scheduler_load.resize(self.scheduler_count, 0.0);
 
         ObserverSnapshot {
             uptime_ms,
-            process_count: processes.len(),
-            running,
-            waiting,
-            scheduler_load: load,
-            total_memory_bytes,
+            process_count: sample.process_count,
+            running: sample.running,
+            waiting: sample.waiting,
+            scheduler_load,
+            total_memory_bytes: sample.total_memory_bytes,
             spawned_total: self.spawned.get(),
             finished_total: self.finished.get(),
             messages_total: self.messages.get(),
-            processes: detail,
+            processes,
         }
     }
 }
@@ -112,15 +119,31 @@ impl Observer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::ProcessStatus;
 
-    fn proc(id: u64, status: ProcessStatus, memory_bytes: u64) -> ProcessInfo {
+    fn proc(id: u64) -> ProcessInfo {
         ProcessInfo {
             id,
             name: None,
-            status,
+            status: ProcessStatus::Running,
             mailbox_depth: 0,
-            memory_bytes,
+            memory_bytes: 1024,
             reductions: 0,
+        }
+    }
+
+    fn sample<'a>(
+        process_count: usize,
+        processes: &'a [ProcessInfo],
+        scheduler_load: &'a [f32],
+    ) -> NodeSample<'a> {
+        NodeSample {
+            process_count,
+            running: process_count,
+            waiting: 0,
+            total_memory_bytes: process_count as u64 * 1024,
+            scheduler_load,
+            processes,
         }
     }
 
@@ -142,47 +165,53 @@ mod tests {
         obs.record_finish();
         obs.record_message();
         obs.record_messages(4);
-        let snap = obs.snapshot(0, &[], &[]);
+        let snap = obs.snapshot(0, sample(0, &[], &[]));
         assert_eq!(snap.spawned_total, 2);
         assert_eq!(snap.finished_total, 1);
         assert_eq!(snap.messages_total, 5);
     }
 
     #[test]
-    fn snapshot_aggregates_status_and_memory() {
-        let obs = Observer::new(2, 10);
-        let procs = [
-            proc(1, ProcessStatus::Running, 100),
-            proc(2, ProcessStatus::Running, 200),
-            proc(3, ProcessStatus::Waiting, 50),
-            proc(4, ProcessStatus::Sleeping, 25),
-        ];
-        let snap = obs.snapshot(1234, &procs, &[0.5, 0.25]);
+    fn aggregates_are_authoritative_totals_not_the_sample_size() {
+        // The regression guard: a 5000-process node samples only a few rows for
+        // the table, but must still report the real total of 5000.
+        let obs = Observer::new(2, 64);
+        let rows: Vec<_> = (0..10).map(proc).collect();
+        let snap = obs.snapshot(
+            1234,
+            NodeSample {
+                process_count: 5000,
+                running: 4000,
+                waiting: 600,
+                total_memory_bytes: 5000 * 512_000,
+                scheduler_load: &[0.5, 0.25],
+                processes: &rows,
+            },
+        );
         assert_eq!(snap.uptime_ms, 1234);
-        assert_eq!(snap.process_count, 4);
-        assert_eq!(snap.running, 2);
-        assert_eq!(snap.waiting, 1);
-        assert_eq!(snap.total_memory_bytes, 375);
-        assert_eq!(snap.processes.len(), 4);
+        assert_eq!(snap.process_count, 5000);
+        assert_eq!(snap.running, 4000);
+        assert_eq!(snap.waiting, 600);
+        assert_eq!(snap.total_memory_bytes, 5000 * 512_000);
+        assert_eq!(snap.processes.len(), 10); // the sample, not the total
     }
 
     #[test]
-    fn disabling_detail_drops_the_process_table_only() {
+    fn disabling_detail_drops_the_table_only() {
         let obs = Observer::new(1, 10);
-        let procs = [proc(1, ProcessStatus::Running, 100)];
+        let rows = [proc(1)];
         obs.set_detail_enabled(false);
-        let snap = obs.snapshot(0, &procs, &[]);
+        let snap = obs.snapshot(0, sample(5000, &rows, &[]));
         // Aggregates remain; only the per-instance table is suppressed.
-        assert_eq!(snap.process_count, 1);
-        assert_eq!(snap.running, 1);
+        assert_eq!(snap.process_count, 5000);
         assert!(snap.processes.is_empty());
     }
 
     #[test]
     fn detail_table_is_capped_at_max_detail() {
         let obs = Observer::new(1, 2);
-        let procs: Vec<_> = (0..5).map(|i| proc(i, ProcessStatus::Running, 1)).collect();
-        let snap = obs.snapshot(0, &procs, &[]);
+        let rows: Vec<_> = (0..5).map(proc).collect();
+        let snap = obs.snapshot(0, sample(5, &rows, &[]));
         assert_eq!(snap.process_count, 5);
         assert_eq!(snap.processes.len(), 2);
     }
@@ -192,12 +221,13 @@ mod tests {
         let obs = Observer::new(3, 10);
         // Too few entries are padded with zeroes.
         assert_eq!(
-            obs.snapshot(0, &[], &[0.9]).scheduler_load,
+            obs.snapshot(0, sample(0, &[], &[0.9])).scheduler_load,
             vec![0.9, 0.0, 0.0]
         );
         // Too many are truncated.
         assert_eq!(
-            obs.snapshot(0, &[], &[0.1, 0.2, 0.3, 0.4]).scheduler_load,
+            obs.snapshot(0, sample(0, &[], &[0.1, 0.2, 0.3, 0.4]))
+                .scheduler_load,
             vec![0.1, 0.2, 0.3]
         );
     }
@@ -206,8 +236,8 @@ mod tests {
     fn snapshot_round_trips_through_json() {
         let obs = Observer::new(2, 10);
         obs.record_spawn();
-        let procs = [proc(1, ProcessStatus::Crashed, 10)];
-        let snap = obs.snapshot(7, &procs, &[1.0, 0.0]);
+        let rows = [proc(1)];
+        let snap = obs.snapshot(7, sample(1, &rows, &[1.0, 0.0]));
         let json = serde_json::to_string(&snap).unwrap();
         let back: ObserverSnapshot = serde_json::from_str(&json).unwrap();
         assert_eq!(snap, back);

@@ -5,5 +5,5 @@
 mod observer;
 mod types;
 
-pub use observer::Observer;
+pub use observer::{NodeSample, Observer};
 pub use types::{ObserverSnapshot, ProcessInfo, ProcessStatus};

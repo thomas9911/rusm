@@ -47,8 +47,8 @@ connected. scenarios:
   connection-storm     Connection storm (300k/s proof)
   distributed-fanout   Distributed fan-out
 run connection-storm
-[connection-storm]       324559 ops/s  peak    4552  p50     284µs  p99     498µs  procs 64
-[connection-storm]       332552 ops/s  peak    4552  p50     275µs  p99     497µs  procs 64
+[connection-storm]       324559 ops/s  peak    4552  p50     284µs  p99     498µs  procs 4552
+[connection-storm]       332552 ops/s  peak    4552  p50     275µs  p99     497µs  procs 2276
 stop
 quit
 ```

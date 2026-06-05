@@ -1,5 +1,5 @@
 use rusm_metrics::{LatencyHistogram, TimeSeries};
-use rusm_observer::Observer;
+use rusm_observer::{NodeSample, Observer};
 
 use crate::protocol::Frame;
 use crate::scenario::Scenario;
@@ -93,6 +93,14 @@ impl Runner {
 
     pub fn tick(&mut self, uptime_ms: u64) -> Frame {
         let Some(state) = self.run.as_mut() else {
+            let idle = NodeSample {
+                process_count: 0,
+                running: 0,
+                waiting: 0,
+                total_memory_bytes: 0,
+                scheduler_load: &[],
+                processes: &[],
+            };
             return Frame {
                 scenario: None,
                 running: false,
@@ -101,7 +109,7 @@ impl Runner {
                 peak_concurrent: 0,
                 latency: self.latency.snapshot(),
                 throughput: self.throughput.snapshot(),
-                observer: self.observer.snapshot(uptime_ms, &[], &[]),
+                observer: self.observer.snapshot(uptime_ms, idle),
             };
         };
 
@@ -112,7 +120,7 @@ impl Runner {
             self.config.scheduler_count,
         );
         state.tick += 1;
-        state.peak_concurrent = state.peak_concurrent.max(t.peak_concurrent);
+        state.peak_concurrent = state.peak_concurrent.max(t.process_count);
         let scenario = state.source.scenario();
         let peak_concurrent = state.peak_concurrent;
 
@@ -124,6 +132,15 @@ impl Runner {
         let ops_this_tick = (t.ops_per_sec / self.config.ticks_per_second as f64) as u64;
         self.observer.record_messages(ops_this_tick);
 
+        let sample = NodeSample {
+            process_count: t.process_count as usize,
+            running: t.running as usize,
+            waiting: t.waiting as usize,
+            total_memory_bytes: t.total_memory_bytes,
+            scheduler_load: &t.scheduler_load,
+            processes: &t.processes,
+        };
+
         Frame {
             scenario: Some(scenario.id().to_string()),
             running: true,
@@ -132,9 +149,7 @@ impl Runner {
             peak_concurrent,
             latency: self.latency.snapshot(),
             throughput: self.throughput.snapshot(),
-            observer: self
-                .observer
-                .snapshot(uptime_ms, &t.processes, &t.scheduler_load),
+            observer: self.observer.snapshot(uptime_ms, sample),
         }
     }
 }

@@ -46,7 +46,9 @@ test('setConnected toggles connection without touching the rest', () => {
 test('hello populates the scenario menu', () => {
   const s = applyMessage(initialState(), {
     type: 'hello',
-    scenarios: [{ id: 'ping-pong', label: 'Ping', description: 'd', real_after_phase: 5 }],
+    scenarios: [
+      { id: 'ping-pong', label: 'Ping', description: 'd', details: ['x'], real_after_phase: 5 },
+    ],
   });
   expect(s.scenarios).toHaveLength(1);
 });
