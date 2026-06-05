@@ -25,6 +25,10 @@ export default defineConfig({
         ],
       },
       {
+        text: 'Reference',
+        items: [{ text: 'RUSM vs Lunatic', link: '/lunatic-comparison' }],
+      },
+      {
         text: 'Phases',
         items: [{ text: 'Phase 0 — Foundation', link: '/phases/phase-00-foundation' }],
       },

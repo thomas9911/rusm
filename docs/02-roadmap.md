@@ -26,4 +26,6 @@ data to real measurements.
 - Runnable examples; this docs set + the VitePress site.
 - TDD throughout; coverage ≥98% (mostly 100%); `cargo fmt` + Prettier clean.
 
-See the per-phase deep dives under [`phases/`](./phases/phase-00-foundation.md).
+See the per-phase deep dives under [`phases/`](./phases/phase-00-foundation.md), and
+the [RUSM vs Lunatic comparison](./lunatic-comparison.md) for the per-phase
+"borrow vs beat" efficiency playbook we update as each gap closes.
