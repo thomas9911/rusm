@@ -43,28 +43,31 @@ RUSM as *planned (Phase N)*. The value is in the **efficiency playbook** below.
 
 ✅ implemented · ⚠️ partial/synthetic · ❌ not yet · 🅛 Lunatic-only · 🅡 RUSM-only
 
-Foundation-first order: the actor model (native bodies) comes first; Wasmtime is
-the backend at Phase 6.
+This mirrors the [roadmap](./02-roadmap.md) **phase-for-phase** — one row per
+phase, same themes, same order.
 
-| Area | RUSM | Lunatic | RUSM phase |
-| --- | :---: | :---: | --- |
-| Process core (task + mailbox + signal loop) | ⚠️ synthetic | ✅ `WasmProcess` | 1 |
-| Scheduler (Tokio M:N) | ⚠️ server only | ✅ | 1 |
-| Message passing + mailboxes | ❌ | ✅ selective-receive | 2 |
-| Links / monitors / supervision | ❌ | ✅ `Signal` enum | 3 |
-| Fault tolerance | ❌ | ✅ | 3 (task) / 7 (memory) |
-| Process management (registry, timers, lifecycle) | ❌ | ✅ | 4 |
-| TCP / UDP / DNS / TLS | ⚠️ WS (dashboard) | ✅ | 5 |
-| Wasm engine + process = real instance | ❌ | ✅ | 6 |
-| Preemption | ❌ → epoch | ✅ **fuel** | 6 |
-| WASI + per-process sandbox | ❌ | ✅ | 7 |
-| Guest crate | ❌ → `rusm-rs` | 🅛 `lunatic-rs` (separate repo) | 8 |
-| Distributed (QUIC) + control plane | ❌ | ✅ (Axum + Submillisecond) | 9 |
-| SQLite host API | ❌ | 🅛 | — |
-| HdrHistogram metrics | 🅡 ✅✅ | ⚠️ passthrough facade | done |
-| Live observer + REPL attach | 🅡 ✅✅ | ❌ | done |
-| Web dashboard | 🅡 ✅✅ | ❌ | done |
-| Enforced coverage / heavy docs | 🅡 ✅✅ | ❌ | ongoing |
+| Phase | Capability | RUSM | Lunatic |
+| --- | --- | :---: | --- |
+| 1 ✅ | Process & scheduler core | ✅ done (`rusm-otp`) | ✅ `WasmProcess` |
+| 2 | Mailboxes & message passing | ❌ | ✅ selective-receive |
+| 3 | Links, monitors, supervision, fault tolerance | ❌ | ✅ `Signal` enum |
+| 4 | Process management (registry, timers, lifecycle) | ❌ | ✅ |
+| 5 | Connectivity — TCP/TLS | ⚠️ WS (dashboard) | ✅ TCP/UDP/DNS/TLS |
+| 6 | Wasmtime backend (instance-per-process, preemption) | ❌ → epoch | ✅ (fuel) |
+| 7 | WASI + per-process sandbox | ❌ | ✅ |
+| 8 | Guest crate | ❌ → `rusm-rs` | 🅛 `lunatic-rs` (separate repo) |
+| 9 | Distributed clusters + live attach | ❌ | ✅ (Axum + Submillisecond) |
+| 10 | Performance (pooling + CoW + epoch) | ❌ | ⚠️ OnDemand + fuel |
+| — | SQLite host API | ❌ | 🅛 |
+
+Already shipped in Phase 0 — where RUSM already leads Lunatic:
+
+| Capability | RUSM | Lunatic |
+| --- | :---: | :---: |
+| HdrHistogram latency metrics | ✅✅ | ⚠️ passthrough facade |
+| Live observer + REPL attach | ✅✅ | ❌ |
+| Web dashboard | ✅✅ | ❌ |
+| Enforced ≥98% coverage + docs site | ✅✅ | ❌ |
 
 ---
 
