@@ -86,7 +86,7 @@ own.)
 | --- | --- | --- |
 | Biased `tokio::select!` loop, signals before the body — `lunatic-process/src/lib.rs` | deterministic signal priority, no starvation, cancellation-safe | **Adopted** (`rusm-otp`) |
 | Single `Signal` enum over one mpsc channel — `lunatic-process/src/lib.rs` | one channel for messages *and* control — uniform | **Adopted** |
-| `HashMapId<T>` id→resource table — `crates/hash-map-id` | one uniform O(1) resource table everywhere | Adopt as the resource-table primitive |
+| `HashMapId<T>` id→resource table — `crates/hash-map-id` | one uniform resource table everywhere | Adopt the *pattern*; **beat:** a slotmap / generational-index arena (array-indexed, no hashing, safe id reuse) instead of `HashMap<u64,T>` |
 | Unbounded signal mailbox (`UnboundedSender`) — `lunatic-process/src/lib.rs` | Erlang-style, but unbounded → flood/memory risk | **Beat (stability):** bounded + observable mailbox depth |
 
 ## Phase 2 — Mailboxes & message passing
@@ -96,6 +96,9 @@ own.)
 | `DataMessage{buffer, resources: Vec<Arc<Resource>>}` — resources moved by `Arc`, only bytes copied — `message.rs:68-103` | zero-copy handoff of sockets/modules | Adopt |
 | Resources by index; `push_*`/`take_*` re-register on receive — `lunatic-messaging-api/src/lib.rs` | no serializing live handles; O(1) transfer | Adopt |
 | Cancellation-safe selective receive by tag (waker + found-on-cancel re-queue) — `mailbox.rs:39-169` | safe in `select!`, no lost messages | Adopt (own code + tests) |
+| Address peers via held `Arc<dyn Process>` handles — no global-table lookup on `send` — `lunatic-process/src/lib.rs` | the send hot path never locks a global table | **Adopt** handle addressing; keep the process table for observability/enumeration only (our current `Mutex<HashMap>` must not be on the send path) |
+| ⚠️ Data messages share the single `Signal` mpsc with control | a message flood can delay `Kill`/`Link` handling (FIFO within one channel) | **Beat:** a separate high-priority control channel; messages on their own queue, control biased-first |
+| ⚠️ Two queues per message (signal mpsc → `Mutex<VecDeque>`) + a `Vec<u8>` per message | double handoff + an allocation per message | **Beat:** collapse toward one queue; inline small messages (smallvec) and pool buffers |
 
 ## Phase 3 — Links, supervision, fault tolerance
 
@@ -150,7 +153,7 @@ predates easy access to them — the dashboard is built to *prove* the delta.
 | --- | --- | --- |
 | One persistent QUIC conn/node + N-stream pool (`NodeConnectionManager`) — `congestion/mod.rs:174` | 1 TLS handshake/node, multiplexed | Adopt |
 | Deterministic stream routing `((src ^ dest) % streams)` — `congestion/mod.rs:244` | in-order per process-pair, no head-of-line block | Adopt |
-| Message chunking + `try_send` backpressure — `congestion/mod.rs:69,99` | streams large messages; bounded memory | Adopt; **beat:** adaptive chunk size (RTT/bandwidth-aware) |
+| ⚠️ Custom 1 KiB chunking + a congestion-control worker, *on top of QUIC* — `congestion/mod.rs:69,99` | QUIC already gives reliable ordered streams with per-stream + connection **flow control and congestion control** — re-implementing it is redundant complexity | **Reconsider:** length-prefixed framing over QUIC streams and let QUIC apply backpressure; add app-level chunking only if profiling shows real head-of-line / fairness issues |
 | Atomic message IDs + `DashMap` response cache + `AsyncCell` — `distributed/client.rs:85,93` | lock-free RPC hot path; sharded reads | Adopt |
 | `rmp-serde` (MessagePack) wire format — `distributed/Cargo.toml` | compact + fast vs JSON | Adopt (or `bincode`/`postcard`; benchmark) |
 | Cert-embedded authz (X.509 ext, OID 2.5.29.9) + 100 ms keep-alive — `quic/quin.rs:61,145` | auth at handshake, NAT traversal | Adopt |
@@ -179,16 +182,32 @@ the dashboard**, not yet achieved.
 | Stability under flood | unbounded mailbox | **bounded + observable** | depth limits + live observer (1) |
 | Observability | metrics facade | **first-class** | HdrHistogram + observer + REPL (Phase 0, shipped) |
 
-## Pitfalls in Lunatic to avoid
+## Critical review — where Lunatic looks improvable
 
-Dated or suboptimal choices — don't inherit these:
+Being honest about the source we admire: beyond version-currency, several *design*
+choices look improvable. Each is an opportunity to **evaluate with its trade-off**,
+not a settled verdict — and several only matter at scale.
 
-- **Wasmtime 8** and **quinn 0.10** — well behind current; upgrading buys CoW, pooling, flow-control.
-- **OnDemand allocation** + **fuel** — leave spawn/memory/scheduling wins on the table.
-- **`Mutex` on read-heavy timeout fields** — should be `RwLock`.
-- **Fixed 1 KiB chunk size** and **5 s HTTP polling** discovery — should adapt / push.
-- **No TLS session resumption** — full handshake on reconnect.
-- **Unbounded signal mailbox** — memory-growth risk under flood.
+| Lunatic choice | The critique | Better opportunity (phase) |
+| --- | --- | --- |
+| Custom chunking + congestion worker over QUIC | re-implements flow/congestion control QUIC already provides — extra code + overhead | length-prefixed framing over QUIC streams; let QUIC do backpressure (9) |
+| Messages + control share one `Signal` mpsc | control (`Kill`/`Link`) can sit behind a data-message flood | separate high-priority control channel (2) |
+| Resource tables are `HashMap<u64,T>` | hashing + pointer-chasing per access; ids never reused | slotmap / generational arena — array-indexed, cache-friendly, id reuse (1) |
+| Two queues + a `Vec<u8>` per message | double handoff + per-message allocation | one queue; inline small messages + buffer pool (2) |
+| `rmp-serde` for intra-cluster RPC | schemaless format on a both-ends-RUSM link leaves speed on the table | zero-copy / codegen format (`postcard`, `rkyv`) for the internal wire (9) |
+| stdout capture = `Arc<RwLock<Vec<Mutex<Cursor>>>>` | nested locks — complexity & contention smell | per-process ring buffer, or a single writer task fed by a channel (7) |
+| `Arc<dyn Process>` dynamic dispatch on the hot path | vtable indirection where the process kind is known | concrete/enum process type; reserve `dyn` for remote proxies (1–2) |
+
+### Dated / version pitfalls (don't inherit)
+
+- **Wasmtime 8** + **quinn 0.10** — well behind current; upgrading buys CoW, pooling, flow-control.
+- **OnDemand allocation** + **fuel** preemption — leave spawn / memory / scheduling wins on the table.
+- **`Mutex` on read-heavy timeout fields** → `RwLock`. **Fixed 1 KiB chunks** + **5 s HTTP polling** → adaptive / push.
+- **No TLS session resumption**; **unbounded signal mailbox** (flood risk).
+
+> Caveat (intellectual honesty): Lunatic is battle-tested and shipped; some of
+> these are deliberate simplicity/portability trade-offs, and a few "wins" only
+> show up at high scale. We validate each on the dashboard before claiming it.
 
 # Maintaining this document
 
