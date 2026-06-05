@@ -295,6 +295,15 @@ body {
   font-size: 12px;
   color: var(--muted);
 }
+.observer-note {
+  margin: 8px 0 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+.observer-note strong {
+  color: var(--text);
+}
 .schedulers {
   display: flex;
   gap: 4px;

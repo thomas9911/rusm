@@ -21,6 +21,10 @@ export function ObserverPanel({ observer, detail, onToggleDetail }: ObserverPane
           per-instance detail
         </label>
       </header>
+      <p className="observer-note">
+        A process is a lightweight <strong>in-host</strong> actor — one isolated Wasm instance, not
+        an OS process. Tens of thousands run over a handful of OS threads (the schedulers below).
+      </p>
 
       <div className="schedulers">
         {(observer?.scheduler_load ?? []).map((load, i) => (

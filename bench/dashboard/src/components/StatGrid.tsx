@@ -5,7 +5,7 @@ interface StatGridProps {
   frame: Frame | null;
 }
 
-type Hint = 'higher is better' | 'lower is better' | 'live count';
+type Hint = 'higher is better' | 'lower is better' | 'in-host, not OS';
 
 function Stat({
   label,
@@ -54,7 +54,11 @@ export function StatGrid({ frame }: StatGridProps) {
         value={frame ? formatDuration(frame.latency.p99_ns) : '—'}
         hint="lower is better"
       />
-      <Stat label="processes" value={o ? formatCount(o.process_count) : '—'} hint="live count" />
+      <Stat
+        label="processes"
+        value={o ? formatCount(o.process_count) : '—'}
+        hint="in-host, not OS"
+      />
       <Stat
         label="memory"
         value={o ? formatBytes(o.total_memory_bytes) : '—'}
