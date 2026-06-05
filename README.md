@@ -50,23 +50,25 @@ cargo build
 
 ## Quick start
 
-Start a node and open the dashboard:
+**See it in action — one command:**
 
 ```sh
-# 1. Start a RUSM node (serves the control/observer channel)
-cargo run -p rusm-cli -- node start
-
-# 2. In another terminal, run the benchmark + observer dashboard
-cd bench/dashboard
-bun install
-bun run dev          # open the printed URL
-
-# 3. Or hook into the running node from the terminal (REPL, like iex --remsh)
-cargo run -p rusm-cli -- attach          # defaults to the local node; or pass host[:port]
+make dashboard
 ```
 
-In the dashboard, pick a scenario from the menu and press **Run** to watch live
-latency, throughput, and connection graphs, plus the host/instance observer.
+That builds the CLI, starts a node, launches the dashboard, and opens your
+browser. Pick a scenario from the menu, press **Run**, and watch live throughput,
+latency percentiles, and the host/instance observer.
+
+Prefer to drive the pieces yourself? (`make help` lists everything)
+
+```sh
+make node       # start a node on ws://127.0.0.1:4000
+make ui         # the dashboard only, in another terminal
+make attach     # a live REPL into the node (like iex --remsh)
+make run        # run a scenario in the terminal (SCENARIO=… SECONDS=…)
+make example    # run an example app (EX=headless_run)
+```
 
 ## Running tests
 
