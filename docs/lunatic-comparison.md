@@ -27,7 +27,8 @@ show RUSM as *planned (Phase N)*. The value is in the **efficiency playbook** be
 > not achievements. The actor model is built first (Phases 1–5, native bodies);
 > the lightweight-process *efficiency* race begins when Wasmtime becomes the
 > backend at **Phase 6**, where the levers meant to beat Lunatic kick in: pooling
-> allocation, copy-on-write memory init, and epoch preemption (see §2 and §1).
+> allocation, copy-on-write memory init, and epoch preemption (see Phase 6 in the
+> playbook below).
 
 ## Snapshot
 
@@ -72,107 +73,122 @@ Already shipped in Phase 0 — where RUSM already leads Lunatic:
 
 ---
 
-# Efficiency playbook — borrow vs beat
+# Efficiency playbook — phase by phase
 
-For each dimension: **what Lunatic does** (with evidence), the **efficiency note**,
-and **RUSM's plan** — adopt the good ideas, modernize the dated ones.
+Same order as the roadmap and the matrix above. For each phase: the smart Lunatic
+techniques to **borrow** (with file evidence in `~/Sources/lunatic`), why they
+help, and where RUSM **beats** them. (Borrow ≠ copy — understand, then write our
+own.)
 
-## 1. Concurrency & scheduling
+## Phase 1 — Process & scheduler core ✅
 
-| Lunatic technique | Evidence | Efficiency note | RUSM plan |
-| --- | --- | --- | --- |
-| One `tokio::select!` loop per process, **`biased`** — signals checked before advancing the Wasm future | `lunatic-process/src/lib.rs` (exec loop) | Deterministic signal priority; no starvation; cancellation-safe | **Adopt.** Same biased signal-vs-run loop. |
-| Process interaction only via a single **`Signal`** enum (Message/Link/Monitor/Kill/…) over an mpsc `signal_mailbox` | `lunatic-process/src/lib.rs` | One channel handles messages *and* control — simple, uniform | **Adopt** the unified signal channel. |
-| Preemption via **Wasmtime fuel** (`consume_fuel`, `out_of_fuel_async_yield`, 100k-instruction units) | `runtimes/wasmtime.rs:166,56` | Works, but fuel **injects per-unit accounting into compiled code** — steady-state overhead | **Beat: use epoch interruption.** A periodically-bumped atomic checked at backedges ≈ near-zero overhead. Validate fuel-vs-epoch on the dashboard (Phase 6). |
-| Unbounded signal mailbox (`UnboundedSender<Signal>`) | `lunatic-process/src/lib.rs` | Erlang-style, but unbounded → memory-growth/stability risk under flood | **Beat (stability): observable + optionally bounded** mailboxes, with depth surfaced in the observer (already modeled). |
+| Borrow from Lunatic | Why it helps | RUSM plan |
+| --- | --- | --- |
+| Biased `tokio::select!` loop, signals before the body — `lunatic-process/src/lib.rs` | deterministic signal priority, no starvation, cancellation-safe | **Adopted** (`rusm-otp`) |
+| Single `Signal` enum over one mpsc channel — `lunatic-process/src/lib.rs` | one channel for messages *and* control — uniform | **Adopted** |
+| `HashMapId<T>` id→resource table — `crates/hash-map-id` | one uniform O(1) resource table everywhere | Adopt as the resource-table primitive |
+| Unbounded signal mailbox (`UnboundedSender`) — `lunatic-process/src/lib.rs` | Erlang-style, but unbounded → flood/memory risk | **Beat (stability):** bounded + observable mailbox depth |
 
-## 2. Memory footprint & spawn cost  ← biggest superiority opportunity
+## Phase 2 — Mailboxes & message passing
 
-| Lunatic technique | Evidence | Efficiency note | RUSM plan |
-| --- | --- | --- | --- |
-| **`InstancePre`** — imports type-checked once at compile, reused for every spawn | `runtimes/wasmtime.rs:34,63` | Avoids re-resolving the linker per spawn → fast instantiation | **Adopt** (essential for spawn throughput). |
-| Compiled `Module` shared via `Arc` across all instances | `runtimes/wasmtime.rs:72-94` | Compile once, instantiate many | **Adopt.** |
-| **`InstanceAllocationStrategy::OnDemand`** (explicitly chosen: "can't predict how many processes") | `runtimes/wasmtime.rs:173` | Allocates each instance's memory fresh → slower spawn, higher per-process cost | **Beat: pooling allocator.** Modern Wasmtime `PoolingAllocationConfig` pre-allocates instance/memory slots → near-allocation-free spawns + bounded RSS. Size a generous pool; fall back to on-demand past it. |
-| `static_memory_forced(true)` on Wasmtime 8 | `runtimes/wasmtime.rs:175` | Static memories + guard pages; no CoW guarantees on v8 | **Beat: copy-on-write memory init** (`memory_init_cow`, default-on in modern Wasmtime). New instances map the module's initial image CoW → spawn cost ≈ a few syscalls, shared read-only pages → tiny incremental memory. |
-| `cranelift_opt_level(SpeedAndSize)` | `runtimes/wasmtime.rs:171` | Good default | **Adopt.** |
+| Borrow from Lunatic | Why it helps | RUSM plan |
+| --- | --- | --- |
+| `DataMessage{buffer, resources: Vec<Arc<Resource>>}` — resources moved by `Arc`, only bytes copied — `message.rs:68-103` | zero-copy handoff of sockets/modules | Adopt |
+| Resources by index; `push_*`/`take_*` re-register on receive — `lunatic-messaging-api/src/lib.rs` | no serializing live handles; O(1) transfer | Adopt |
+| Cancellation-safe selective receive by tag (waker + found-on-cancel re-queue) — `mailbox.rs:39-169` | safe in `select!`, no lost messages | Adopt (own code + tests) |
 
-**Why this is the win:** pooling + CoW is exactly what makes "300k spawns/s with a
-small footprint" realistic. Lunatic predates easy access to both. The benchmark
-dashboard is built to *prove* the delta (spawn storm scenario, memory/process).
+## Phase 3 — Links, supervision, fault tolerance
 
-## 3. Messaging
+| Borrow from Lunatic | Why it helps | RUSM plan |
+| --- | --- | --- |
+| `Signal::{Link,Monitor,LinkDied}` + `die_when_link_dies` — `lunatic-process/src/lib.rs` | unified, configurable supervision | Adopt |
+| trap → `ResultValue::Failed` → `LinkDied` propagation — `runtimes/wasmtime.rs` | a crash notifies linked peers | Adopt — task-panic isolation now, trap-level at Phase 7 |
 
-| Lunatic technique | Evidence | Efficiency note | RUSM plan |
-| --- | --- | --- | --- |
-| **Resources moved by `Arc`, only the byte buffer is copied** (`DataMessage{buffer, resources: Vec<Option<Arc<Resource>>>}`) | `lunatic-process/src/message.rs:68-103` | Zero-copy handoff of sockets/modules between processes | **Adopt.** |
-| Resources referenced by **index in the buffer**; `push_*`/`take_*` re-register on receive | `lunatic-messaging-api/src/lib.rs` | No serialization of live handles; O(1) transfer | **Adopt.** |
-| `DataMessage` impls `Read`/`Write`; guest fills the buffer in place | `message.rs:64-95` | Avoids intermediate copies | **Adopt.** |
-| **Cancellation-safe selective receive** by tag (waker + "found-on-cancel re-queue") | `lunatic-process/src/mailbox.rs:39-169` | Safe inside `tokio::select!`; selective receive without losing messages | **Adopt** — the mailbox design is excellent; mirror its semantics, with our own code + tests. |
+## Phase 4 — Process management
 
-## 4. Connectivity (networking + distributed)
+| Borrow from Lunatic | Why it helps | RUSM plan |
+| --- | --- | --- |
+| Named registry `Arc<RwLock<HashMap>>` — `lunatic-registry-api` | async-safe name → pid | Adopt |
+| Timers: `BinaryHeap` + `HashMapId` (O(log n) cancel) — `lunatic-timer-api` | cheap cancellation of many timers | Adopt, built on `tokio::time` |
 
-| Lunatic technique | Evidence | Efficiency note | RUSM plan |
-| --- | --- | --- | --- |
-| **One persistent QUIC connection per node** + pool of N unidirectional streams (`NodeConnectionManager`) | `lunatic-distributed/src/congestion/mod.rs:174` | 1 TLS handshake/node, not per message | **Adopt.** |
-| **Deterministic stream routing** `((src ^ dest) % streams)` | `congestion/mod.rs:244` | In-order per process-pair, multiplexed across streams → no head-of-line block | **Adopt.** |
-| **Message chunking** (1 KiB) + `try_send` backpressure | `congestion/mod.rs:69,99` | Streams large messages; bounded memory under slow receivers | **Adopt; beat: adaptive chunk size** (RTT/bandwidth-aware) instead of fixed 1 KiB. |
-| Lock-free **atomic message IDs** + `DashMap` response cache + `AsyncCell` | `distributed/client.rs:85,93` | No mutex on the RPC hot path; sharded reads | **Adopt.** |
-| **MessagePack** (`rmp-serde`) wire format | `distributed/Cargo.toml` | Compact + fast vs JSON | **Adopt** (or `bincode`/`postcard`; benchmark). |
-| TCP **owned read/write halves** + per-half locks + per-connection timeouts, stored in `HashMapId` | `lunatic-networking-api/src/lib.rs:71` | Concurrent reader+writer without locking the stream | **Adopt; beat: `RwLock` for the read-heavy timeout fields** (Lunatic uses `Mutex`). |
-| TLS via `tokio-rustls` + `webpki-roots`, `Arc`-shared `ServerConfig` | `tls_tcp.rs:392` | Config reuse amortizes setup | **Adopt; beat: TLS session resumption** caching per node. |
-| QUIC keep-alive 100 ms; **authz embedded in X.509 cert extension** (OID 2.5.29.9) | `quic/quin.rs:145,61` | NAT traversal; auth at handshake, not RPC time | **Adopt** the cert-carried permissions idea. |
-| Node discovery via **5 s HTTP polling** refresh task | `control/client.rs:287` | Simple, but laggy for fast scaling | **Beat: push-based** (stream/gossip) discovery; pre-warm connections on join. |
+## Phase 5 — Connectivity (TCP/TLS)
 
-## 5. Management & resource model
+| Borrow from Lunatic | Why it helps | RUSM plan |
+| --- | --- | --- |
+| TCP owned read/write halves + per-conn timeouts in `HashMapId` — `lunatic-networking-api/src/lib.rs:71` | concurrent reader+writer without locking the stream | Adopt; **beat:** `RwLock` for the read-heavy timeout fields (Lunatic uses `Mutex`) |
+| TLS via `tokio-rustls` + `webpki-roots`, Arc'd `ServerConfig` — `tls_tcp.rs:392` | config reuse amortizes setup | Adopt; **beat:** TLS session resumption per node |
 
-| Lunatic technique | Evidence | Efficiency note | RUSM plan |
-| --- | --- | --- | --- |
-| **`HashMapId<T>`** — `HashMap<u64, T>` + incrementing seed for every resource (sockets, timers, errors, …) | `crates/hash-map-id/src/lib.rs` | One simple, uniform id→resource table everywhere | **Adopt** as the core resource-table primitive. |
-| `DashMap` for concurrent cluster/connection state | `distributed/client.rs:87-93` | Sharded locking scales with cores | **Adopt** where contention is real. |
-| Named **registry** via `Arc<RwLock<HashMap>>`; **timers** via `BinaryHeap` + `HashMapId` (O(log n) cancel) | `lunatic-registry-api`, `lunatic-timer-api` | Async-safe, cheap cancellation | **Adopt.** |
-| Per-process **stdout capture** as a `WasiFile` | `lunatic-stdout-capture` | Isolated, inspectable output | **Adopt** (feeds naturally into our observer/attach). |
-| Live introspection | — | ❌ none in Lunatic | **RUSM already wins:** live observer + `rusm attach` REPL + dashboard. Keep extending. |
+## Phase 6 — Wasmtime backend  ← the biggest efficiency win
+
+| Borrow from Lunatic | Why it helps | RUSM plan |
+| --- | --- | --- |
+| `InstancePre` (imports type-checked once) + Arc'd `Module` + `async_support` — `runtimes/wasmtime.rs:34,63,163` | fast instantiation, compile-once | Adopt |
+| `InstanceAllocationStrategy::OnDemand` — `runtimes/wasmtime.rs:173` | fresh memory per instance → slower, heavier spawn | **Beat: pooling allocator** — pre-allocated slots → near-allocation-free spawns + bounded RSS |
+| `static_memory_forced(true)` on v8 (no CoW) — `runtimes/wasmtime.rs:175` | static memories, but no copy-on-write | **Beat: copy-on-write init** (`memory_init_cow`) → spawn ≈ a few syscalls, shared pages, tiny incremental memory |
+| Preemption via **fuel** (`consume_fuel`, `out_of_fuel_async_yield`) — `runtimes/wasmtime.rs:166,56` | works, but per-unit accounting overhead | **Beat: epoch interruption** — a periodic atomic check ≈ near-zero steady-state |
+
+**Why this phase matters most:** pooling + CoW + epoch are exactly the levers for
+"300k spawns/s with a small footprint." Lunatic (Wasmtime 8, OnDemand, fuel)
+predates easy access to them — the dashboard is built to *prove* the delta.
+
+## Phase 7 — WASI + per-process sandbox
+
+| Borrow from Lunatic | Why it helps | RUSM plan |
+| --- | --- | --- |
+| WASI preopens (scoped fs), isolated per-process stdio — `lunatic-wasi-api` | fine-grained filesystem sandbox | Adopt; **beat:** finer memory/fuel limits per process |
+| stdout capture as a `WasiFile` — `lunatic-stdout-capture` | isolated, inspectable output | Adopt — feeds the observer/attach |
+
+## Phase 8 — Guest crate
+
+| Borrow from Lunatic | Why it helps | RUSM plan |
+| --- | --- | --- |
+| `lunatic-rs` API shape — spawn / `Mailbox` / `AbstractProcess` / `Supervisor` (separate repo) | a familiar, ergonomic guest API | Mirror the shape in `rusm-rs` |
+
+## Phase 9 — Distributed clusters + live attach
+
+| Borrow from Lunatic | Why it helps | RUSM plan |
+| --- | --- | --- |
+| One persistent QUIC conn/node + N-stream pool (`NodeConnectionManager`) — `congestion/mod.rs:174` | 1 TLS handshake/node, multiplexed | Adopt |
+| Deterministic stream routing `((src ^ dest) % streams)` — `congestion/mod.rs:244` | in-order per process-pair, no head-of-line block | Adopt |
+| Message chunking + `try_send` backpressure — `congestion/mod.rs:69,99` | streams large messages; bounded memory | Adopt; **beat:** adaptive chunk size (RTT/bandwidth-aware) |
+| Atomic message IDs + `DashMap` response cache + `AsyncCell` — `distributed/client.rs:85,93` | lock-free RPC hot path; sharded reads | Adopt |
+| `rmp-serde` (MessagePack) wire format — `distributed/Cargo.toml` | compact + fast vs JSON | Adopt (or `bincode`/`postcard`; benchmark) |
+| Cert-embedded authz (X.509 ext, OID 2.5.29.9) + 100 ms keep-alive — `quic/quin.rs:61,145` | auth at handshake, NAT traversal | Adopt |
+| Node discovery via 5 s HTTP polling — `control/client.rs:287` | simple, but laggy for fast scaling | **Beat:** push-based discovery + pre-warmed connections |
+
+## Phase 10 — Performance & hardening
+
+Roll up the "beat" levers and prove them: pooling + CoW + epoch toward 300k+
+spawns/sec, quinn 0.11+ with adaptive chunking, and the superiority scorecard
+below — each as a measured number on the dashboard.
 
 ---
 
-# Where RUSM intends to be *superior*
+## Superiority scorecard (recap)
 
-> Intent, to be **validated on the benchmark dashboard** — not yet achieved.
+A one-glance summary of the **beat** items above — all **targets to validate on
+the dashboard**, not yet achieved.
 
-| Dimension | Lunatic | RUSM target | Lever |
+| Dimension | Lunatic | RUSM target | Lever (phase) |
 | --- | --- | --- | --- |
-| Spawn throughput | OnDemand alloc | **higher** | pooling allocator + CoW init |
-| Memory / process | fresh memory per instance | **lower** | CoW-shared pages, pooled slots |
-| Scheduling overhead | fuel accounting | **lower** | epoch interruption |
-| Engine | Wasmtime 8 (2023) | **current** | modern Cranelift/async/CoW |
-| Connectivity | quinn 0.10, fixed 1 KiB chunks, 5 s poll | **lower latency** | quinn 0.11+, adaptive chunks, push discovery, session resumption |
-| Stability under flood | unbounded mailbox | **bounded + observable** | depth limits + live observer |
-| Observability | metrics facade | **first-class** | HdrHistogram + live observer + REPL (already shipped) |
+| Spawn throughput | OnDemand alloc | **higher** | pooling + CoW (6) |
+| Memory / process | fresh memory per instance | **lower** | CoW-shared pages, pooled slots (6) |
+| Scheduling overhead | fuel accounting | **lower** | epoch interruption (6) |
+| Engine | Wasmtime 8 (2023) | **current** | modern Cranelift/async/CoW (6) |
+| Connectivity | quinn 0.10, fixed chunks, 5 s poll | **lower latency** | quinn 0.11+, adaptive chunks, push discovery (9) |
+| Stability under flood | unbounded mailbox | **bounded + observable** | depth limits + live observer (1) |
+| Observability | metrics facade | **first-class** | HdrHistogram + observer + REPL (Phase 0, shipped) |
 
-# Dated / suboptimal in Lunatic (avoid or improve)
+## Pitfalls in Lunatic to avoid
 
-- **Wasmtime 8** and **quinn 0.10** — both well behind current; upgrade buys CoW, pooling, flow-control.
-- **OnDemand allocation** — leaves spawn/memory wins on the table.
-- **Fuel** preemption — per-unit cost vs epoch.
+Dated or suboptimal choices — don't inherit these:
+
+- **Wasmtime 8** and **quinn 0.10** — well behind current; upgrading buys CoW, pooling, flow-control.
+- **OnDemand allocation** + **fuel** — leave spawn/memory/scheduling wins on the table.
 - **`Mutex` on read-heavy timeout fields** — should be `RwLock`.
-- **Fixed 1 KiB chunk size** — should adapt to RTT/bandwidth.
-- **5 s HTTP polling** discovery — laggy; prefer push.
+- **Fixed 1 KiB chunk size** and **5 s HTTP polling** discovery — should adapt / push.
 - **No TLS session resumption** — full handshake on reconnect.
 - **Unbounded signal mailbox** — memory-growth risk under flood.
-
-# Borrow-from-Lunatic, per RUSM phase
-
-| Phase | Borrow (inspired by) | Modernize / beat |
-| --- | --- | --- |
-| 1 Process core | biased `select!` signal loop, `Signal` channel, `HashMapId` | native body first (wasm-ready) |
-| 2 Messaging | `DataMessage` Arc-resources, selective-receive mailbox | — |
-| 3 Supervision | `Signal::{Link,Monitor,LinkDied}`, `die_when_link_dies` | task-panic isolation now, trap-level at Phase 7 |
-| 4 Management | registry `RwLock`, timer `BinaryHeap` + `HashMapId` | — |
-| 5 Connectivity | owned half split, `HashMapId` resources, TLS root setup | `RwLock` timeouts, TLS session resumption |
-| 6 Wasm backend | `InstancePre`, Arc'd `Module`, `async_support` | **pooling + CoW**; **epoch** not fuel |
-| 7 Sandbox | WASI preopens, stdout capture | finer per-process limits |
-| 8 Guest crate | `lunatic-rs` API shape | — |
-| 9 Distributed | QUIC 1-conn/node + stream pool, chunking, cert-authz, `DashMap` | quinn 0.11+, adaptive chunks, push discovery |
 
 # Maintaining this document
 
