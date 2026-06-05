@@ -1,0 +1,16 @@
+[package]
+name = "rusm-observer"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Low-overhead live observer snapshots for a running RUSM node."
+
+[dependencies]
+serde = { workspace = true }
+rusm-metrics = { path = "../rusm-metrics" }
+
+[dev-dependencies]
+serde_json = { workspace = true }

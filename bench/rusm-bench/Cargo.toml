@@ -1,0 +1,36 @@
+[package]
+name = "rusm-bench"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Load harness and synthetic data source driving the RUSM benchmark dashboard."
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+rusm-metrics = { path = "../../crates/rusm-metrics" }
+rusm-observer = { path = "../../crates/rusm-observer" }
+tokio = { version = "1.52.3", features = ["rt-multi-thread", "macros", "sync", "time", "net"] }
+tokio-tungstenite = "0.29.0"
+futures-util = "0.3.32"
+
+# Runnable examples live in the repo-root `examples/<name>/` directories,
+# each with its own README.
+[[example]]
+name = "headless_run"
+path = "../../examples/headless_run/main.rs"
+
+[[example]]
+name = "embedded_node"
+path = "../../examples/embedded_node/main.rs"
+
+[[example]]
+name = "synthetic_source"
+path = "../../examples/synthetic_source/main.rs"
+
+[[example]]
+name = "observer_overhead"
+path = "../../examples/observer_overhead/main.rs"

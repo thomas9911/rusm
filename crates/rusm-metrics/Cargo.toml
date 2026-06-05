@@ -1,0 +1,16 @@
+[package]
+name = "rusm-metrics"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Latency histograms, counters, and time-series for RUSM observability."
+
+[dependencies]
+serde = { workspace = true }
+hdrhistogram = "7"
+
+[dev-dependencies]
+serde_json = { workspace = true }

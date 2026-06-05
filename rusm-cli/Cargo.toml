@@ -1,0 +1,19 @@
+[package]
+name = "rusm-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "The `rusm` command line: start a node and attach a live REPL to it."
+
+[[bin]]
+name = "rusm"
+path = "src/main.rs"
+
+[dependencies]
+rusm-bench = { path = "../bench/rusm-bench" }
+tokio = { version = "1.52.3", features = ["rt-multi-thread", "macros", "io-std", "io-util"] }
+tokio-tungstenite = "0.29.0"
+futures-util = "0.3.32"

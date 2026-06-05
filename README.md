@@ -62,7 +62,7 @@ bun install
 bun run dev          # open the printed URL
 
 # 3. Or hook into the running node from the terminal (REPL, like iex --remsh)
-cargo run -p rusm-cli -- attach ws://127.0.0.1:4000
+cargo run -p rusm-cli -- attach          # defaults to the local node; or pass host[:port]
 ```
 
 In the dashboard, pick a scenario from the menu and press **Run** to watch live
@@ -89,20 +89,44 @@ Formatting:
 
 ```sh
 cargo fmt --check
-bunx prettier --check bench/dashboard docs
+cd bench/dashboard && bunx prettier --check src
 ```
 
-## Project layout
+## Docs site
 
-| Path | What |
+The documentation under `docs/` is also a [VitePress](https://vitepress.dev) site
+(landing page, sidebar, search, dark mode):
+
+```sh
+cd docs
+bun install
+bun run dev      # live preview
+bun run build    # static site → docs/.vitepress/dist
+```
+
+## Crates
+
+RUSM is a Cargo workspace; each crate has a single job:
+
+| Crate | Kind | Purpose |
+| --- | --- | --- |
+| `rusm-metrics` | lib | Counters, HdrHistogram-backed latency percentiles, and ring-buffer time-series. |
+| `rusm-observer` | lib | Low-overhead live-observer snapshots — aggregate atomic counters plus a sampled per-instance table, with a detail on/off toggle. |
+| `rusm-bench` | lib + bin | Scenarios, the deterministic synthetic data source, the run aggregator, the wire protocol, and the WebSocket server. Binary: `rusm-bench serve` / `rusm-bench run`. |
+| `rusm-cli` | bin (`rusm`) | The `rusm` command: `node start` (run a node) and `attach <url>` (live REPL). |
+
+Not crates: the dashboard at `bench/dashboard` is a Bun/React app; docs live under `docs/`.
+
+## Examples
+
+`examples/` holds small, ready-to-run recipes — each demonstrates one capability
+(see `examples/README.md` for the exact commands):
+
+| Example | What it shows |
 | --- | --- |
-| `crates/rusm-metrics` | Counters, latency histograms, time-series |
-| `crates/rusm-observer` | Live observer snapshot model (low-overhead sampling) |
-| `bench/rusm-bench` | Load harness, scenarios, WebSocket metrics server |
-| `bench/dashboard` | React (Bun) benchmark + observer dashboard |
-| `rusm-cli` | `rusm node start`, `rusm attach` |
-| `docs/` | Documentation (markdown source + VitePress site) |
-| `examples/` | Runnable, ready-to-try examples |
+| `start-node` | Boot a node and expose its control/observer channel — the simplest entry point. |
+| `attach-repl` | Connect a REPL to a running node and drive a scenario live (like `iex --remsh`). |
+| `run-benchmark` | Run a scenario straight from the terminal and stream stats — no browser needed. |
 
 ## Acknowledgements
 

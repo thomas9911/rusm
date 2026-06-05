@@ -1,0 +1,6 @@
+[test]
+coverage = true
+# Presentational React components (.tsx) are thin glue over the tested pure
+# modules below; the coverage gate targets the logic.
+coverageThreshold = 0.98
+coverageSkipTestFiles = true

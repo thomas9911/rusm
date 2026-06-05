@@ -1,0 +1,81 @@
+import { expect, test } from 'bun:test';
+import { applyMessage, HISTORY_LIMIT, initialState, setConnected } from './state';
+import type { Frame, ServerMessage } from './types';
+
+function frame(overrides: Partial<Frame> = {}): Frame {
+  return {
+    scenario: 'connection-storm',
+    running: true,
+    uptime_ms: 0,
+    ops_per_sec: 1000,
+    peak_concurrent: 0,
+    latency: { count: 0, min_ns: 0, max_ns: 0, mean_ns: 0, p50_ns: 0, p95_ns: 0, p99_ns: 0 },
+    throughput: { points: [], capacity: 120 },
+    observer: {
+      uptime_ms: 0,
+      process_count: 0,
+      running: 0,
+      waiting: 0,
+      scheduler_load: [],
+      total_memory_bytes: 0,
+      spawned_total: 0,
+      finished_total: 0,
+      messages_total: 0,
+      processes: [],
+    },
+    ...overrides,
+  };
+}
+
+const tick = (f: Frame): ServerMessage => ({ type: 'tick', frame: f });
+
+test('initial state is empty and disconnected', () => {
+  const s = initialState();
+  expect(s.connected).toBe(false);
+  expect(s.scenarios).toEqual([]);
+  expect(s.frame).toBeNull();
+  expect(s.history).toEqual([]);
+});
+
+test('setConnected toggles connection without touching the rest', () => {
+  const s = setConnected(initialState(), true);
+  expect(s.connected).toBe(true);
+  expect(s.frame).toBeNull();
+});
+
+test('hello populates the scenario menu', () => {
+  const s = applyMessage(initialState(), {
+    type: 'hello',
+    scenarios: [{ id: 'ping-pong', label: 'Ping', description: 'd', real_after_phase: 5 }],
+  });
+  expect(s.scenarios).toHaveLength(1);
+});
+
+test('error records the message', () => {
+  const s = applyMessage(initialState(), { type: 'error', message: 'boom' });
+  expect(s.error).toBe('boom');
+});
+
+test('a running tick appends throughput history', () => {
+  let s = applyMessage(initialState(), tick(frame({ ops_per_sec: 100 })));
+  s = applyMessage(s, tick(frame({ ops_per_sec: 200 })));
+  expect(s.running).toBe(true);
+  expect(s.history).toEqual([100, 200]);
+  expect(s.frame?.ops_per_sec).toBe(200);
+});
+
+test('history is capped at the limit', () => {
+  let s = initialState();
+  for (let i = 0; i < HISTORY_LIMIT + 50; i++) {
+    s = applyMessage(s, tick(frame({ ops_per_sec: i })));
+  }
+  expect(s.history).toHaveLength(HISTORY_LIMIT);
+  expect(s.history[s.history.length - 1]).toBe(HISTORY_LIMIT + 49);
+});
+
+test('an idle tick clears history', () => {
+  let s = applyMessage(initialState(), tick(frame({ ops_per_sec: 100 })));
+  s = applyMessage(s, tick(frame({ running: false, scenario: null })));
+  expect(s.running).toBe(false);
+  expect(s.history).toEqual([]);
+});
