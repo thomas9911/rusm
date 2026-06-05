@@ -18,7 +18,7 @@ dashboard: ## Start a node + the dashboard, then open the printed URL — "the m
 	@./target/debug/rusm node start >/tmp/rusm-node.log 2>&1 & \
 		NODE=$$!; \
 		trap 'kill $$NODE 2>/dev/null' EXIT INT TERM; \
-		cd $(DASHBOARD) && { test -d node_modules || bun install; } && bun run dev --open
+		cd $(DASHBOARD) && { test -d node_modules || bun install; } && bun run dev
 
 .PHONY: node
 node: ## Start a RUSM node on ws://127.0.0.1:4000

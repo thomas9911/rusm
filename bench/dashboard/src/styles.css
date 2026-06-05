@@ -158,7 +158,8 @@ body {
   color: #06281d;
   border-color: var(--accent);
 }
-.stop {
+.stop,
+.reset {
   background: transparent;
   color: var(--text);
 }

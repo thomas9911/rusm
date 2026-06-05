@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test';
-import { applyMessage, HISTORY_LIMIT, initialState, setConnected } from './state';
+import { applyMessage, HISTORY_LIMIT, initialState, resetData, setConnected } from './state';
 import type { Frame, ServerMessage } from './types';
 
 function frame(overrides: Partial<Frame> = {}): Frame {
@@ -73,9 +73,22 @@ test('history is capped at the limit', () => {
   expect(s.history[s.history.length - 1]).toBe(HISTORY_LIMIT + 49);
 });
 
-test('an idle tick clears history', () => {
+test('an idle tick keeps the last run on screen, only flipping running off', () => {
   let s = applyMessage(initialState(), tick(frame({ ops_per_sec: 100 })));
-  s = applyMessage(s, tick(frame({ running: false, scenario: null })));
+  const before = s.frame;
+  s = applyMessage(s, tick(frame({ running: false, scenario: null, ops_per_sec: 0 })));
   expect(s.running).toBe(false);
+  // Data is preserved (frozen) until an explicit reset.
+  expect(s.history).toEqual([100]);
+  expect(s.frame).toBe(before);
+  expect(s.scenario).toBe('connection-storm');
+});
+
+test('resetData clears the displayed run', () => {
+  let s = applyMessage(initialState(), tick(frame({ ops_per_sec: 100 })));
+  s = resetData(s);
+  expect(s.running).toBe(false);
+  expect(s.frame).toBeNull();
   expect(s.history).toEqual([]);
+  expect(s.scenario).toBeNull();
 });

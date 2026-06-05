@@ -43,6 +43,21 @@ export function applyMessage(state: DashboardState, message: ServerMessage): Das
 }
 
 function applyTick(state: DashboardState, frame: Frame): DashboardState {
-  const history = frame.running ? [...state.history, frame.ops_per_sec].slice(-HISTORY_LIMIT) : [];
-  return { ...state, running: frame.running, scenario: frame.scenario, frame, history };
+  // After Stop the node keeps emitting idle frames. Keep the last run's data on
+  // screen — only flip the running flag — until the user explicitly resets.
+  if (!frame.running) {
+    return { ...state, running: false };
+  }
+  return {
+    ...state,
+    running: true,
+    scenario: frame.scenario,
+    frame,
+    history: [...state.history, frame.ops_per_sec].slice(-HISTORY_LIMIT),
+  };
+}
+
+/** Clears the displayed run data — the "Reset" action. */
+export function resetData(state: DashboardState): DashboardState {
+  return { ...state, running: false, scenario: null, frame: null, history: [] };
 }

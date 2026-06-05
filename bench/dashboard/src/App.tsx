@@ -10,7 +10,7 @@ const DEFAULT_URL = 'ws://127.0.0.1:4000';
 const ACCENT = '#34d399';
 
 export function App() {
-  const { state, send } = useNode(DEFAULT_URL);
+  const { state, send, reset } = useNode(DEFAULT_URL);
   const [selected, setSelected] = useState<string | null>(null);
   const [detail, setDetail] = useState(true);
 
@@ -22,6 +22,14 @@ export function App() {
     setDetail(enabled);
     send(setObserverDetailCommand(enabled));
   };
+
+  const startRun = () => {
+    if (!selected) return;
+    reset(); // clear the previous run's frozen data before starting fresh
+    send(runCommand(selected));
+  };
+
+  const hasData = state.frame !== null || state.history.length > 0;
 
   return (
     <div className="app">
@@ -43,16 +51,18 @@ export function App() {
           <h2>Scenarios</h2>
           <ScenarioMenu scenarios={state.scenarios} active={selected} onPick={setSelected} />
           <div className="controls">
-            <button
-              className="run"
-              disabled={!selected || !state.connected}
-              onClick={() => selected && send(runCommand(selected))}
-            >
+            <button className="run" disabled={!selected || !state.connected} onClick={startRun}>
               Run
             </button>
-            <button className="stop" disabled={!state.running} onClick={() => send(stopCommand())}>
-              Stop
-            </button>
+            {state.running ? (
+              <button className="stop" onClick={() => send(stopCommand())}>
+                Stop
+              </button>
+            ) : (
+              <button className="reset" disabled={!hasData} onClick={reset}>
+                Reset
+              </button>
+            )}
           </div>
         </aside>
 

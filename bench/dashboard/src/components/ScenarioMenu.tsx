@@ -1,3 +1,4 @@
+import { memo } from 'react';
 import type { ScenarioMeta } from '../types';
 
 interface ScenarioMenuProps {
@@ -6,7 +7,12 @@ interface ScenarioMenuProps {
   onPick: (id: string) => void;
 }
 
-export function ScenarioMenu({ scenarios, active, onPick }: ScenarioMenuProps) {
+// Memoized: the menu is static during a run, so it skips the per-tick re-render.
+export const ScenarioMenu = memo(function ScenarioMenu({
+  scenarios,
+  active,
+  onPick,
+}: ScenarioMenuProps) {
   return (
     <nav className="scenario-menu">
       {scenarios.map((s) => (
@@ -22,4 +28,4 @@ export function ScenarioMenu({ scenarios, active, onPick }: ScenarioMenuProps) {
       ))}
     </nav>
   );
-}
+});

@@ -1,11 +1,12 @@
 import { useEffect, useReducer, useRef } from 'react';
 import { encodeCommand, parseServerMessage } from './protocol';
-import { applyMessage, initialState, setConnected, type DashboardState } from './state';
+import { applyMessage, initialState, resetData, setConnected, type DashboardState } from './state';
 import type { ClientCommand, ServerMessage } from './types';
 
 type Action =
   | { kind: 'message'; message: ServerMessage }
-  | { kind: 'connected'; connected: boolean };
+  | { kind: 'connected'; connected: boolean }
+  | { kind: 'reset' };
 
 function reducer(state: DashboardState, action: Action): DashboardState {
   switch (action.kind) {
@@ -13,12 +14,15 @@ function reducer(state: DashboardState, action: Action): DashboardState {
       return applyMessage(state, action.message);
     case 'connected':
       return setConnected(state, action.connected);
+    case 'reset':
+      return resetData(state);
   }
 }
 
 export interface NodeConnection {
   state: DashboardState;
   send: (command: ClientCommand) => void;
+  reset: () => void;
 }
 
 /** Connects to a RUSM node over WebSocket, reconnecting on drop. */
@@ -57,5 +61,7 @@ export function useNode(url: string): NodeConnection {
     if (ws && ws.readyState === WebSocket.OPEN) ws.send(encodeCommand(command));
   };
 
-  return { state, send };
+  const reset = () => dispatch({ kind: 'reset' });
+
+  return { state, send, reset };
 }
