@@ -8,7 +8,17 @@ distributed clusters you can hook into live. See `README.md` for the pitch and
 
 ## Status
 
-**Phase 5 of 10 — complete.** The Wasm-free OTP core (`rusm-otp`) spawns,
+**Phases 1–5 complete; Phase 6 backend landed.** The Wasmtime backend
+(`rusm-wasm`, the *only* crate that touches Wasmtime) runs each process as an
+isolated Wasm instance: instance-per-process, a host ABI, epoch preemption
+(infinite-loop guests yield and stay killable), and the efficiency levers —
+pooling allocator + copy-on-write + a per-module `InstancePre` — for **~167k Wasm
+spawns/sec** (3.2× a naive on-demand allocator). Trap → process `Crashed`.
+Remaining Phase 6: graduate the fairness scenario to real Wasm on the dashboard
+and re-measure spawn/conn. `rusm-otp` stays Wasm-free (verified: no `wasmtime` in
+its dep tree).
+
+Underneath, the Wasm-free OTP core (`rusm-otp`) spawns,
 schedules, kills, messages, supervises, manages, and **connects** **real**
 lightweight processes: links, monitors, exit reasons, `trap_exit`, `spawn_link`,
 `exit/2`, exit cascades, a named **registry**, **timers** (`send_after`/`cancel`),
@@ -22,8 +32,8 @@ signal channel — we beat Lunatic's two). The registry is a sharded `DashMap`,
 timers use Tokio's timer wheel, and TCP is process-per-connection — the
 connection ceiling is the OS (fds, ports), not RUSM. Phase 0 (metrics, live
 observer, benchmark harness + WebSocket server, `rusm` CLI, React dashboard,
-examples) is done. TLS folds into the Phase 9 secure cluster transport; the
-Wasmtime backend is Phase 6. See `docs/02-roadmap.md`.
+examples) is done. TLS folds into the Phase 9 secure cluster transport. See
+`docs/02-roadmap.md`.
 
 ## Tech stack
 

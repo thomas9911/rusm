@@ -9,16 +9,19 @@ core** (pure Rust); **WebAssembly is the sandboxed execution backend** that late
 runs each process as an isolated instance. Rust + Tokio do the scheduling;
 Wasmtime does the isolation.
 
-> **Status: Phase 5 of 10.** The Wasm-free OTP core (`rusm-otp`) already spawns,
+> **Status: Phases 1–5 complete; Phase 6 backend landed.** The **Wasmtime
+> backend** (`rusm-wasm`) now runs each process as an isolated Wasm instance —
+> instance-per-process, a host ABI, epoch preemption (infinite-loop guests yield
+> and stay killable), pooling + copy-on-write for **~167k Wasm spawns/sec**, and
+> trap → process crash. Underneath, the Wasm-free OTP core (`rusm-otp`) spawns,
 > schedules, kills, messages, **supervises**, **manages**, and **connects** **real**
-> lightweight processes — links, monitors, `trap_exit`, exit cascades ("let it
-> crash"), a named registry, timers, graceful shutdown, and **TCP** (one process
-> per connection). Four benchmarks show real numbers: spawn-storm at **~1.4M
-> spawns/sec**, ping-pong at **~3M messages/sec** (round-trip p50 ~2 µs),
-> fault-recovery at **~100k restarts/sec**, and connection-storm holding
-> **thousands of concurrent real connections** (each a process; connect p50 ~70 µs)
-> — the connection ceiling is the OS, not RUSM. The Wasmtime backend and
-> clustering come in later phases. See the [roadmap](docs/02-roadmap.md).
+> lightweight processes — links, monitors, `trap_exit`, exit cascades, a named
+> registry, timers, graceful shutdown, and **TCP** (one process per connection).
+> Four benchmarks show real numbers: spawn-storm at **~1.4M spawns/sec**,
+> ping-pong at **~3M messages/sec** (round-trip p50 ~2 µs), fault-recovery at
+> **~100k restarts/sec**, and connection-storm holding **thousands of concurrent
+> real connections** (connect p50 ~70 µs) — the connection ceiling is the OS, not
+> RUSM. Clustering comes in later phases. See the [roadmap](docs/02-roadmap.md).
 
 ## Why
 
@@ -126,18 +129,17 @@ make docs        # live preview   (or: make docs-build for the static site)
 ## Crates
 
 RUSM is a Cargo workspace; each crate has a single job. The core is **Wasm-free
-by construction** — Wasm lives only in the (planned) backend.
+by construction** — Wasm lives only in the `rusm-wasm` backend.
 
 | Crate | Kind | Purpose |
 | --- | --- | --- |
-| `rusm-otp` | lib | **The Erlang/OTP core** — processes, scheduler, mailboxes & selective receive, links/monitors/supervision. Pure Rust, **no `wasmtime` dependency** (usable standalone). Built up across Phases 1–5. |
+| `rusm-otp` | lib | **The Erlang/OTP core** — processes, scheduler, mailboxes & selective receive, links/monitors/supervision, registry, timers, TCP. Pure Rust, **no `wasmtime` dependency** (usable standalone). Built up across Phases 1–5. |
+| `rusm-wasm` | lib | **The Wasmtime backend** (Phase 6) — the *only* crate that touches Wasmtime; runs each process as a sandboxed Wasm instance (instance-per-process, host ABI, epoch preemption, pooling + CoW) behind the same `rusm-otp` API. |
 | `rusm-metrics` | lib | Counters, HdrHistogram-backed latency percentiles, ring-buffer time-series. |
 | `rusm-observer` | lib | Low-overhead live-observer snapshots — aggregate counters plus a sampled per-instance table, with a detail on/off toggle. |
 | `rusm-bench` | lib + bin | Scenarios, the synthetic data source, the real engines (spawn-storm, ping-pong, fault-recovery), the run aggregator, the wire protocol, and the WebSocket server. Binary: `rusm-bench serve` / `run`. |
 | `rusm-cli` | bin (`rusm`) | The `rusm` command: `node start` and `attach <url>` (live REPL). |
 
-**Planned:** `rusm-wasm` (Phase 6) — the *only* crate that touches Wasmtime; it
-runs each process as a sandboxed Wasm instance behind the same `rusm-otp` API.
 Not crates: the dashboard at `bench/dashboard` (Bun/React); docs under `docs/`.
 
 ## Examples
