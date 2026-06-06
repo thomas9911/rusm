@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 /// The roadmap phase RUSM has reached. A scenario runs on **real** runtime data
 /// once its `real_after_phase` is at or below this — bump it as each phase lands.
-pub const CURRENT_PHASE: u8 = 5;
+pub const CURRENT_PHASE: u8 = 6;
 
 /// A benchmark scenario the dashboard can run.
 ///
@@ -95,10 +95,10 @@ impl Scenario {
                 "Fairness under tight loop",
                 "A CPU-bound process must not starve others; measures progress of bystanders.",
                 vec![
-                    "Runs a CPU-bound, tight-loop process alongside others that must keep making progress.",
-                    "Headline: do the bystanders keep running? This proves preemption works.",
-                    "Tokio scheduling is cooperative; RUSM adds Wasmtime epoch interruption so even an infinite loop yields — the analogue of the BEAM's reduction counting.",
-                    "If bystanders stall, one hot process could starve the system. They must not.",
+                    "Runs CPU-bound, tight-loop Wasm guests (spinners) alongside bystander guests that must keep making progress.",
+                    "Headline: bystander progress (work/sec). A nonzero rate proves preemption works — the bars don't flatline under the spinners.",
+                    "Phase 6: REAL Wasm. Tokio scheduling is cooperative, so RUSM arms Wasmtime epoch interruption — even an infinite-loop guest yields, the analogue of the BEAM's reduction counting (and we beat Lunatic's per-instruction fuel: a periodic atomic, ~zero steady-state cost).",
+                    "Without preemption, spinners filling every scheduler thread would pin bystanders to zero. They don't.",
                 ],
                 6,
             ),
@@ -206,15 +206,16 @@ mod tests {
             .filter(|m| m.real)
             .map(|m| m.id)
             .collect();
-        // Exactly the scenarios with a real engine (real_after_phase <= 5); the
-        // later ones are still synthetic.
+        // Exactly the scenarios with a real engine (real_after_phase <= 6); only
+        // distributed-fanout (phase 9) is still synthetic.
         assert_eq!(
             real,
             vec![
                 "spawn-storm",
                 "ping-pong",
                 "fault-recovery",
-                "connection-storm"
+                "connection-storm",
+                "fairness"
             ]
         );
     }

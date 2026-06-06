@@ -8,15 +8,16 @@ distributed clusters you can hook into live. See `README.md` for the pitch and
 
 ## Status
 
-**Phases 1–5 complete; Phase 6 backend landed.** The Wasmtime backend
-(`rusm-wasm`, the *only* crate that touches Wasmtime) runs each process as an
-isolated Wasm instance: instance-per-process, a host ABI, epoch preemption
-(infinite-loop guests yield and stay killable), and the efficiency levers —
-pooling allocator + copy-on-write + a per-module `InstancePre` — for **~167k Wasm
-spawns/sec** (3.2× a naive on-demand allocator). Trap → process `Crashed`.
-Remaining Phase 6: graduate the fairness scenario to real Wasm on the dashboard
-and re-measure spawn/conn. `rusm-otp` stays Wasm-free (verified: no `wasmtime` in
-its dep tree).
+**Phase 6 of 10 — complete.** The Wasmtime backend (`rusm-wasm`, the *only* crate
+that touches Wasmtime) runs each process as an isolated Wasm instance:
+instance-per-process, a host ABI, epoch preemption (the epoch bumps on a
+dedicated OS thread, so even one tight-loop guest per core yields and stays
+killable), and the efficiency levers — pooling allocator + copy-on-write + a
+per-module `InstancePre` — for **~167k Wasm spawns/sec** (3.2× a naive on-demand
+allocator). Trap → process `Crashed`. The **fairness** scenario is graduated to
+real Wasm: spinners saturate every core, yet bystanders still progress at ~12M
+ops/sec — preemption proven live. `rusm-otp` stays Wasm-free (verified: no
+`wasmtime` in its dep tree).
 
 Underneath, the Wasm-free OTP core (`rusm-otp`) spawns,
 schedules, kills, messages, supervises, manages, and **connects** **real**

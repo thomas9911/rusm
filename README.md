@@ -9,11 +9,12 @@ core** (pure Rust); **WebAssembly is the sandboxed execution backend** that late
 runs each process as an isolated instance. Rust + Tokio do the scheduling;
 Wasmtime does the isolation.
 
-> **Status: Phases 1–5 complete; Phase 6 backend landed.** The **Wasmtime
-> backend** (`rusm-wasm`) now runs each process as an isolated Wasm instance —
-> instance-per-process, a host ABI, epoch preemption (infinite-loop guests yield
-> and stay killable), pooling + copy-on-write for **~167k Wasm spawns/sec**, and
-> trap → process crash. Underneath, the Wasm-free OTP core (`rusm-otp`) spawns,
+> **Status: Phase 6 of 10 complete.** The **Wasmtime backend** (`rusm-wasm`) runs
+> each process as an isolated Wasm instance — instance-per-process, a host ABI,
+> epoch preemption (even one tight-loop guest per core yields and stays killable),
+> pooling + copy-on-write for **~167k Wasm spawns/sec**, and trap → process crash.
+> The fairness scenario is live: Wasm spinners saturate every core, yet bystanders
+> still run at ~12M ops/sec. Underneath, the Wasm-free OTP core (`rusm-otp`) spawns,
 > schedules, kills, messages, **supervises**, **manages**, and **connects** **real**
 > lightweight processes — links, monitors, `trap_exit`, exit cascades, a named
 > registry, timers, graceful shutdown, and **TCP** (one process per connection).

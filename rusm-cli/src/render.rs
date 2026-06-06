@@ -33,11 +33,11 @@ mod tests {
     #[test]
     fn renders_tick_as_summary() {
         let mut runner = Runner::new(RunnerConfig::default());
-        runner.start(Scenario::Fairness);
+        runner.start(Scenario::DistributedFanout);
         let message = ServerMessage::Tick {
             frame: Box::new(runner.tick(10)),
         };
-        assert!(render_message(&message).contains("fairness"));
+        assert!(render_message(&message).contains("distributed-fanout"));
     }
 
     #[test]

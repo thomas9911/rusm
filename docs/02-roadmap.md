@@ -24,7 +24,7 @@ data to real measurements.
 | **3 ✅** | **Links, monitors, supervision, fault tolerance** — exit reasons, `link`/`monitor`/`trap_exit`/`spawn_link`/`exit`, cascades | **fault-recovery** (live) |
 | **4 ✅** | **Process management** — named registry, timers (`send_after`/`cancel`), graceful `shutdown` | — |
 | **5 ✅** | **Connectivity: TCP** — `listen`/`connect`, process-per-connection (TLS folds into the Phase 9 secure cluster transport) | **connection-storm** (live) |
-| 6 ⚙️ | **Embed Wasmtime as the process backend** — instance-per-process ✅, host ABI ✅, epoch preemption ✅, pooling + CoW ✅ (~167k Wasm spawns/s). Dashboard graduation pending | **fairness**; spawn/conn re-measured |
+| **6 ✅** | **Embed Wasmtime as the process backend** — instance-per-process, host ABI, epoch preemption, pooling + CoW + `InstancePre` (~167k Wasm spawns/s); fairness graduated to real Wasm | **fairness** (live) |
 | 7 | **WASI + per-process sandbox/permissions** — true memory isolation | — |
 | 8 | **`rusm-rs` guest crate** — ergonomic spawn/Mailbox/AbstractProcess/Supervisor | — |
 | 9 | **Distributed clusters + live attach** — QUIC+TLS, remote spawn, global registry | **distributed-fanout** |

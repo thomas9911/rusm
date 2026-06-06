@@ -10,14 +10,13 @@
 
 ## How to read this
 
-This is not apples-to-apples. RUSM has **Phases 1–5 complete and the Phase-6
-backend landed**: the OTP core spawns, messages, supervises, manages, and
-connects real processes over TCP (spawn-storm, ping-pong, fault-recovery,
-connection-storm run live), and the `rusm-wasm` backend now runs them as real
-**Wasm instances** (instance-per-process, pooling + CoW + epoch). What's left is
-graduating the fairness scenario on the dashboard and the later phases (WASI
-sandbox, guest crate, clustering), so those rows still show RUSM as *planned*. The
-value is in the **efficiency playbook** below.
+This is not apples-to-apples. RUSM has **Phases 1–6 complete**: the OTP core spawns, messages, supervises,
+manages, and connects real processes over TCP, and the `rusm-wasm` backend runs
+them as real **Wasm instances** (instance-per-process, pooling + CoW + epoch). All
+five live scenarios run on real data — including **fairness**, where Wasm spinners
+saturate every core yet bystanders keep progressing. The later phases (WASI
+sandbox, guest crate, clustering) are still *planned*. The value is in the
+**efficiency playbook** below.
 
 > ### Does RUSM handle lightweight processes as efficiently as Lunatic — today?
 >
@@ -29,15 +28,15 @@ value is in the **efficiency playbook** below.
 > preemption — **~167k Wasm spawns/sec** (3.2× a naive on-demand allocator).
 > Lunatic ships on-demand allocation + fuel; RUSM's spawn path is ahead by design.
 >
-> What remains for Phase 6 is graduating the **fairness** scenario on the
-> dashboard to real Wasm (and re-measuring spawn/conn on Wasm) to *show* the
-> delta live — and a true head-to-head against Lunatic.
+> The **fairness** scenario now runs on real Wasm — spinners saturate every core,
+> yet bystanders progress at ~12M ops/sec, proving epoch preemption live. What
+> remains is a true head-to-head against Lunatic (see the question at the end).
 
 ## Snapshot
 
 | | RUSM (today) | Lunatic |
 | --- | --- | --- |
-| Status | Active, Phases 1-5 + Phase 6 backend | Dormant since 2023 (v0.13.0) |
+| Status | Active, Phases 1-6 complete | Dormant since 2023 (v0.13.0) |
 | Rust LOC | ~5,350 (6 crates) + ~790 TS | ~15,150 (20 crates) |
 | Tests | ~164 Rust + 21 TS, ~99% cov | ~26 test annotations |
 | Wasmtime | v45 (instance-per-process) | v8 (2023) |
@@ -59,7 +58,7 @@ phase, same themes, same order.
 | 3 ✅ | Links, monitors, supervision, fault tolerance | ✅ done (links/monitors/trap/exit) | ✅ `Signal` enum | ⚡ ahead |
 | 4 ✅ | Process management (registry, timers, lifecycle) | ✅ done (sharded registry, Tokio timers) | ✅ | ⚡ ahead |
 | 5 ✅ | Connectivity — TCP | ✅ done (TCP, process-per-conn; TLS → P9) | ✅ TCP/UDP/DNS/TLS | ✅ on par |
-| 6 ⚙️ | Wasmtime backend (instance-per-process, preemption) | ✅ backend (pooling+CoW+epoch, ~167k spawns/s); dashboard graduation pending | ✅ (fuel) | ⚡ ahead by design |
+| 6 ✅ | Wasmtime backend (instance-per-process, preemption) | ✅ done (pooling+CoW+epoch, ~167k spawns/s; fairness live) | ✅ (fuel) | ⚡ ahead by design |
 | 7 | WASI + per-process sandbox | ❌ | ✅ | — not built |
 | 8 | Guest crate | ❌ → `rusm-rs` | 🅛 `lunatic-rs` (separate repo) | — n/a (DX, not perf) |
 | 9 | Distributed clusters + live attach | ❌ | ✅ (Axum + Submillisecond) | — not built |
@@ -90,13 +89,13 @@ phase, same themes, same order.
   kernel `connect`/`accept` ceiling (identical for both), and minting a process
   per connection is ~free on both (RUSM spawns ~100× faster than the loopback
   hands out sockets).
-- **6 — ahead by design (backend landed).** The Wasm efficiency levers are now
-  in: a **pooling allocator** + **copy-on-write** memory init + a per-module
-  **`InstancePre`** give **~167k Wasm instance-per-process spawns/s** (3.2× a
-  naive on-demand allocator), and **epoch** preemption makes even an infinite-loop
-  guest yield. Lunatic ships on-demand allocation by default, so RUSM is ahead on
-  the spawn path by design — though a true head-to-head (and the fairness scenario
-  on the dashboard) is still to come.
+- **6 — ahead by design.** A **pooling allocator** + **copy-on-write** memory
+  init + a per-module **`InstancePre`** give **~167k Wasm instance-per-process
+  spawns/s** (3.2× a naive on-demand allocator), and **epoch** preemption (bumped
+  on a dedicated thread) keeps bystanders at ~12M ops/sec even with a tight-loop
+  guest pinning every core. Lunatic ships on-demand allocation + fuel, so RUSM is
+  ahead on both the spawn path and preemption overhead by design — a true
+  head-to-head benchmark is the remaining validation.
 
 Already shipped in Phase 0 — where RUSM already leads Lunatic:
 
@@ -157,7 +156,7 @@ own.)
 | TCP owned read/write halves + per-conn timeouts in `HashMapId` — `lunatic-networking-api/src/lib.rs:71` | concurrent reader+writer without locking the stream | **Deferred** — native handlers own the whole `TcpStream`; split halves / per-conn timeouts arrive with the guest host ABI (Phase 6) |
 | TLS via `tokio-rustls` + `webpki-roots` — `tls_tcp.rs:392` | secure transport | **Moved to Phase 9** — TLS's real home is the secure cluster transport (QUIC + TLS); bolting it onto the loopback storm would only tank throughput |
 
-## Phase 6 — Wasmtime backend ⚙️ (backend landed)  ← the biggest efficiency win
+## Phase 6 — Wasmtime backend ✅  ← the biggest efficiency win
 
 | Borrow from Lunatic | Why it helps | RUSM status |
 | --- | --- | --- |
@@ -167,10 +166,10 @@ own.)
 | Preemption via **fuel** (`consume_fuel`, `out_of_fuel_async_yield`) — `runtimes/wasmtime.rs:166,56` | works, but per-unit accounting overhead | **✅ Ahead** — epoch interruption: a periodic atomic bump, ≈ near-zero steady-state; an infinite-loop guest still yields and stays killable |
 
 **Why this phase matters most:** pooling + CoW + epoch + `InstancePre` are exactly
-the levers for cheap instance-per-process. They're now in (`rusm-wasm`), giving
-~167k Wasm spawns/s. Lunatic (Wasmtime 8, on-demand, fuel) predates easy access to
-them — the remaining work is graduating the fairness scenario on the dashboard to
-*show* the delta live.
+the levers for cheap instance-per-process. They're in (`rusm-wasm`), giving ~167k
+Wasm spawns/s, and the fairness scenario proves epoch preemption live. Lunatic
+(Wasmtime 8, on-demand, fuel) predates easy access to them — the remaining work is
+a true head-to-head benchmark to put numbers on the delta.
 
 ## Phase 7 — WASI + per-process sandbox
 

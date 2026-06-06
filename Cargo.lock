@@ -1092,6 +1092,7 @@ dependencies = [
  "rusm-metrics",
  "rusm-observer",
  "rusm-otp",
+ "rusm-wasm",
  "serde",
  "serde_json",
  "socket2 0.5.10",

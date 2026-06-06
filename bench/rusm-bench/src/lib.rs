@@ -5,6 +5,7 @@
 mod config;
 mod connectionstorm;
 mod engine;
+mod fairness;
 mod faultrecovery;
 mod pingpong;
 mod profile;
