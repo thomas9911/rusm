@@ -121,7 +121,7 @@ impl Scenario {
                     "Opens real loopback TCP connections, each served by its own rusm-otp process — process-per-connection, the headline scenario.",
                     "Headline: peak concurrent connections (the live process count), plus connections/sec and connect latency.",
                     "Phase 5: REAL TCP — thousands of simultaneous connections, each a cheap isolated process, measured live.",
-                    "The ceiling is the OS — file descriptors, ephemeral ports, TIME_WAIT — not RUSM: minting a process per connection is near-free (the spawn storm does ~1.4M/s). Lunatic's famous ~300k/s is runtime-ready here; the loopback rate is OS-bound.",
+    "The ceiling is the OS — file descriptors, ephemeral ports, the kernel connect/accept path — not RUSM: minting a process per connection is near-free (the spawn storm does ~1.4M/s, ~100x this). The loopback rate is OS-bound (pushing client concurrency just raises latency); the project's 300k/s target wants an external load generator on a tuned OS, where RUSM scales with the kernel, not the runtime.",
                     "Tip: compare observer-on vs observer-off to confirm live introspection is nearly free.",
                 ],
                 5,

@@ -6,8 +6,8 @@ BEAM.
 ## Rust → the fast, safe host
 
 Native speed with **no garbage collector**, so no stop-the-world pauses hurting
-tail latency, and a tiny per-process footprint — what makes ~300k spawns/sec
-plausible. Rust's speed is the *host*: the scheduler, cross-memory message
+tail latency, and a tiny per-process footprint — what lets the spawn storm
+sustain **~1.4M spawns/sec**. Rust's speed is the *host*: the scheduler, cross-memory message
 copying, networking, and host functions. Guest actor code is **Wasm**, compiled
 to native by Wasmtime's Cranelift JIT — so guest speed is Wasmtime's.
 
