@@ -4,6 +4,7 @@ import {
   parseServerMessage,
   runCommand,
   setObserverDetailCommand,
+  setResourceProfileCommand,
   stopCommand,
 } from './protocol';
 
@@ -28,6 +29,10 @@ test('command builders produce tagged commands', () => {
   expect(setObserverDetailCommand(false)).toEqual({
     type: 'set_observer_detail',
     enabled: false,
+  });
+  expect(setResourceProfileCommand('max')).toEqual({
+    type: 'set_resource_profile',
+    profile: 'max',
   });
 });
 

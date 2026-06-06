@@ -1,7 +1,12 @@
 use serde::{Deserialize, Serialize};
 
-/// How hard a benchmark may drive the machine. Friendly presets instead of raw
-/// knobs — each maps to a number of spawn workers and an in-flight cap.
+/// How hard a benchmark drives the machine — a performance dial. Each preset is
+/// a number of spawn workers; throughput rises with the tier. Spawning is
+/// **reap-bound** (the limit is how fast finished processes drain, ~one reaper
+/// core's worth each), so the real lever is the *spawner-to-reaper balance*:
+/// too few spawners under-drives the machine, too many starve the reapers and
+/// pile processes up. `Max` sits at the balance point (≈half the cores spawn,
+/// half reap) for peak *smooth* throughput.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ResourceProfile {
@@ -24,12 +29,11 @@ impl Default for ResourceProfile {
     }
 }
 
-/// The hard CPU ceiling: at most 90% of cores, and always at least one core left
-/// free, so a storm can never numb the whole machine.
-fn max_workers(cores: usize) -> usize {
-    let ninety_percent = cores * 90 / 100;
-    ninety_percent.clamp(1, cores.saturating_sub(1).max(1))
-}
+/// Live-process safety net, per core. The profiles self-limit their population
+/// far below this through their worker count alone; the cap is not an operating
+/// point — it only exists so that on a machine where spawning outpaces reaping
+/// the process table can never grow without bound.
+const SAFETY_CAP_PER_CORE: usize = 5_000;
 
 impl ResourceProfile {
     pub const ALL: [ResourceProfile; 3] = [
@@ -60,25 +64,26 @@ impl ResourceProfile {
 
     pub fn description(self) -> &'static str {
         match self {
-            ResourceProfile::Light => "Gentle — about a quarter of cores, ~1k live processes per core.",
-            ResourceProfile::Balanced => "Default — about half the cores, ~5k live processes per core.",
-            ResourceProfile::Max => "Aggressive — up to 90% of cores (always leaves headroom so the system stays responsive), ~50k live per core.",
+            ResourceProfile::Light => "Gentle — about a quarter of the cores spawn, so throughput is deliberately modest. Use it when raw speed isn't the point and you want the machine left alone.",
+            ResourceProfile::Balanced => "Good throughput with headroom — about 40% of the cores spawn. Fast, but kept short of the peak so there's visibly room to push higher.",
+            ResourceProfile::Max => "Most performant — spawners balanced against reapers (about half the cores each) for peak sustained throughput. The live population self-limits to a few hundred, so it stays smooth: fastest, with no pile-up.",
         }
     }
 
     /// Resolves to `(spawn_workers, spawn_max_in_flight)` for `cores` available
-    /// CPU cores. Everything is **relative to the machine**: workers are a
-    /// fraction of cores and the in-flight cap is a per-core allowance. Two
-    /// safety guarantees hold regardless: even `Max` is **hard-capped at 90% of
-    /// cores** (never saturate the whole machine), and the cap is never unbounded
-    /// (memory stays bounded).
+    /// CPU cores. The **worker count is the throughput dial** and is relative to
+    /// the machine: `Light` ≈ ¼, `Balanced` ≈ ⅖, `Max` ≈ ½ of the cores — `Max`
+    /// spends the other half reaping, which is the sustained-throughput peak and
+    /// is why it never saturates the whole machine. The cap is a uniform per-core
+    /// safety net (see [`SAFETY_CAP_PER_CORE`]), not a per-tier knob.
     pub fn tuning(self, cores: usize) -> (usize, usize) {
         let cores = cores.max(1);
-        match self {
-            ResourceProfile::Light => ((cores / 4).max(1), cores * 1_000),
-            ResourceProfile::Balanced => ((cores / 2).max(1), cores * 5_000),
-            ResourceProfile::Max => (max_workers(cores), cores * 50_000),
-        }
+        let workers = match self {
+            ResourceProfile::Light => cores / 4,
+            ResourceProfile::Balanced => cores * 2 / 5,
+            ResourceProfile::Max => cores / 2,
+        };
+        (workers.max(1), cores * SAFETY_CAP_PER_CORE)
     }
 
     pub fn meta(self) -> ResourceProfileMeta {
@@ -111,36 +116,43 @@ mod tests {
     }
 
     #[test]
-    fn tuning_scales_and_max_leaves_headroom() {
+    fn workers_rise_per_tier_and_max_balances_spawners_with_reapers() {
         let cores = 20;
         let (lw, lc) = ResourceProfile::Light.tuning(cores);
         let (bw, bc) = ResourceProfile::Balanced.tuning(cores);
         let (mw, mc) = ResourceProfile::Max.tuning(cores);
-        assert!(lw < bw && bw < mw); // three distinct CPU tiers
-        assert!(lc < bc && bc < mc); // three distinct memory caps
-        assert!(mw < cores); // hard 90% cap — never the whole machine
-        assert!(mc > 0); // never unbounded
+        // The worker count is the throughput dial — strictly rising per tier.
+        assert!(lw < bw && bw < mw);
+        // Max spawns on ~half the cores, leaving the other half to reap; it never
+        // claims the whole machine (that would starve the reaper and pile up).
+        assert_eq!(mw, cores / 2);
+        assert!(mw < cores);
+        // The cap is a uniform safety net, not a per-tier operating point.
+        assert_eq!(lc, bc);
+        assert_eq!(bc, mc);
+        assert!(mc > 0);
     }
 
     #[test]
-    fn max_always_leaves_a_core_free_except_on_a_single_core_box() {
-        assert_eq!(ResourceProfile::Max.tuning(2).0, 1); // 2 cores → 1 worker, 1 free
+    fn max_always_leaves_cores_to_reap() {
+        assert_eq!(ResourceProfile::Max.tuning(10).0, 5); // half spawn, half reap
         assert_eq!(ResourceProfile::Max.tuning(1).0, 1); // 1 core → 1 (can't do better)
-        assert!(ResourceProfile::Max.tuning(64).0 <= 58); // ~90%, well under 64
+        assert!(ResourceProfile::Max.tuning(64).0 < 64); // always leaves reapers
     }
 
     #[test]
     fn tuning_handles_zero_cores() {
         assert_eq!(ResourceProfile::Balanced.tuning(0).0, 1);
         assert_eq!(ResourceProfile::Light.tuning(0).0, 1);
+        assert_eq!(ResourceProfile::Max.tuning(0).0, 1);
     }
 
     #[test]
-    fn caps_are_relative_to_cores() {
-        // Twice the cores → twice the in-flight allowance.
+    fn safety_cap_is_relative_to_cores() {
+        // Twice the cores → twice the safety allowance (same for every tier).
         assert_eq!(
-            ResourceProfile::Balanced.tuning(16).1,
-            2 * ResourceProfile::Balanced.tuning(8).1
+            ResourceProfile::Max.tuning(16).1,
+            2 * ResourceProfile::Max.tuning(8).1
         );
     }
 

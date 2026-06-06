@@ -42,29 +42,38 @@ precise about what its `ops/sec` means and why it's safe.
   tick just **samples** the achieved rate (`Δspawned / Δt`).
 - **It measures create *and reap*.** The spawned processes are trivial and finish
   immediately, so the rate reflects full lifecycle throughput, not just creation.
-- **Backpressure keeps it honest and safe.** Spawners pause once the *live*
-  population reaches the in-flight cap, then resume as processes drain. Without
-  this the population would run to millions — a memory leak, not throughput. This
-  is why **"peak concurrent" sits at the cap** (e.g. ~50k on Balanced): it's the
-  configured ceiling, not a capability limit.
+- **Backpressure is a safety net, not the operating point.** Spawners pause if
+  the *live* population ever reaches the in-flight cap, so the table can't grow
+  without bound. But at every profile the population **self-limits far below the
+  cap** (a few hundred live), because spawn rate and reap rate balance out — so
+  "peak concurrent" reflects the real steady-state population, not a configured
+  ceiling.
+- **Throughput is reap-bound, so the lever is the spawner-to-reaper balance.**
+  The limit is how fast finished processes drain (~one reaper core's worth each).
+  Too few spawners under-drives the machine; too many starve the reapers and pile
+  processes up *without* going faster. The sweet spot is spawners ≈ reapers
+  (~half the cores each) — that's what **Max** uses for peak *smooth* throughput.
 - **`memory` shows 0.** Native processes have no per-instance linear memory; that
   figure becomes real once processes are Wasm instances (Phase 6).
 
-## Resource profiles (how hard it drives the machine)
+## Resource profiles (the throughput dial)
 
-A segmented control picks how much of the machine a storm may use. Everything is
-**relative to your CPU count**, and there are two hard safety guarantees: the
-in-flight cap is never unbounded, and even **Max never exceeds 90% of cores** (it
-always leaves headroom so the system stays responsive).
+A segmented control picks how hard the storm drives the machine. The **spawn
+worker count is the dial** and is relative to your CPU count; throughput rises
+with each tier. The in-flight cap is a uniform per-core safety net (memory can't
+run away), **not** a per-tier knob — the population self-limits well below it.
 
-| Profile | Spawn workers | In-flight cap | Use it when |
+| Profile | Spawn workers | Throughput (10-core box) | Use it when |
 | --- | --- | --- | --- |
-| **Light** | ~¼ of cores | ~1k × cores | you want a gentle background demo |
-| **Balanced** (default) | ~½ of cores | ~5k × cores | normal use — already well past 300k/s on multi-core |
-| **Max** | up to 90% of cores | ~50k × cores | you want to see the absolute ceiling |
+| **Light** | ~¼ of cores | ~1.1M/s | speed isn't the point — leave the machine alone |
+| **Balanced** (default) | ~⅖ of cores | ~1.4M/s | good throughput with visible room above |
+| **Max** | ~½ of cores | ~1.5M/s | most performant — peak sustained rate, still smooth |
 
-The default is **Balanced** on purpose: it's impressive *and* keeps your laptop
-usable. Switch to **Max** in the selector when you want the ceiling. Defined in
+`Max` deliberately stops at ~half the cores: the other half reap, which is the
+sustained-throughput peak. Pushing spawners higher does **not** go faster — it
+just starves the reapers and piles processes up. So `Max` is the fastest profile
+*and* keeps the live population to a few hundred (no pile-up). The default is
+**Balanced** — fast, with headroom, and easy on the laptop. Defined in
 `rusm-bench` `profile.rs` (`ResourceProfile`).
 
 ## Protocol

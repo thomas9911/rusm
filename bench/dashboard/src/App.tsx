@@ -21,6 +21,7 @@ export function App() {
   const [selected, setSelected] = useState<string | null>(null);
   const [detail, setDetail] = useState(true);
   const [mode, setMode] = useState<MetricMode>('current');
+  const [profile, setProfile] = useState('balanced');
 
   useEffect(() => {
     if (!selected && state.scenarios.length > 0) setSelected(state.scenarios[0].id);
@@ -37,9 +38,19 @@ export function App() {
     send(runCommand(selected));
   };
 
+  // A profile switch starts a new measurement regime: clear the previous run's
+  // (possibly frozen) data so a stale peak/average from the old profile can't
+  // linger on screen. The highlight follows the click even while stopped, when
+  // there is no frame to read the active profile from.
+  const switchProfile = (id: string) => {
+    setProfile(id);
+    reset();
+    send(setResourceProfileCommand(id));
+  };
+
   const hasData = state.frame !== null || state.history.length > 0;
   const selectedMeta = state.scenarios.find((s) => s.id === selected);
-  const activeProfile = state.frame?.profile ?? 'balanced';
+  const activeProfile = state.running ? (state.frame?.profile ?? profile) : profile;
 
   return (
     <div className="app">
@@ -87,7 +98,7 @@ export function App() {
                     key={p.id}
                     className={activeProfile === p.id ? 'seg-on' : ''}
                     title={p.description}
-                    onClick={() => send(setResourceProfileCommand(p.id))}
+                    onClick={() => switchProfile(p.id)}
                   >
                     {p.label}
                   </button>
