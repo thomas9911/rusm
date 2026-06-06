@@ -14,15 +14,26 @@ use std::time::Duration;
 use anyhow::Result;
 use rusm_otp::{ExitReason, Pid, ProcessHandle, Runtime};
 use tokio::task::JoinHandle;
-use wasmtime::{Caller, Config, Engine, Linker, Module, Store};
+use wasmtime::{
+    Caller, Config, Engine, InstanceAllocationStrategy, InstancePre, Linker, Module,
+    PoolingAllocationConfig, Store,
+};
 
 /// How often the epoch is bumped. A guest runs at most this long before it must
 /// yield to the scheduler, so tight loops can't starve other processes.
 const EPOCH_TICK: Duration = Duration::from_millis(10);
+/// Pool slots: the most Wasm instances that may be live at once. The pooling
+/// allocator pre-reserves their memory slabs so a spawn is a slab reuse, not an
+/// mmap — the lever that makes instance-per-process cheap. Kept modest so the
+/// reservation (`MAX_INSTANCES` × `MAX_MEMORY`) stays small; raise for a busy node.
+const MAX_INSTANCES: u32 = 2048;
+/// Per-instance linear-memory reservation (virtual, copy-on-write committed).
+const MAX_MEMORY: usize = 256 << 10;
 
 /// Per-instance host state reachable from host functions via `Caller::data`.
+/// Opaque to callers — they only ever hold it inside an [`InstancePre`].
 #[derive(Default)]
-struct Host {
+pub struct Host {
     /// The owning process's pid (0 for a bare instance with no process).
     pid: u64,
     /// Times the guest called the `notify` host function (host-ABI test hook).
@@ -33,6 +44,9 @@ struct Host {
 pub struct WasmRuntime {
     engine: Engine,
     rt: Runtime,
+    /// Built once; host imports are resolved per *module* (into an [`InstancePre`]
+    /// by [`prepare`](WasmRuntime::prepare)), never per spawn.
+    linker: Linker<Host>,
     epoch_ticker: JoinHandle<()>,
 }
 
@@ -46,7 +60,20 @@ impl WasmRuntime {
         // call stack and yields the Tokio worker) is always available in
         // Wasmtime; we drive guests with `call_async`.
         config.epoch_interruption(true);
+        // Copy-on-write memory init (default, set explicit): a fresh instance
+        // shares the module image until it writes — near-zero init cost.
+        config.memory_init_cow(true);
+        // Pooling allocator: reuse pre-reserved instance slabs instead of an mmap
+        // per spawn. This is the instance-per-process efficiency win over a
+        // naive on-demand allocator.
+        let mut pool = PoolingAllocationConfig::default();
+        pool.total_core_instances(MAX_INSTANCES);
+        pool.total_memories(MAX_INSTANCES);
+        pool.total_tables(MAX_INSTANCES);
+        pool.max_memory_size(MAX_MEMORY);
+        config.allocation_strategy(InstanceAllocationStrategy::Pooling(pool));
         let engine = Engine::new(&config)?;
+        let linker = link_host(&engine)?;
 
         // Bump the epoch on a cadence; each increment is what lets a running guest
         // hit its deadline and yield.
@@ -62,6 +89,7 @@ impl WasmRuntime {
         Ok(Self {
             engine,
             rt,
+            linker,
             epoch_ticker,
         })
     }
@@ -71,18 +99,26 @@ impl WasmRuntime {
         Ok(Module::new(&self.engine, wasm)?)
     }
 
-    /// Spawns `module` as an isolated process running its `entry` export (a
-    /// `() -> ()` function). A fresh instance is created per process; a trap exits
-    /// the process with [`ExitReason::Crashed`].
-    pub fn spawn(&self, module: Module, entry: impl Into<String>) -> ProcessHandle {
+    /// Resolves a module's host imports **once**, yielding a reusable
+    /// [`InstancePre`]. Spawning from it skips import resolution entirely — the
+    /// fast path for spawning the same module many times.
+    pub fn prepare(&self, module: &Module) -> Result<InstancePre<Host>> {
+        Ok(self.linker.instantiate_pre(module)?)
+    }
+
+    /// Spawns a prepared module as an isolated process running its `entry` export
+    /// (a `() -> ()` function). A fresh instance is created per process; a trap
+    /// exits the process with [`ExitReason::Crashed`].
+    pub fn spawn(&self, prepared: &InstancePre<Host>, entry: impl Into<String>) -> ProcessHandle {
         let engine = self.engine.clone();
         let rt = self.rt.clone();
+        let prepared = prepared.clone();
         let entry = entry.into();
         self.rt.spawn(move |ctx| async move {
             let pid = ctx.pid();
             // The mailbox (in `ctx`) is unused until the messaging host ABI lands;
             // dropping it leaves the process alive, addressable via its abort handle.
-            if run(&engine, &module, pid, &entry).await.is_err() {
+            if run(&engine, &prepared, pid, &entry).await.is_err() {
                 rt.exit(pid, ExitReason::Crashed);
             }
         })
@@ -107,9 +143,9 @@ fn link_host(engine: &Engine) -> Result<Linker<Host>> {
     Ok(linker)
 }
 
-/// Instantiates `module` in a fresh store and runs its `entry` export, yielding
-/// to the scheduler whenever the epoch deadline is reached.
-async fn run(engine: &Engine, module: &Module, pid: Pid, entry: &str) -> Result<()> {
+/// Instantiates a prepared module in a fresh store and runs its `entry` export,
+/// yielding to the scheduler whenever the epoch deadline is reached.
+async fn run(engine: &Engine, prepared: &InstancePre<Host>, pid: Pid, entry: &str) -> Result<()> {
     let host = Host {
         pid: pid.raw(),
         host_calls: 0,
@@ -119,8 +155,7 @@ async fn run(engine: &Engine, module: &Module, pid: Pid, entry: &str) -> Result<
     store.set_epoch_deadline(1);
     store.epoch_deadline_async_yield_and_update(1);
 
-    let linker = link_host(engine)?;
-    let instance = linker.instantiate_async(&mut store, module).await?;
+    let instance = prepared.instantiate_async(&mut store).await?;
     let func = instance.get_typed_func::<(), ()>(&mut store, entry)?;
     func.call_async(&mut store, ()).await?;
     Ok(())
@@ -146,6 +181,29 @@ mod tests {
 
     const SPINS: &str = r#"(module (func (export "run") (loop (br 0))))"#;
 
+    const NOOP: &str = r#"(module (memory 1) (func (export "run")))"#;
+
+    #[ignore]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn wasm_spawn_rate() {
+        let rt = Runtime::new();
+        let wr = WasmRuntime::new(rt.clone()).unwrap();
+        let module = wr.compile(NOOP).unwrap();
+        let n = 50_000usize;
+        let start = std::time::Instant::now();
+        let pre = wr.prepare(&module).unwrap();
+        let handles: Vec<_> = (0..n).map(|_| wr.spawn(&pre, "run")).collect();
+        for h in handles {
+            h.join().await;
+        }
+        let elapsed = start.elapsed();
+        println!(
+            "wasm instance-per-process: {n} in {elapsed:?} = {:.0}/s",
+            n as f64 / elapsed.as_secs_f64()
+        );
+        assert_eq!(rt.finished(), n as u64); // every instance ran and was reaped
+    }
+
     #[tokio::test]
     async fn instantiates_and_calls_an_export() {
         let wr = WasmRuntime::new(Runtime::new()).unwrap();
@@ -153,9 +211,10 @@ mod tests {
         let mut store = Store::new(&wr.engine, Host::default());
         store.set_epoch_deadline(1);
         store.epoch_deadline_async_yield_and_update(1);
-        let instance = link_host(&wr.engine)
+        let instance = wr
+            .prepare(&module)
             .unwrap()
-            .instantiate_async(&mut store, &module)
+            .instantiate_async(&mut store)
             .await
             .unwrap();
         let add = instance
@@ -171,9 +230,10 @@ mod tests {
         let mut store = Store::new(&wr.engine, Host::default());
         store.set_epoch_deadline(1);
         store.epoch_deadline_async_yield_and_update(1);
-        let instance = link_host(&wr.engine)
+        let instance = wr
+            .prepare(&module)
             .unwrap()
-            .instantiate_async(&mut store, &module)
+            .instantiate_async(&mut store)
             .await
             .unwrap();
         instance
@@ -198,9 +258,10 @@ mod tests {
         );
         store.set_epoch_deadline(1);
         store.epoch_deadline_async_yield_and_update(1);
-        let instance = link_host(&wr.engine)
+        let instance = wr
+            .prepare(&module)
             .unwrap()
-            .instantiate_async(&mut store, &module)
+            .instantiate_async(&mut store)
             .await
             .unwrap();
         let run = instance
@@ -214,7 +275,8 @@ mod tests {
         let rt = Runtime::new();
         let wr = WasmRuntime::new(rt.clone()).unwrap();
         let module = wr.compile(CALLS_NOTIFY_TWICE).unwrap();
-        let handle = wr.spawn(module, "run");
+        let pre = wr.prepare(&module).unwrap();
+        let handle = wr.spawn(&pre, "run");
         handle.join().await;
         assert_eq!(rt.finished(), 1);
         assert_eq!(rt.process_count(), 0);
@@ -233,7 +295,8 @@ mod tests {
                 let _ = tx.send(ctx.recv().await);
             })
             .pid();
-        let guest = wr.spawn(module, "run");
+        let pre = wr.prepare(&module).unwrap();
+        let guest = wr.spawn(&pre, "run");
         let reference = rt.monitor(watcher, guest.pid());
         let guest_pid = guest.pid();
 
@@ -260,7 +323,8 @@ mod tests {
             let _ = tx.send(());
         });
 
-        let spinner = wr.spawn(module, "run");
+        let pre = wr.prepare(&module).unwrap();
+        let spinner = wr.spawn(&pre, "run");
         let spinner_pid = spinner.pid();
         rx.await.unwrap(); // bystander ran despite the spinner
         bystander.join().await;
