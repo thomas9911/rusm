@@ -43,7 +43,7 @@ impl PingPongEngine {
             let ponger_rt = runtime.clone();
             let ponger = runtime.spawn(move |mut ctx| async move {
                 loop {
-                    let msg = ctx.recv().await;
+                    let msg = ctx.recv().await.message().expect("pings are user messages");
                     let reply_to = Pid::from_raw(u64::from_le_bytes(
                         msg[..8].try_into().expect("a ping carries an 8-byte pid"),
                     ));

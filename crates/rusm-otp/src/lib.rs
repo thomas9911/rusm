@@ -6,10 +6,12 @@
 //! must never depend on or reference Wasmtime — the actor model stands alone;
 //! Wasm is a separate, optional backend (`rusm-wasm`). See `docs/01-architecture.md`.
 
+mod exit;
 mod message;
 mod pid;
 mod runtime;
 
-pub use message::Message;
+pub use exit::{ExitReason, MonitorRef};
+pub use message::{Message, Received};
 pub use pid::Pid;
 pub use runtime::{Context, ProcessHandle, Runtime};

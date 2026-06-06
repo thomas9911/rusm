@@ -9,19 +9,20 @@ use futures_util::future::{AbortHandle, Abortable};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use tokio::task::JoinHandle;
 
-use crate::message::Message;
+use crate::exit::{ExitReason, MonitorRef};
+use crate::message::{Message, Received};
 use crate::pid::Pid;
 
 /// What a process body receives when it starts: its own [`Pid`] and its
 /// **mailbox** — the receiving end of its message queue.
 pub struct Context {
     pid: Pid,
-    mailbox: UnboundedReceiver<Message>,
-    /// Messages pulled from the channel but skipped over by a selective
+    mailbox: UnboundedReceiver<Received>,
+    /// Items pulled from the channel but skipped over by a selective
     /// [`recv_match`](Context::recv_match), kept in arrival order. A later
     /// receive sees them before anything still in the channel — the Erlang
     /// "save queue". Empty (and allocation-free) unless selective receive is used.
-    saved: VecDeque<Message>,
+    saved: VecDeque<Received>,
 }
 
 impl Context {
@@ -29,38 +30,40 @@ impl Context {
         self.pid
     }
 
-    /// Receives the next message, suspending the process until one arrives
-    /// (FIFO), exactly like an Erlang `receive`. A process blocked here parks
-    /// with zero cost until a message or a [`kill`](Runtime::kill) wakes it, so a
-    /// server loop is simply `loop { let msg = ctx.recv().await; … }`.
-    pub async fn recv(&mut self) -> Message {
+    /// Receives the next item, suspending the process until one arrives (FIFO),
+    /// exactly like an Erlang `receive`. The result is usually a user
+    /// [`Received::Message`], but a process that monitors or trap-links others
+    /// also gets [`Received::Down`]/[`Received::Exit`] here, in arrival order. A
+    /// process blocked here parks with zero cost until something arrives or a
+    /// [`kill`](Runtime::kill) wakes it.
+    pub async fn recv(&mut self) -> Received {
         match self.saved.pop_front() {
-            Some(message) => message,
+            Some(item) => item,
             None => self.next_from_mailbox().await,
         }
     }
 
-    /// Receives the next message for which `matches` is true, suspending until
-    /// one arrives. Messages that don't match are left queued in arrival order
-    /// for a later receive — Erlang's selective `receive`. Already-saved messages
-    /// are considered first, so this never reorders the mailbox.
-    pub async fn recv_match<F>(&mut self, mut matches: F) -> Message
+    /// Receives the next item for which `matches` is true, suspending until one
+    /// arrives. Items that don't match are left queued in arrival order for a
+    /// later receive — Erlang's selective `receive`. Already-saved items are
+    /// considered first, so this never reorders the mailbox.
+    pub async fn recv_match<F>(&mut self, mut matches: F) -> Received
     where
-        F: FnMut(&Message) -> bool,
+        F: FnMut(&Received) -> bool,
     {
         if let Some(pos) = self.saved.iter().position(&mut matches) {
             return self.saved.remove(pos).expect("position is in bounds");
         }
         loop {
-            let message = self.next_from_mailbox().await;
-            if matches(&message) {
-                return message;
+            let item = self.next_from_mailbox().await;
+            if matches(&item) {
+                return item;
             }
-            self.saved.push_back(message);
+            self.saved.push_back(item);
         }
     }
 
-    async fn next_from_mailbox(&mut self) -> Message {
+    async fn next_from_mailbox(&mut self) -> Received {
         // The sole sender lives in the process table, which the running task
         // keeps alive through its own `Arc<Inner>`; it is removed only after this
         // body returns. So while we are awaiting here the channel cannot close —
@@ -105,26 +108,96 @@ impl ProcessHandle {
     }
 }
 
-/// What the runtime keeps for each live process: its message mailbox and a
-/// handle to stop it. A process needs **only one channel** — the mailbox.
-/// (Erlang runtimes and Lunatic keep a *second*, signal channel per process;
-/// here exit signals will instead ride the mailbox itself in Phase 3, like
-/// Erlang's `{'EXIT', …}` messages.) Cancellation rides a `futures` abort handle
-/// rather than Tokio's `JoinHandle::abort`, because this one exists *before* the
-/// task is spawned — so the whole entry is written in a single, race-free insert.
+/// One process this entry records is monitoring us; on our exit it gets a
+/// [`Received::Down`] tagged with `reference`.
+struct Monitor {
+    watcher: Pid,
+    reference: MonitorRef,
+}
+
+/// What the runtime keeps for each live process. A process needs **only one
+/// channel** — the mailbox; exit signals ride it as [`Received`], and kill rides
+/// a `futures` abort handle (which exists *before* the task is spawned, so the
+/// whole entry is written in a single race-free insert). Erlang runtimes and
+/// Lunatic keep a *second*, signal channel per process; we don't.
+///
+/// `links`, `monitors` and `exit_reason` are empty/false/`None` for an ordinary
+/// process and cost no allocation — only fault-tolerant processes pay for them.
 struct ProcessEntry {
     abort: AbortHandle,
-    mailbox: UnboundedSender<Message>,
+    mailbox: UnboundedSender<Received>,
+    /// When set, incoming exit signals arrive as [`Received::Exit`] messages
+    /// instead of killing this process (Erlang's `process_flag(trap_exit, true)`).
+    trap_exit: bool,
+    /// Bidirectionally linked peers — each also lists us.
+    links: Vec<Pid>,
+    /// Processes monitoring us.
+    monitors: Vec<Monitor>,
+    /// A reason staged by a link cascade, so this process exits with the
+    /// *original* reason rather than the bare `Killed` an abort would imply.
+    exit_reason: Option<ExitReason>,
 }
 
 #[derive(Default)]
 struct Inner {
     next_id: AtomicU64,
+    next_ref: AtomicU64,
     spawned: AtomicU64,
     finished: AtomicU64,
     // Sharded concurrent map: spawners and completers mostly touch different
     // shards, so the process table isn't a global-lock bottleneck under a storm.
     table: DashMap<u64, ProcessEntry>,
+}
+
+impl Inner {
+    /// Delivers a system item to `to`'s mailbox if it is still alive.
+    fn deliver(&self, to: Pid, item: Received) {
+        if let Some(entry) = self.table.get(&to.0) {
+            let _ = entry.mailbox.send(item);
+        }
+    }
+
+    /// Removes `pid`, counts it finished, and fans its exit out to everyone who
+    /// was watching: a [`Received::Down`] to each monitor and a propagated exit to
+    /// each link. A staged cascade reason (see [`ProcessEntry::exit_reason`])
+    /// overrides `reason`.
+    fn deregister(&self, pid: Pid, reason: ExitReason) {
+        let Some((_, entry)) = self.table.remove(&pid.0) else {
+            return;
+        };
+        self.finished.fetch_add(1, Ordering::Relaxed);
+        let reason = entry.exit_reason.unwrap_or(reason);
+
+        for monitor in entry.monitors {
+            self.deliver(
+                monitor.watcher,
+                Received::Down {
+                    reference: monitor.reference,
+                    pid,
+                    reason,
+                },
+            );
+        }
+        for peer in entry.links {
+            self.propagate_exit(peer, pid, reason);
+        }
+    }
+
+    /// Applies `from`'s exit to a linked `peer`: a trapping peer gets a
+    /// [`Received::Exit`] message; an ordinary peer is taken down too on an
+    /// abnormal exit (the cascade), carrying the same reason.
+    fn propagate_exit(&self, peer: Pid, from: Pid, reason: ExitReason) {
+        let Some(mut entry) = self.table.get_mut(&peer.0) else {
+            return;
+        };
+        entry.links.retain(|&linked| linked != from);
+        if entry.trap_exit {
+            let _ = entry.mailbox.send(Received::Exit { from, reason });
+        } else if reason.is_abnormal() {
+            entry.exit_reason = Some(reason);
+            entry.abort.abort();
+        }
+    }
 }
 
 /// Spawns and tracks lightweight processes. Cheap to clone — clones share the
@@ -147,18 +220,45 @@ impl Runtime {
         F: FnOnce(Context) -> Fut,
         Fut: Future<Output = ()> + Send + 'static,
     {
+        self.spawn_entry(Vec::new(), body).0
+    }
+
+    /// Like [`spawn`](Runtime::spawn), but the child is **linked** to `parent`
+    /// before it runs — so the link is in place even if the child exits
+    /// immediately, with no race (Erlang's `spawn_link`).
+    pub fn spawn_link<F, Fut>(&self, parent: Pid, body: F) -> ProcessHandle
+    where
+        F: FnOnce(Context) -> Fut,
+        Fut: Future<Output = ()> + Send + 'static,
+    {
+        let (handle, child) = self.spawn_entry(vec![parent], body);
+        if let Some(mut entry) = self.inner.table.get_mut(&parent.0) {
+            entry.links.push(child);
+        }
+        handle
+    }
+
+    fn spawn_entry<F, Fut>(&self, links: Vec<Pid>, body: F) -> (ProcessHandle, Pid)
+    where
+        F: FnOnce(Context) -> Fut,
+        Fut: Future<Output = ()> + Send + 'static,
+    {
         let pid = Pid(self.inner.next_id.fetch_add(1, Ordering::Relaxed));
         let (mailbox, mailbox_rx) = unbounded_channel();
         let (abort, abort_registration) = AbortHandle::new_pair();
 
         // One write registers the whole process *before* it is spawned: a message
         // sent the instant after can't be lost, the reaper's remove always
-        // balances this insert, and `kill` can already reach it.
+        // balances this insert, and `kill`/`link` can already reach it.
         self.inner.table.insert(
             pid.0,
             ProcessEntry {
                 abort: abort.clone(),
                 mailbox,
+                trap_exit: false,
+                links,
+                monitors: Vec::new(),
+                exit_reason: None,
             },
         );
         self.inner.spawned.fetch_add(1, Ordering::Relaxed);
@@ -174,16 +274,17 @@ impl Runtime {
         let guard = ProcessGuard {
             pid,
             inner: Arc::clone(&self.inner),
+            reason: ExitReason::Killed,
         };
         let join = tokio::spawn(run(guard, Abortable::new(body, abort_registration)));
-        ProcessHandle { pid, abort, join }
+        (ProcessHandle { pid, abort, join }, pid)
     }
 
     /// Delivers `message` to `pid`'s mailbox. Returns `false` if there is no such
     /// live process — sending to a dead process is a silent no-op, like Erlang.
     pub fn send(&self, pid: Pid, message: Message) -> bool {
         match self.inner.table.get(&pid.0) {
-            Some(entry) => entry.mailbox.send(message).is_ok(),
+            Some(entry) => entry.mailbox.send(Received::Message(message)).is_ok(),
             None => false,
         }
     }
@@ -208,7 +309,7 @@ impl Runtime {
     }
 
     /// Stops `pid` at its next suspension point. Returns `false` if there is no
-    /// such live process.
+    /// such live process. Equivalent to `exit(pid, ExitReason::Killed)`.
     pub fn kill(&self, pid: Pid) -> bool {
         match self.inner.table.get(&pid.0) {
             Some(entry) => {
@@ -218,31 +319,127 @@ impl Runtime {
             None => false,
         }
     }
+
+    /// Terminates `pid` with an explicit `reason` (Erlang's `exit/2`) — the
+    /// reason links and monitors will observe. Lets a process "crash" without a
+    /// Rust panic. Returns `false` if there is no such live process.
+    pub fn exit(&self, pid: Pid, reason: ExitReason) -> bool {
+        match self.inner.table.get_mut(&pid.0) {
+            Some(mut entry) => {
+                entry.exit_reason = Some(reason);
+                entry.abort.abort();
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Sets whether `pid` traps exits. A trapping process receives a linked
+    /// peer's exit as a [`Received::Exit`] message instead of dying with it — how
+    /// a supervisor survives its children. No-op if `pid` is not alive.
+    pub fn set_trap_exit(&self, pid: Pid, trap: bool) {
+        if let Some(mut entry) = self.inner.table.get_mut(&pid.0) {
+            entry.trap_exit = trap;
+        }
+    }
+
+    /// Bidirectionally links two live processes: when either exits abnormally the
+    /// other is taken down too (or, if it traps exits, gets a [`Received::Exit`]).
+    /// A no-op if either is already dead or they are the same process.
+    pub fn link(&self, a: Pid, b: Pid) {
+        if a == b {
+            return;
+        }
+        // Only link if both are live; record on each side. If one vanished
+        // between the checks, undo so we never leave a half-link dangling.
+        if self.add_link(a, b) {
+            if self.add_link(b, a) {
+                return;
+            }
+            self.remove_link(a, b);
+        }
+    }
+
+    /// Removes the link between `a` and `b` in both directions.
+    pub fn unlink(&self, a: Pid, b: Pid) {
+        self.remove_link(a, b);
+        self.remove_link(b, a);
+    }
+
+    fn add_link(&self, owner: Pid, peer: Pid) -> bool {
+        match self.inner.table.get_mut(&owner.0) {
+            Some(mut entry) => {
+                if !entry.links.contains(&peer) {
+                    entry.links.push(peer);
+                }
+                true
+            }
+            None => false,
+        }
+    }
+
+    fn remove_link(&self, owner: Pid, peer: Pid) {
+        if let Some(mut entry) = self.inner.table.get_mut(&owner.0) {
+            entry.links.retain(|&linked| linked != peer);
+        }
+    }
+
+    /// `watcher` starts monitoring `target`: when `target` exits, `watcher`
+    /// receives a [`Received::Down`] carrying the returned reference and the exit
+    /// reason. Monitoring is one-way and never propagates death. If `target` is
+    /// already gone, the `Down` (reason [`ExitReason::NoProc`]) is delivered at
+    /// once, like Erlang.
+    pub fn monitor(&self, watcher: Pid, target: Pid) -> MonitorRef {
+        let reference = MonitorRef(self.inner.next_ref.fetch_add(1, Ordering::Relaxed));
+        match self.inner.table.get_mut(&target.0) {
+            Some(mut entry) => entry.monitors.push(Monitor { watcher, reference }),
+            None => self.inner.deliver(
+                watcher,
+                Received::Down {
+                    reference,
+                    pid: target,
+                    reason: ExitReason::NoProc,
+                },
+            ),
+        }
+        reference
+    }
 }
 
-/// Deregisters a process and counts it finished on the **Drop** path, so cleanup
-/// runs whether the body completes, is shut down, or panics.
+/// Deregisters a process — and fans its exit out to links and monitors — on the
+/// **Drop** path, so it runs however the body ends: completion, panic, or kill.
+/// The guard lives inside the task (see [`Runtime::spawn_entry`]).
 struct ProcessGuard {
     pid: Pid,
     inner: Arc<Inner>,
+    reason: ExitReason,
 }
 
 impl Drop for ProcessGuard {
     fn drop(&mut self) {
-        self.inner.table.remove(&self.pid.0);
-        self.inner.finished.fetch_add(1, Ordering::Relaxed);
+        // A panic unwinding through the task means the body crashed; otherwise
+        // `run` has set the reason (Normal on completion, Killed on abort).
+        let reason = if std::thread::panicking() {
+            ExitReason::Crashed
+        } else {
+            self.reason
+        };
+        self.inner.deregister(self.pid, reason);
     }
 }
 
-async fn run<Fut>(_guard: ProcessGuard, body: Abortable<Fut>)
+async fn run<Fut>(mut guard: ProcessGuard, body: Abortable<Fut>)
 where
     Fut: Future<Output = ()> + Send + 'static,
 {
-    // `_guard` lives in the task and deregisters the process on every exit path:
-    // normal completion, a panic (drop runs during unwind), or a kill (which
-    // makes `body` resolve to `Err(Aborted)`). No select loop is needed — the
+    // The guard lives in the task and deregisters the process on every exit path.
+    // We only need to distinguish completion from a kill here; a panic is caught
+    // by the guard via `std::thread::panicking()`. No select loop is needed — the
     // abort handle is the stop signal, and it drops the inner body future.
-    let _ = body.await;
+    guard.reason = match body.await {
+        Ok(()) => ExitReason::Normal,
+        Err(_aborted) => ExitReason::Killed,
+    };
 }
 
 #[cfg(test)]
@@ -254,7 +451,7 @@ mod tests {
         let rt = Runtime::new();
         let (tx, rx) = tokio::sync::oneshot::channel();
         let handle = rt.spawn(|mut ctx| async move {
-            let msg = ctx.recv().await;
+            let msg = ctx.recv().await.message().unwrap();
             let _ = tx.send(msg);
         });
         assert!(rt.send(handle.pid(), b"hello".to_vec()));
@@ -269,7 +466,7 @@ mod tests {
         let handle = rt.spawn(|mut ctx| async move {
             let mut got = Vec::new();
             for _ in 0..3 {
-                got.push(ctx.recv().await);
+                got.push(ctx.recv().await.message().unwrap());
             }
             let _ = tx.send(got);
         });
@@ -289,9 +486,13 @@ mod tests {
         let (tx, rx) = tokio::sync::oneshot::channel();
         let handle = rt.spawn(|mut ctx| async move {
             // Want the "B" message; "A" arrives first and must be left queued.
-            let matched = ctx.recv_match(|m| m.first() == Some(&b'B')).await;
-            let then = ctx.recv().await; // the deferred "A"
-            let last = ctx.recv().await; // then "C"
+            let matched = ctx
+                .recv_match(|m| matches!(m, Received::Message(b) if b.first() == Some(&b'B')))
+                .await
+                .message()
+                .unwrap();
+            let then = ctx.recv().await.message().unwrap(); // the deferred "A"
+            let last = ctx.recv().await.message().unwrap(); // then "C"
             let _ = tx.send((matched, then, last));
         });
         for m in [b"A".to_vec(), b"B".to_vec(), b"C".to_vec()] {
@@ -311,9 +512,10 @@ mod tests {
         let handle = rt.spawn(|mut ctx| async move {
             // Match "C" first, deferring A and B; then selectively pull B out of
             // the save queue, leaving A for an ordinary recv.
-            let c = ctx.recv_match(|m| m.first() == Some(&b'C')).await;
-            let b = ctx.recv_match(|m| m.first() == Some(&b'B')).await;
-            let a = ctx.recv().await;
+            let is = |byte: u8| move |m: &Received| matches!(m, Received::Message(b) if b.first() == Some(&byte));
+            let c = ctx.recv_match(is(b'C')).await.message().unwrap();
+            let b = ctx.recv_match(is(b'B')).await.message().unwrap();
+            let a = ctx.recv().await.message().unwrap();
             let _ = tx.send((a, b, c));
         });
         for m in [b"A".to_vec(), b"B".to_vec(), b"C".to_vec()] {
@@ -365,8 +567,8 @@ mod tests {
 
         let ponger_rt = rt.clone();
         let ponger = rt.spawn(move |mut ctx| async move {
-            let ball = ctx.recv().await;
-            let reply_to = Pid(u64::from_le_bytes(ball[..8].try_into().unwrap()));
+            let ball = ctx.recv().await.message().unwrap();
+            let reply_to = Pid::from_raw(u64::from_le_bytes(ball[..8].try_into().unwrap()));
             ponger_rt.send(reply_to, b"pong".to_vec());
         });
         let ponger_pid = ponger.pid();
@@ -376,7 +578,7 @@ mod tests {
             let mut ball = ctx.pid().raw().to_le_bytes().to_vec();
             ball.extend_from_slice(b"ping");
             pinger_rt.send(ponger_pid, ball);
-            let _ = done_tx.send(ctx.recv().await);
+            let _ = done_tx.send(ctx.recv().await.message().unwrap());
         });
 
         assert_eq!(done_rx.await.unwrap(), b"pong".to_vec());
@@ -473,5 +675,282 @@ mod tests {
         assert_eq!(rt.spawned(), 1000);
         assert_eq!(rt.finished(), 1000);
         assert_eq!(rt.process_count(), 0);
+    }
+
+    // --- Phase 3: links, monitors, supervision -------------------------------
+
+    /// A watcher process that forwards the first thing it receives to the test,
+    /// then parks (staying alive so it can't race its own teardown). Returns its
+    /// pid and the receiving end.
+    fn watch(rt: &Runtime) -> (Pid, tokio::sync::oneshot::Receiver<Received>) {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let pid = rt
+            .spawn(move |mut ctx| async move {
+                let item = ctx.recv().await;
+                let _ = tx.send(item);
+                std::future::pending::<()>().await;
+            })
+            .pid();
+        (pid, rx)
+    }
+
+    /// A process that parks until `go` fires, then ends the given way. The gate
+    /// lets the test wire up links/monitors *before* the exit, with no sleeps.
+    fn gated<F>(rt: &Runtime, ending: F) -> (Pid, tokio::sync::oneshot::Sender<()>)
+    where
+        F: FnOnce() + Send + 'static,
+    {
+        let (go_tx, go_rx) = tokio::sync::oneshot::channel::<()>();
+        let pid = rt
+            .spawn(move |_| async move {
+                let _ = go_rx.await;
+                ending();
+            })
+            .pid();
+        (pid, go_tx)
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn monitor_reports_each_kind_of_exit() {
+        let rt = Runtime::new();
+
+        // Normal completion.
+        let (w1, d1) = watch(&rt);
+        let (t1, go1) = gated(&rt, || {});
+        let r1 = rt.monitor(w1, t1);
+        let _ = go1.send(());
+        assert_eq!(
+            d1.await.unwrap(),
+            Received::Down {
+                reference: r1,
+                pid: t1,
+                reason: ExitReason::Normal
+            }
+        );
+
+        // Panic -> Crashed.
+        let (w2, d2) = watch(&rt);
+        let (t2, go2) = gated(&rt, || panic!("boom"));
+        let r2 = rt.monitor(w2, t2);
+        let _ = go2.send(());
+        assert_eq!(
+            d2.await.unwrap(),
+            Received::Down {
+                reference: r2,
+                pid: t2,
+                reason: ExitReason::Crashed
+            }
+        );
+
+        // Kill -> Killed.
+        let (w3, d3) = watch(&rt);
+        let t3 = rt.spawn(|_| std::future::pending::<()>()).pid();
+        let r3 = rt.monitor(w3, t3);
+        assert!(rt.kill(t3));
+        assert_eq!(
+            d3.await.unwrap(),
+            Received::Down {
+                reference: r3,
+                pid: t3,
+                reason: ExitReason::Killed
+            }
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn monitoring_a_dead_process_reports_noproc_at_once() {
+        let rt = Runtime::new();
+        let dead = rt.spawn(|_| async {});
+        let dead_pid = dead.pid();
+        dead.join().await;
+
+        let (watcher, down) = watch(&rt);
+        let reference = rt.monitor(watcher, dead_pid);
+        assert_eq!(
+            down.await.unwrap(),
+            Received::Down {
+                reference,
+                pid: dead_pid,
+                reason: ExitReason::NoProc
+            }
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_abnormal_exit_cascades_down_links_with_its_reason() {
+        let rt = Runtime::new();
+        let peer = rt.spawn(|_| std::future::pending::<()>()).pid();
+        let (crasher, go) = gated(&rt, || panic!("boom"));
+        rt.link(peer, crasher);
+
+        // Watch the peer: it must go down too, carrying the *crash* reason, not
+        // the bare Killed an abort would otherwise imply.
+        let (watcher, down) = watch(&rt);
+        let reference = rt.monitor(watcher, peer);
+
+        let _ = go.send(());
+        assert_eq!(
+            down.await.unwrap(),
+            Received::Down {
+                reference,
+                pid: peer,
+                reason: ExitReason::Crashed
+            }
+        );
+        assert!(!rt.is_alive(peer));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_normal_exit_does_not_cascade() {
+        let rt = Runtime::new();
+        let survivor = rt.spawn(|_| std::future::pending::<()>());
+        let (quitter, go) = gated(&rt, || {});
+        rt.link(survivor.pid(), quitter);
+
+        let _ = go.send(());
+        // Drain the quitter to completion; its teardown (and any propagation) has
+        // run by the time the table no longer lists it.
+        while rt.is_alive(quitter) {
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            rt.is_alive(survivor.pid()),
+            "a normal exit must not kill links"
+        );
+        survivor.kill();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_trapping_process_gets_an_exit_message_instead_of_dying() {
+        let rt = Runtime::new();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let trapper = rt.spawn(move |mut ctx| async move {
+            let item = ctx.recv().await;
+            let _ = tx.send(item);
+            std::future::pending::<()>().await; // stay alive to prove we trapped
+        });
+        rt.set_trap_exit(trapper.pid(), true);
+
+        let (child, go) = gated(&rt, || panic!("boom"));
+        rt.link(trapper.pid(), child);
+        let _ = go.send(());
+
+        assert_eq!(
+            rx.await.unwrap(),
+            Received::Exit {
+                from: child,
+                reason: ExitReason::Crashed
+            }
+        );
+        assert!(
+            rt.is_alive(trapper.pid()),
+            "a trapping process must survive"
+        );
+        trapper.kill();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn spawn_link_links_the_child_to_its_parent() {
+        let rt = Runtime::new();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let parent = rt.spawn(move |mut ctx| async move {
+            let item = ctx.recv().await;
+            let _ = tx.send(item);
+            std::future::pending::<()>().await;
+        });
+        rt.set_trap_exit(parent.pid(), true);
+
+        let (go_tx, go_rx) = tokio::sync::oneshot::channel::<()>();
+        let child = rt
+            .spawn_link(parent.pid(), move |_| async move {
+                let _ = go_rx.await;
+                panic!("boom");
+            })
+            .pid();
+        let _ = go_tx.send(());
+
+        assert_eq!(
+            rx.await.unwrap(),
+            Received::Exit {
+                from: child,
+                reason: ExitReason::Crashed
+            }
+        );
+        parent.kill();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn unlinking_stops_propagation() {
+        let rt = Runtime::new();
+        let survivor = rt.spawn(|_| std::future::pending::<()>());
+        let (crasher, go) = gated(&rt, || panic!("boom"));
+        rt.link(survivor.pid(), crasher);
+        rt.unlink(survivor.pid(), crasher);
+
+        let _ = go.send(());
+        while rt.is_alive(crasher) {
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            rt.is_alive(survivor.pid()),
+            "an unlinked peer must not be taken down"
+        );
+        survivor.kill();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn linking_a_dead_peer_leaves_no_half_link() {
+        let rt = Runtime::new();
+        let alive = rt.spawn(|_| std::future::pending::<()>());
+        let dead = rt.spawn(|_| async {});
+        let dead_pid = dead.pid();
+        dead.join().await;
+
+        // The dead side can't be recorded; the half-link on `alive` is undone.
+        rt.link(alive.pid(), dead_pid);
+
+        // Prove `alive`'s link set is intact: a fresh linked crasher still
+        // cascades to it. (If the undo had corrupted the list this would hang.)
+        let (crasher, go) = gated(&rt, || panic!("boom"));
+        rt.link(alive.pid(), crasher);
+        let _ = go.send(());
+        while rt.is_alive(alive.pid()) {
+            tokio::task::yield_now().await;
+        }
+        assert!(!rt.is_alive(crasher));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn exit_terminates_with_the_chosen_reason() {
+        let rt = Runtime::new();
+        let (watcher, down) = watch(&rt);
+        let target = rt.spawn(|_| std::future::pending::<()>()).pid();
+        let reference = rt.monitor(watcher, target);
+
+        // exit/2 with a custom reason — no panic, yet observed as Crashed.
+        assert!(rt.exit(target, ExitReason::Crashed));
+        assert_eq!(
+            down.await.unwrap(),
+            Received::Down {
+                reference,
+                pid: target,
+                reason: ExitReason::Crashed
+            }
+        );
+        assert!(!rt.exit(Pid::from_raw(987_654), ExitReason::Normal)); // unknown pid
+    }
+
+    #[tokio::test]
+    async fn link_and_trap_on_missing_processes_are_no_ops() {
+        let rt = Runtime::new();
+        let p = rt.spawn(|_| std::future::pending::<()>());
+        let dead = Pid::from_raw(999_999);
+        rt.link(p.pid(), p.pid()); // self-link: ignored
+        rt.link(dead, p.pid()); // dead first arg: nothing recorded
+        rt.link(p.pid(), dead); // dead second arg: half-link undone
+        rt.unlink(dead, p.pid()); // unlink with a dead owner: no-op
+        rt.set_trap_exit(dead, true); // dead pid: no-op, no panic
+        assert!(rt.is_alive(p.pid()));
+        p.kill();
     }
 }
