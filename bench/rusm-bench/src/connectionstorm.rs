@@ -14,28 +14,23 @@ use crate::sample::Sample;
 const LATENCY_EVERY: u64 = 64;
 /// Most latency samples surfaced in a single tick.
 const LATENCY_SAMPLE: usize = 64;
-/// How often a client recycles one held connection once at target — gentle,
-/// sustained churn that keeps the storm live without exhausting ephemeral ports
-/// (loopback churn is TIME_WAIT-bound to a few hundred/sec; holding is not).
-const CHURN_INTERVAL: Duration = Duration::from_millis(20);
-/// Held connections per client worker (the fd budget caps it further). Kept
-/// well under the client's ephemeral-port range so the gentle churn always has a
-/// free port — holding right at the port ceiling would stall it.
+/// Held connections per client worker (the fd budget caps it further), kept under
+/// the client's ephemeral-port range.
 const PER_WORKER_TARGET: usize = 1536;
 
 /// A **real** TCP connection storm over `rusm-otp`, the headline scenario.
 ///
 /// A loopback listener serves **one process per connection**; client workers ramp
 /// up to a held-open target (bounded by the open-file limit, which we raise first)
-/// and then gently recycle connections. [`tick`](Self::tick) samples
-/// connections/sec (server-side accepts — high during the ramp burst, then the
-/// recycle rate) and connect latency; **peak-concurrent** is the headline, the
-/// live process count.
+/// then continuously recycle connections at full speed. Each client socket is set
+/// to `SO_LINGER(0)`, so closing sends a RST rather than a FIN — **no TIME_WAIT**,
+/// so the churn never exhausts ephemeral ports. [`tick`](Self::tick) samples
+/// connections/sec (server-side accepts) and connect latency; peak-concurrent is
+/// the live process count.
 ///
-/// The ceiling is the **OS**, not RUSM: holding connections is fd-bound, and
-/// *churning* them is TIME_WAIT-bound to a few hundred/sec on loopback. Minting a
-/// process per connection is near-free — the spawn storm does 1.4M/s — so RUSM is
-/// never the bottleneck. Must be constructed inside a Tokio runtime.
+/// The ceiling is the **OS** (file descriptors, connect/accept throughput), not
+/// RUSM: minting a process per connection is near-free — the spawn storm does
+/// 1.4M/s. Must be constructed inside a Tokio runtime.
 pub struct ConnectionStormEngine {
     runtime: Runtime,
     accepted: Arc<AtomicU64>,
@@ -101,13 +96,17 @@ impl ConnectionStormEngine {
                 let client_rt = runtime.clone();
                 let latency_tx = latency_tx.clone();
                 tokio::spawn(async move {
-                    let mut held: Vec<TcpStream> = Vec::new();
+                    let mut held: Vec<TcpStream> = Vec::with_capacity(share);
                     let mut opened: u64 = 0;
                     loop {
-                        if held.len() < share {
+                        while held.len() < share {
                             let started = Instant::now();
                             match client_rt.connect(addr).await {
                                 Ok(stream) => {
+                                    // RST on close (no TIME_WAIT) → churn never
+                                    // exhausts ephemeral ports.
+                                    let _ = socket2::SockRef::from(&stream)
+                                        .set_linger(Some(Duration::ZERO));
                                     held.push(stream);
                                     opened += 1;
                                     if opened % LATENCY_EVERY == 0 {
@@ -115,13 +114,11 @@ impl ConnectionStormEngine {
                                             latency_tx.send(started.elapsed().as_nanos() as u64);
                                     }
                                 }
-                                // fd / ephemeral-port pressure: ease off, then retry.
+                                // fd pressure: ease off, then retry.
                                 Err(_) => tokio::time::sleep(Duration::from_millis(5)).await,
                             }
-                        } else {
-                            tokio::time::sleep(CHURN_INTERVAL).await;
-                            held.swap_remove(0); // recycle the oldest connection
                         }
+                        held.swap_remove(0); // RST-close the oldest; reopened next pass
                     }
                 })
             })

@@ -21,6 +21,8 @@ toml = "1.1.2"
 # Raise the open-file limit so the connection storm can hold many sockets at once
 # — the connection ceiling is the OS, not the runtime.
 rlimit = "0.10.2"
+# Set SO_LINGER(0) on churned client sockets (RST close, no TIME_WAIT).
+socket2 = "0.5.7"
 
 # Runnable examples live in the repo-root `examples/<name>/` directories,
 # each with its own README.
