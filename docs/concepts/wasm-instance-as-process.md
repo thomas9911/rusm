@@ -22,6 +22,7 @@ Tokio task. Because host calls are async (see
 [fibers & blocking→async](./fibers-and-blocking-to-async.md)), a process that
 "blocks" simply parks its task, freeing the worker thread for other processes.
 
-> The process *abstraction* (task + mailbox + signal loop) is built on native
-> Rust bodies in Phase 1. A process becomes a real isolated **Wasm instance** when
-> the Wasmtime backend is slotted in at Phase 6 — the actor layer above is unchanged.
+> The process *abstraction* (task + mailbox, with an abort-based lifecycle and
+> links/monitors) is built on native Rust bodies in Phases 1–3. A process becomes
+> a real isolated **Wasm instance** when the Wasmtime backend is slotted in at
+> Phase 6 — the actor layer above is unchanged.

@@ -1,8 +1,9 @@
 # RUSM examples
 
-Small, ready-to-run programs — each demonstrates one capability. Spawn-storm runs
-**real** `rusm-otp` processes; the other scenarios are synthetic until their
-phase lands — the same code keeps working as each part of the runtime arrives.
+Small, ready-to-run programs — each demonstrates one capability. Spawn-storm,
+ping-pong, and fault-recovery run **real** `rusm-otp` processes; the remaining
+scenarios are synthetic until their phase lands — the same code keeps working as
+each part of the runtime arrives.
 
 ## Runnable example apps
 

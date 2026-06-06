@@ -65,8 +65,9 @@ make dashboard
 
 That builds the CLI, starts a node, launches the dashboard, and opens your
 browser. Pick a scenario, press **Run**, and watch live throughput, latency
-percentiles, and the host/instance observer. (Spawn-storm runs **real**
-`rusm-otp` processes; the other scenarios are synthetic until their phase lands.)
+percentiles, and the host/instance observer. (Spawn-storm, ping-pong, and
+fault-recovery run **real** `rusm-otp` processes; the remaining scenarios are
+synthetic until their phase lands.)
 
 Prefer to drive the pieces yourself? (`make help` lists everything)
 
@@ -126,10 +127,10 @@ by construction** — Wasm lives only in the (planned) backend.
 
 | Crate | Kind | Purpose |
 | --- | --- | --- |
-| `rusm-otp` | lib | **The Erlang/OTP core** — processes, scheduler, signals, lifecycle. Pure Rust, **no `wasmtime` dependency** (usable standalone). Built up across Phases 1–5. |
+| `rusm-otp` | lib | **The Erlang/OTP core** — processes, scheduler, mailboxes & selective receive, links/monitors/supervision. Pure Rust, **no `wasmtime` dependency** (usable standalone). Built up across Phases 1–5. |
 | `rusm-metrics` | lib | Counters, HdrHistogram-backed latency percentiles, ring-buffer time-series. |
 | `rusm-observer` | lib | Low-overhead live-observer snapshots — aggregate counters plus a sampled per-instance table, with a detail on/off toggle. |
-| `rusm-bench` | lib + bin | Scenarios, the synthetic data source, the real spawn-storm engine, the run aggregator, the wire protocol, and the WebSocket server. Binary: `rusm-bench serve` / `run`. |
+| `rusm-bench` | lib + bin | Scenarios, the synthetic data source, the real engines (spawn-storm, ping-pong, fault-recovery), the run aggregator, the wire protocol, and the WebSocket server. Binary: `rusm-bench serve` / `run`. |
 | `rusm-cli` | bin (`rusm`) | The `rusm` command: `node start` and `attach <url>` (live REPL). |
 
 **Planned:** `rusm-wasm` (Phase 6) — the *only* crate that touches Wasmtime; it
