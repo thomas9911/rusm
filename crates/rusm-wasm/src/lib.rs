@@ -9,6 +9,8 @@
 //!
 //! Wasm lives *only* here; `rusm-otp` never references Wasmtime.
 
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
@@ -30,14 +32,21 @@ const MAX_INSTANCES: u32 = 2048;
 /// Per-instance linear-memory reservation (virtual, copy-on-write committed).
 const MAX_MEMORY: usize = 256 << 10;
 
+/// Counters shared by every instance of one [`WasmRuntime`], so host functions
+/// can report aggregate activity (e.g. guest progress for the fairness scenario).
+#[derive(Default)]
+struct Counters {
+    /// Total `notify` host-function calls across all guests.
+    notifications: AtomicU64,
+}
+
 /// Per-instance host state reachable from host functions via `Caller::data`.
 /// Opaque to callers — they only ever hold it inside an [`InstancePre`].
-#[derive(Default)]
 pub struct Host {
     /// The owning process's pid (0 for a bare instance with no process).
     pid: u64,
-    /// Times the guest called the `notify` host function (host-ABI test hook).
-    host_calls: u64,
+    /// Shared across the runtime's instances.
+    shared: Arc<Counters>,
 }
 
 /// Runs Wasm guests as RUSM processes.
@@ -47,6 +56,7 @@ pub struct WasmRuntime {
     /// Built once; host imports are resolved per *module* (into an [`InstancePre`]
     /// by [`prepare`](WasmRuntime::prepare)), never per spawn.
     linker: Linker<Host>,
+    shared: Arc<Counters>,
     epoch_ticker: JoinHandle<()>,
 }
 
@@ -90,6 +100,7 @@ impl WasmRuntime {
             engine,
             rt,
             linker,
+            shared: Arc::new(Counters::default()),
             epoch_ticker,
         })
     }
@@ -97,6 +108,11 @@ impl WasmRuntime {
     /// Compiles a module from Wasm bytes or `.wat` text.
     pub fn compile(&self, wasm: impl AsRef<[u8]>) -> Result<Module> {
         Ok(Module::new(&self.engine, wasm)?)
+    }
+
+    /// Total `notify` calls made by all guests so far — guest-reported progress.
+    pub fn notifications(&self) -> u64 {
+        self.shared.notifications.load(Ordering::Relaxed)
     }
 
     /// Resolves a module's host imports **once**, yielding a reusable
@@ -113,12 +129,13 @@ impl WasmRuntime {
         let engine = self.engine.clone();
         let rt = self.rt.clone();
         let prepared = prepared.clone();
+        let shared = Arc::clone(&self.shared);
         let entry = entry.into();
         self.rt.spawn(move |ctx| async move {
             let pid = ctx.pid();
             // The mailbox (in `ctx`) is unused until the messaging host ABI lands;
             // dropping it leaves the process alive, addressable via its abort handle.
-            if run(&engine, &prepared, pid, &entry).await.is_err() {
+            if run(&engine, &prepared, pid, shared, &entry).await.is_err() {
                 rt.exit(pid, ExitReason::Crashed);
             }
         })
@@ -137,18 +154,28 @@ fn link_host(engine: &Engine) -> Result<Linker<Host>> {
     linker.func_wrap("rusm", "self_pid", |caller: Caller<'_, Host>| {
         caller.data().pid as i64
     })?;
-    linker.func_wrap("rusm", "notify", |mut caller: Caller<'_, Host>| {
-        caller.data_mut().host_calls += 1;
+    linker.func_wrap("rusm", "notify", |caller: Caller<'_, Host>| {
+        caller
+            .data()
+            .shared
+            .notifications
+            .fetch_add(1, Ordering::Relaxed);
     })?;
     Ok(linker)
 }
 
 /// Instantiates a prepared module in a fresh store and runs its `entry` export,
 /// yielding to the scheduler whenever the epoch deadline is reached.
-async fn run(engine: &Engine, prepared: &InstancePre<Host>, pid: Pid, entry: &str) -> Result<()> {
+async fn run(
+    engine: &Engine,
+    prepared: &InstancePre<Host>,
+    pid: Pid,
+    shared: Arc<Counters>,
+    entry: &str,
+) -> Result<()> {
     let host = Host {
         pid: pid.raw(),
-        host_calls: 0,
+        shared,
     };
     let mut store = Store::new(engine, host);
     // Yield to Tokio on each epoch tick, then run for one more tick.
@@ -164,6 +191,21 @@ async fn run(engine: &Engine, prepared: &InstancePre<Host>, pid: Pid, entry: &st
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A bare store that shares the runtime's counters, with the epoch deadline
+    /// set — for tests that instantiate directly instead of via `spawn`.
+    fn bare_store(wr: &WasmRuntime, pid: u64) -> Store<Host> {
+        let mut store = Store::new(
+            &wr.engine,
+            Host {
+                pid,
+                shared: Arc::clone(&wr.shared),
+            },
+        );
+        store.set_epoch_deadline(1);
+        store.epoch_deadline_async_yield_and_update(1);
+        store
+    }
 
     const ADD: &str = r#"(module
         (func (export "add") (param i32 i32) (result i32)
@@ -181,7 +223,12 @@ mod tests {
 
     const SPINS: &str = r#"(module (func (export "run") (loop (br 0))))"#;
 
-    const NOOP: &str = r#"(module (memory 1) (func (export "run")))"#;
+    // Each run reports completion via `notify`, so the bench can assert every
+    // instance truly ran (no silent pool-exhaustion crashes inflating the rate).
+    const NOOP: &str = r#"(module
+        (import "rusm" "notify" (func $notify))
+        (memory 1)
+        (func (export "run") (call $notify)))"#;
 
     #[ignore]
     #[tokio::test(flavor = "multi_thread")]
@@ -201,16 +248,15 @@ mod tests {
             "wasm instance-per-process: {n} in {elapsed:?} = {:.0}/s",
             n as f64 / elapsed.as_secs_f64()
         );
-        assert_eq!(rt.finished(), n as u64); // every instance ran and was reaped
+        assert_eq!(rt.finished(), n as u64); // every instance was reaped
+        assert_eq!(wr.notifications(), n as u64); // ...and actually ran (no crashes)
     }
 
     #[tokio::test]
     async fn instantiates_and_calls_an_export() {
         let wr = WasmRuntime::new(Runtime::new()).unwrap();
         let module = wr.compile(ADD).unwrap();
-        let mut store = Store::new(&wr.engine, Host::default());
-        store.set_epoch_deadline(1);
-        store.epoch_deadline_async_yield_and_update(1);
+        let mut store = bare_store(&wr, 0);
         let instance = wr
             .prepare(&module)
             .unwrap()
@@ -227,9 +273,7 @@ mod tests {
     async fn a_guest_can_call_a_host_function() {
         let wr = WasmRuntime::new(Runtime::new()).unwrap();
         let module = wr.compile(CALLS_NOTIFY_TWICE).unwrap();
-        let mut store = Store::new(&wr.engine, Host::default());
-        store.set_epoch_deadline(1);
-        store.epoch_deadline_async_yield_and_update(1);
+        let mut store = bare_store(&wr, 0);
         let instance = wr
             .prepare(&module)
             .unwrap()
@@ -242,22 +286,14 @@ mod tests {
             .call_async(&mut store, ())
             .await
             .unwrap();
-        assert_eq!(store.data().host_calls, 2);
+        assert_eq!(wr.notifications(), 2);
     }
 
     #[tokio::test]
     async fn a_guest_reads_its_pid_via_a_host_function() {
         let wr = WasmRuntime::new(Runtime::new()).unwrap();
         let module = wr.compile(REPORTS_PID).unwrap();
-        let mut store = Store::new(
-            &wr.engine,
-            Host {
-                pid: 42,
-                host_calls: 0,
-            },
-        );
-        store.set_epoch_deadline(1);
-        store.epoch_deadline_async_yield_and_update(1);
+        let mut store = bare_store(&wr, 42);
         let instance = wr
             .prepare(&module)
             .unwrap()
