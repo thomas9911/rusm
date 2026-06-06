@@ -9,13 +9,13 @@
 //!
 //! Wasm lives *only* here; `rusm-otp` never references Wasmtime.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::thread::JoinHandle;
 use std::time::Duration;
 
 use anyhow::Result;
 use rusm_otp::{ExitReason, Pid, ProcessHandle, Runtime};
-use tokio::task::JoinHandle;
 use wasmtime::{
     Caller, Config, Engine, InstanceAllocationStrategy, InstancePre, Linker, Module,
     PoolingAllocationConfig, Store,
@@ -57,7 +57,8 @@ pub struct WasmRuntime {
     /// by [`prepare`](WasmRuntime::prepare)), never per spawn.
     linker: Linker<Host>,
     shared: Arc<Counters>,
-    epoch_ticker: JoinHandle<()>,
+    epoch_stop: Arc<AtomicBool>,
+    epoch_ticker: Option<JoinHandle<()>>,
 }
 
 impl WasmRuntime {
@@ -85,13 +86,16 @@ impl WasmRuntime {
         let engine = Engine::new(&config)?;
         let linker = link_host(&engine)?;
 
-        // Bump the epoch on a cadence; each increment is what lets a running guest
-        // hit its deadline and yield.
+        // Bump the epoch on a cadence — on a **dedicated OS thread**, not a Tokio
+        // task. The whole point is to preempt guests that are pinning the Tokio
+        // workers; a ticker that needed a worker itself would starve exactly when
+        // it's needed (and deadlock once every worker runs a tight-loop guest).
         let ticker_engine = engine.clone();
-        let epoch_ticker = tokio::spawn(async move {
-            let mut interval = tokio::time::interval(EPOCH_TICK);
-            loop {
-                interval.tick().await;
+        let epoch_stop = Arc::new(AtomicBool::new(false));
+        let stop = Arc::clone(&epoch_stop);
+        let epoch_ticker = std::thread::spawn(move || {
+            while !stop.load(Ordering::Relaxed) {
+                std::thread::sleep(EPOCH_TICK);
                 ticker_engine.increment_epoch();
             }
         });
@@ -101,7 +105,8 @@ impl WasmRuntime {
             rt,
             linker,
             shared: Arc::new(Counters::default()),
-            epoch_ticker,
+            epoch_stop,
+            epoch_ticker: Some(epoch_ticker),
         })
     }
 
@@ -144,7 +149,10 @@ impl WasmRuntime {
 
 impl Drop for WasmRuntime {
     fn drop(&mut self) {
-        self.epoch_ticker.abort();
+        self.epoch_stop.store(true, Ordering::Relaxed);
+        if let Some(ticker) = self.epoch_ticker.take() {
+            let _ = ticker.join();
+        }
     }
 }
 
