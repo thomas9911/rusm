@@ -30,13 +30,16 @@ pub struct ScenarioMeta {
 }
 
 impl Scenario {
+    // Ordered by the phase each scenario goes live (the dashboard menu shows them
+    // in this order). The enum discriminants are unchanged, so the synthetic
+    // source stays deterministic.
     pub const ALL: [Scenario; 6] = [
-        Scenario::SpawnStorm,
-        Scenario::PingPong,
-        Scenario::Fairness,
-        Scenario::FaultRecovery,
-        Scenario::ConnectionStorm,
-        Scenario::DistributedFanout,
+        Scenario::SpawnStorm,        // phase 1
+        Scenario::PingPong,          // phase 2
+        Scenario::FaultRecovery,     // phase 3
+        Scenario::ConnectionStorm,   // phase 5
+        Scenario::Fairness,          // phase 6
+        Scenario::DistributedFanout, // phase 9
     ];
 
     pub fn id(self) -> &'static str {
@@ -184,6 +187,17 @@ mod tests {
     #[test]
     fn all_meta_covers_every_scenario() {
         assert_eq!(Scenario::all_meta().len(), Scenario::ALL.len());
+    }
+
+    #[test]
+    fn scenarios_are_listed_in_phase_order() {
+        let phases: Vec<u8> = Scenario::all_meta()
+            .iter()
+            .map(|m| m.real_after_phase)
+            .collect();
+        let mut sorted = phases.clone();
+        sorted.sort_unstable();
+        assert_eq!(phases, sorted, "the scenario menu must be phase-ordered");
     }
 
     #[test]
