@@ -44,24 +44,54 @@ later runtime rows still show RUSM as *planned (Phase N)*. The value is in the
 
 ## Capability matrix
 
-✅ implemented · ⚠️ partial/synthetic · ❌ not yet · 🅛 Lunatic-only · 🅡 RUSM-only
+Implementation: ✅ done · ⚠️ partial/synthetic · ❌ not yet · 🅛 Lunatic-only · 🅡 RUSM-only
+Perf/efficiency vs Lunatic: ✅ on par · ⚡ ahead by design¹ · — not built yet
 
 This mirrors the [roadmap](./02-roadmap.md) **phase-for-phase** — one row per
 phase, same themes, same order.
 
-| Phase | Capability | RUSM | Lunatic |
-| --- | --- | :---: | --- |
-| 1 ✅ | Process & scheduler core | ✅ done (`rusm-otp`) | ✅ `WasmProcess` |
-| 2 ✅ | Mailboxes & message passing | ✅ done (one channel + selective receive) | ✅ selective-receive |
-| 3 ✅ | Links, monitors, supervision, fault tolerance | ✅ done (links/monitors/trap/exit) | ✅ `Signal` enum |
-| 4 ✅ | Process management (registry, timers, lifecycle) | ✅ done (sharded registry, Tokio timers) | ✅ |
-| 5 ✅ | Connectivity — TCP | ✅ done (TCP, process-per-conn; TLS → P9) | ✅ TCP/UDP/DNS/TLS |
-| 6 | Wasmtime backend (instance-per-process, preemption) | ❌ → epoch | ✅ (fuel) |
-| 7 | WASI + per-process sandbox | ❌ | ✅ |
-| 8 | Guest crate | ❌ → `rusm-rs` | 🅛 `lunatic-rs` (separate repo) |
-| 9 | Distributed clusters + live attach | ❌ | ✅ (Axum + Submillisecond) |
-| 10 | Performance (pooling + CoW + epoch) | ❌ | ⚠️ OnDemand + fuel |
-| — | SQLite host API | ❌ | 🅛 |
+| Phase | Capability | RUSM | Lunatic | On par? (perf/efficiency) |
+| --- | --- | :---: | --- | --- |
+| 1 ✅ | Process & scheduler core | ✅ done (`rusm-otp`) | ✅ `WasmProcess` | ✅ on par |
+| 2 ✅ | Mailboxes & message passing | ✅ done (one channel + selective receive) | ✅ selective-receive | ⚡ ahead |
+| 3 ✅ | Links, monitors, supervision, fault tolerance | ✅ done (links/monitors/trap/exit) | ✅ `Signal` enum | ⚡ ahead |
+| 4 ✅ | Process management (registry, timers, lifecycle) | ✅ done (sharded registry, Tokio timers) | ✅ | ⚡ ahead |
+| 5 ✅ | Connectivity — TCP | ✅ done (TCP, process-per-conn; TLS → P9) | ✅ TCP/UDP/DNS/TLS | ✅ on par |
+| 6 | Wasmtime backend (instance-per-process, preemption) | ❌ → epoch | ✅ (fuel) | — TBD (the decisive race) |
+| 7 | WASI + per-process sandbox | ❌ | ✅ | — not built |
+| 8 | Guest crate | ❌ → `rusm-rs` | 🅛 `lunatic-rs` (separate repo) | — n/a (DX, not perf) |
+| 9 | Distributed clusters + live attach | ❌ | ✅ (Axum + Submillisecond) | — not built |
+| 10 | Performance (pooling + CoW + epoch) | ❌ | ⚠️ OnDemand + fuel | — TBD |
+| — | SQLite host API | ❌ | 🅛 | — n/a |
+
+> ¹ The perf column is an **architectural** assessment, not a head-to-head
+> benchmark — and Phases 1–5 run **native** Rust bodies, so they compare the
+> OTP/host machinery, *not* Wasm execution. The true lightweight-process
+> efficiency race is **Phase 6**, when guests become real Wasm instances.
+
+**Why each verdict (perf/efficiency):**
+
+- **1 — on par.** Identical model: one process = one Tokio task. RUSM's native
+  spawn sustains ~1.4M/s; Lunatic's per-spawn also instantiates a Wasm module, so
+  a fair head-to-head waits for Phase 6.
+- **2 — ahead.** RUSM keeps **one** channel per process (the mailbox); Lunatic
+  keeps two (signal + message) and double-handles each message (mpsc →
+  `Mutex<VecDeque>`). Kill rides a free abort handle — less memory, one fewer
+  queue per process.
+- **3 — ahead.** Exit signals ride the mailbox (no separate signal channel to
+  multiplex), and a crash is captured via `std::thread::panicking()` with **no
+  `catch_unwind`** per-poll cost.
+- **4 — ahead.** The registry is a sharded `DashMap` (name lookups never take a
+  global lock, unlike Lunatic's single `RwLock<HashMap>`); timers ride Tokio's
+  hierarchical wheel instead of a hand-rolled `BinaryHeap` + one timer-service task.
+- **5 — on par.** Both are process-per-connection; the connection *rate* is the OS
+  kernel `connect`/`accept` ceiling (identical for both), and minting a process
+  per connection is ~free on both (RUSM spawns ~100× faster than the loopback
+  hands out sockets).
+- **6 — the decisive race, not yet run.** Wasm execution is where
+  lightweight-process efficiency is really decided: pooling allocation,
+  copy-on-write memory init, and epoch preemption vs Lunatic's fuel. RUSM's
+  "beat" levers live here.
 
 Already shipped in Phase 0 — where RUSM already leads Lunatic:
 
