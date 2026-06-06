@@ -53,7 +53,7 @@ coverage ≥98% (mostly 100%); dashboard `bun test --coverage` 100% on logic;
 
 ## Next
 
-[Phase 1](../02-roadmap.md): the **process & scheduler core** — a process =
+[Phase 1](./phase-01-process-core.md): the **process & scheduler core** — a process =
 Tokio task + process table + abort-based lifecycle, running a native Rust body
 (the mailbox arrives with messaging in Phase 2). The first real step toward the
 actor model; Wasmtime arrives as the *backend* in Phase 6.

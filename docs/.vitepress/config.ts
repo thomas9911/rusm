@@ -58,7 +58,15 @@ export default defineConfig({
       },
       {
         text: 'Phase log',
-        items: [{ text: 'Phase 0 — Foundation', link: '/phases/phase-00-foundation' }],
+        items: [
+          { text: 'Phase 0 — Foundation', link: '/phases/phase-00-foundation' },
+          { text: 'Phase 1 — Process core', link: '/phases/phase-01-process-core' },
+          { text: 'Phase 2 — Messaging', link: '/phases/phase-02-messaging' },
+          { text: 'Phase 3 — Supervision', link: '/phases/phase-03-supervision' },
+          { text: 'Phase 4 — Management', link: '/phases/phase-04-management' },
+          { text: 'Phase 5 — TCP', link: '/phases/phase-05-tcp' },
+          { text: 'Phase 6 — Wasm backend', link: '/phases/phase-06-wasm-backend' },
+        ],
       },
     ],
     search: { provider: 'local' },
