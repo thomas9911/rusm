@@ -82,8 +82,12 @@ mod tests {
         for _ in 0..3 {
             clients.push(rt.connect(addr).await.unwrap());
         }
-        // 3 connection handlers + the acceptor.
-        while rt.process_count() < 4 {
+        // 3 connection handlers + the acceptor. Bounded poll so a lost connection
+        // fails the assertion rather than hanging the test.
+        for _ in 0..1000 {
+            if rt.process_count() == 4 {
+                break;
+            }
             tokio::task::yield_now().await;
         }
         assert_eq!(rt.process_count(), 4);

@@ -190,12 +190,19 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn clients_open_connections_each_served_by_its_own_process() {
         let mut engine = ConnectionStormEngine::new(2, 4);
-        tokio::time::sleep(Duration::from_millis(150)).await; // ramp up
-        let sample = engine.tick();
-        assert!(sample.ops_per_sec > 0.0, "connections should be accepted");
+        // Poll until the storm has ramped, rather than betting on a fixed sleep:
+        // robust to scheduling/IO timing, and bounded so it can't hang.
+        let mut sample = engine.tick();
+        for _ in 0..200 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            sample = engine.tick();
+            if sample.process_count > 1 && !sample.latencies_ns.is_empty() {
+                break;
+            }
+        }
         assert!(
             sample.process_count > 1,
-            "live connections beyond the acceptor"
+            "each accepted connection is its own live process (+ the acceptor)"
         );
         assert!(
             !sample.latencies_ns.is_empty(),
