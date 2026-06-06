@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::fmt;
 use std::future::Future;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -16,6 +17,11 @@ use crate::pid::Pid;
 pub struct Context {
     pid: Pid,
     mailbox: UnboundedReceiver<Message>,
+    /// Messages pulled from the channel but skipped over by a selective
+    /// [`recv_match`](Context::recv_match), kept in arrival order. A later
+    /// receive sees them before anything still in the channel — the Erlang
+    /// "save queue". Empty (and allocation-free) unless selective receive is used.
+    saved: VecDeque<Message>,
 }
 
 impl Context {
@@ -28,10 +34,37 @@ impl Context {
     /// with zero cost until a message or a [`kill`](Runtime::kill) wakes it, so a
     /// server loop is simply `loop { let msg = ctx.recv().await; … }`.
     pub async fn recv(&mut self) -> Message {
+        match self.saved.pop_front() {
+            Some(message) => message,
+            None => self.next_from_mailbox().await,
+        }
+    }
+
+    /// Receives the next message for which `matches` is true, suspending until
+    /// one arrives. Messages that don't match are left queued in arrival order
+    /// for a later receive — Erlang's selective `receive`. Already-saved messages
+    /// are considered first, so this never reorders the mailbox.
+    pub async fn recv_match<F>(&mut self, mut matches: F) -> Message
+    where
+        F: FnMut(&Message) -> bool,
+    {
+        if let Some(pos) = self.saved.iter().position(&mut matches) {
+            return self.saved.remove(pos).expect("position is in bounds");
+        }
+        loop {
+            let message = self.next_from_mailbox().await;
+            if matches(&message) {
+                return message;
+            }
+            self.saved.push_back(message);
+        }
+    }
+
+    async fn next_from_mailbox(&mut self) -> Message {
         // The sole sender lives in the process table, which the running task
         // keeps alive through its own `Arc<Inner>`; it is removed only after this
         // body returns. So while we are awaiting here the channel cannot close —
-        // `recv` always yields a message.
+        // a live process always has a message coming or is parked forever.
         self.mailbox
             .recv()
             .await
@@ -133,6 +166,7 @@ impl Runtime {
         let body = body(Context {
             pid,
             mailbox: mailbox_rx,
+            saved: VecDeque::new(),
         });
         // The guard is moved *into* the task, so the process is deregistered on
         // every teardown path: completion, panic (drop runs during unwind), or a
@@ -246,6 +280,47 @@ mod tests {
             rx.await.unwrap(),
             vec![b"a".to_vec(), b"b".to_vec(), b"c".to_vec()]
         );
+        handle.join().await;
+    }
+
+    #[tokio::test]
+    async fn recv_match_takes_a_match_and_leaves_the_rest_in_order() {
+        let rt = Runtime::new();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let handle = rt.spawn(|mut ctx| async move {
+            // Want the "B" message; "A" arrives first and must be left queued.
+            let matched = ctx.recv_match(|m| m.first() == Some(&b'B')).await;
+            let then = ctx.recv().await; // the deferred "A"
+            let last = ctx.recv().await; // then "C"
+            let _ = tx.send((matched, then, last));
+        });
+        for m in [b"A".to_vec(), b"B".to_vec(), b"C".to_vec()] {
+            assert!(rt.send(handle.pid(), m));
+        }
+        let (matched, then, last) = rx.await.unwrap();
+        assert_eq!(matched, b"B".to_vec());
+        assert_eq!(then, b"A".to_vec());
+        assert_eq!(last, b"C".to_vec());
+        handle.join().await;
+    }
+
+    #[tokio::test]
+    async fn recv_match_finds_a_previously_deferred_message() {
+        let rt = Runtime::new();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let handle = rt.spawn(|mut ctx| async move {
+            // Match "C" first, deferring A and B; then selectively pull B out of
+            // the save queue, leaving A for an ordinary recv.
+            let c = ctx.recv_match(|m| m.first() == Some(&b'C')).await;
+            let b = ctx.recv_match(|m| m.first() == Some(&b'B')).await;
+            let a = ctx.recv().await;
+            let _ = tx.send((a, b, c));
+        });
+        for m in [b"A".to_vec(), b"B".to_vec(), b"C".to_vec()] {
+            assert!(rt.send(handle.pid(), m));
+        }
+        let (a, b, c) = rx.await.unwrap();
+        assert_eq!((a, b, c), (b"A".to_vec(), b"B".to_vec(), b"C".to_vec()));
         handle.join().await;
     }
 

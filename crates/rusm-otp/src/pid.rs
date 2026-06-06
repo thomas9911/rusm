@@ -8,6 +8,13 @@ impl Pid {
     pub fn raw(self) -> u64 {
         self.0
     }
+
+    /// Rebuilds a pid from its [`raw`](Pid::raw) id — e.g. after carrying it in a
+    /// message or across a node boundary. The id need not be live; sending to a
+    /// stale pid is simply a no-op.
+    pub fn from_raw(raw: u64) -> Pid {
+        Pid(raw)
+    }
 }
 
 impl fmt::Display for Pid {
@@ -28,5 +35,11 @@ mod tests {
         assert_eq!(format!("{p:?}"), "Pid(7)");
         assert!(Pid(1) < Pid(2));
         assert_eq!(Pid(3), Pid(3));
+    }
+
+    #[test]
+    fn from_raw_round_trips() {
+        assert_eq!(Pid::from_raw(42).raw(), 42);
+        assert_eq!(Pid::from_raw(9), Pid(9));
     }
 }
