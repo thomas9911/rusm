@@ -8,14 +8,16 @@ distributed clusters you can hook into live. See `README.md` for the pitch and
 
 ## Status
 
-**Phase 3 of 10 — complete.** The Wasm-free OTP core (`rusm-otp`) spawns,
-schedules, kills, messages, and now **supervises** **real** lightweight
+**Phase 4 of 10 — complete.** The Wasm-free OTP core (`rusm-otp`) spawns,
+schedules, kills, messages, supervises, and **manages** **real** lightweight
 processes: links, monitors, exit reasons, `trap_exit`, `spawn_link`, `exit/2`,
-and Erlang-style exit cascades. Three benchmarks are live — spawn-storm (~1.4M
-spawns/sec), ping-pong (~3M messages/sec, round-trip p50 ~2 µs), and
-fault-recovery (~100k restarts/sec). Each process keeps a single channel; exit
-signals ride the mailbox (a `Received` enum) and kill rides a `futures` abort
-handle (no second signal channel — we beat Lunatic's two). Phase 0 (metrics,
+exit cascades, plus a named **registry**, **timers** (`send_after`/`cancel`), and
+graceful `shutdown`. Three benchmarks are live — spawn-storm (~1.4M spawns/sec),
+ping-pong (~3M messages/sec, round-trip p50 ~2 µs), and fault-recovery (~100k
+restarts/sec). Each process keeps a single channel; exit signals ride the mailbox
+(a `Received` enum) and kill rides a `futures` abort handle (no second signal
+channel — we beat Lunatic's two). The registry is a sharded `DashMap` (no global
+lock) and timers use Tokio's timer wheel (no hand-rolled heap). Phase 0 (metrics,
 live observer, benchmark harness + WebSocket server, `rusm` CLI, React dashboard,
 examples) is done. The Wasmtime backend and clustering are later phases; see
 `docs/02-roadmap.md`.

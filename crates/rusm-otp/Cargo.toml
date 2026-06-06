@@ -13,4 +13,8 @@ description = "The Wasm-free Erlang/OTP core of RUSM: processes, mailboxes, sche
 [dependencies]
 dashmap = "6.2.1"
 futures-util = { version = "0.3.32", default-features = false, features = ["alloc"] }
-tokio = { version = "1.52.3", features = ["rt", "rt-multi-thread", "sync", "macros"] }
+tokio = { version = "1.52.3", features = ["rt", "rt-multi-thread", "sync", "macros", "time"] }
+
+[dev-dependencies]
+# `test-util` gives paused virtual time, for deterministic timer tests.
+tokio = { version = "1.52.3", features = ["test-util"] }

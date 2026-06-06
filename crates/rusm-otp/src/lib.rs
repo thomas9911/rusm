@@ -14,4 +14,4 @@ mod runtime;
 pub use exit::{ExitReason, MonitorRef};
 pub use message::{Message, Received};
 pub use pid::Pid;
-pub use runtime::{Context, ProcessHandle, Runtime};
+pub use runtime::{Context, ProcessHandle, Runtime, TimerRef};

@@ -3,7 +3,9 @@ use std::fmt;
 use std::future::Future;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
+use dashmap::mapref::entry::Entry;
 use dashmap::DashMap;
 use futures_util::future::{AbortHandle, Abortable};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
@@ -133,6 +135,8 @@ struct ProcessEntry {
     links: Vec<Pid>,
     /// Processes monitoring us.
     monitors: Vec<Monitor>,
+    /// Names this process holds in the registry, released on exit.
+    names: Vec<String>,
     /// A reason staged by a link cascade, so this process exits with the
     /// *original* reason rather than the bare `Killed` an abort would imply.
     exit_reason: Option<ExitReason>,
@@ -147,6 +151,9 @@ struct Inner {
     // Sharded concurrent map: spawners and completers mostly touch different
     // shards, so the process table isn't a global-lock bottleneck under a storm.
     table: DashMap<u64, ProcessEntry>,
+    // name -> pid. Sharded too, so name lookups never take a global lock the way
+    // Lunatic's single `RwLock<HashMap>` registry does.
+    registry: DashMap<String, u64>,
 }
 
 impl Inner {
@@ -168,6 +175,9 @@ impl Inner {
         self.finished.fetch_add(1, Ordering::Relaxed);
         let reason = entry.exit_reason.unwrap_or(reason);
 
+        for name in &entry.names {
+            self.registry.remove(name);
+        }
         for monitor in entry.monitors {
             self.deliver(
                 monitor.watcher,
@@ -258,6 +268,7 @@ impl Runtime {
                 trap_exit: false,
                 links,
                 monitors: Vec::new(),
+                names: Vec::new(),
                 exit_reason: None,
             },
         );
@@ -403,6 +414,95 @@ impl Runtime {
             ),
         }
         reference
+    }
+
+    /// Registers `name` for `pid`, so it can be reached by name. Returns `false`
+    /// if the name is already taken or `pid` is not alive. A pid may hold several
+    /// names; a name maps to exactly one pid. Names are released automatically
+    /// when the process exits (or via [`unregister`](Runtime::unregister)).
+    pub fn register(&self, name: impl Into<String>, pid: Pid) -> bool {
+        let name = name.into();
+        // Hold the process entry first, then the registry slot — one consistent
+        // lock order, so register can never deadlock against teardown.
+        let Some(mut entry) = self.inner.table.get_mut(&pid.0) else {
+            return false;
+        };
+        match self.inner.registry.entry(name.clone()) {
+            Entry::Occupied(_) => false,
+            Entry::Vacant(slot) => {
+                slot.insert(pid.0);
+                entry.names.push(name);
+                true
+            }
+        }
+    }
+
+    /// Resolves a registered `name` to its (live) pid.
+    pub fn whereis(&self, name: &str) -> Option<Pid> {
+        self.inner.registry.get(name).map(|pid| Pid(*pid))
+    }
+
+    /// Releases `name`. Returns `false` if it wasn't registered.
+    pub fn unregister(&self, name: &str) -> bool {
+        match self.inner.registry.remove(name) {
+            Some((_, pid)) => {
+                if let Some(mut entry) = self.inner.table.get_mut(&pid) {
+                    entry.names.retain(|held| held != name);
+                }
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Sends to a registered `name`. Returns `false` if the name is unknown (or
+    /// its process just died).
+    pub fn send_named(&self, name: &str, message: Message) -> bool {
+        match self.whereis(name) {
+            Some(pid) => self.send(pid, message),
+            None => false,
+        }
+    }
+
+    /// Delivers `message` to `pid` after `delay`, returning a handle that can
+    /// [`cancel`](TimerRef::cancel) it before it fires. Built on Tokio's timer
+    /// wheel — many pending timers cost little, and cancellation is a free abort.
+    pub fn send_after(&self, pid: Pid, delay: Duration, message: Message) -> TimerRef {
+        let runtime = self.clone();
+        let task = tokio::spawn(async move {
+            tokio::time::sleep(delay).await;
+            runtime.send(pid, message);
+        });
+        TimerRef {
+            abort: task.abort_handle(),
+        }
+    }
+
+    /// Stops every live process (each still runs its normal teardown — links and
+    /// monitors are notified, names released). Returns how many were signalled.
+    /// Teardown is asynchronous; poll [`process_count`](Runtime::process_count)
+    /// to wait for the drain.
+    pub fn shutdown(&self) -> usize {
+        // `abort()` only flips an atomic flag (it never touches the table), so it
+        // is safe — and allocation-free — to signal each process during iteration.
+        let mut stopped = 0;
+        for entry in self.inner.table.iter() {
+            entry.abort.abort();
+            stopped += 1;
+        }
+        stopped
+    }
+}
+
+/// A handle to a pending timer from [`send_after`](Runtime::send_after).
+pub struct TimerRef {
+    abort: tokio::task::AbortHandle,
+}
+
+impl TimerRef {
+    /// Cancels the timer if it hasn't fired yet; a no-op once it has.
+    pub fn cancel(&self) {
+        self.abort.abort();
     }
 }
 
@@ -952,5 +1052,111 @@ mod tests {
         rt.set_trap_exit(dead, true); // dead pid: no-op, no panic
         assert!(rt.is_alive(p.pid()));
         p.kill();
+    }
+
+    // --- Phase 4: registry, timers, shutdown ---------------------------------
+
+    #[tokio::test]
+    async fn register_whereis_send_named_then_auto_release_on_exit() {
+        let rt = Runtime::new();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let worker = rt.spawn(move |mut ctx| async move {
+            let job = ctx.recv().await.message().unwrap();
+            let _ = tx.send(job);
+        });
+        assert!(rt.register("worker", worker.pid()));
+        assert_eq!(rt.whereis("worker"), Some(worker.pid()));
+        assert!(!rt.register("worker", worker.pid())); // already taken
+        assert!(rt.send_named("worker", b"job".to_vec()));
+        assert_eq!(rx.await.unwrap(), b"job".to_vec());
+
+        worker.join().await; // exiting auto-releases the name
+        assert_eq!(rt.whereis("worker"), None);
+        assert!(!rt.send_named("worker", b"late".to_vec()));
+    }
+
+    #[tokio::test]
+    async fn names_are_released_by_unregister_and_reusable_after_death() {
+        let rt = Runtime::new();
+        let a = rt.spawn(|_| std::future::pending::<()>());
+        assert!(rt.register("svc", a.pid()));
+        assert!(rt.unregister("svc"));
+        assert_eq!(rt.whereis("svc"), None);
+        assert!(!rt.unregister("svc")); // already gone
+
+        assert!(rt.register("svc", a.pid()));
+        a.kill();
+        a.join().await;
+        assert_eq!(rt.whereis("svc"), None);
+        let b = rt.spawn(|_| std::future::pending::<()>());
+        assert!(rt.register("svc", b.pid())); // a dead process's name is reusable
+        b.kill();
+    }
+
+    #[tokio::test]
+    async fn register_to_a_dead_pid_fails_and_a_pid_can_hold_several_names() {
+        let rt = Runtime::new();
+        let dead = rt.spawn(|_| async {});
+        let dead_pid = dead.pid();
+        dead.join().await;
+        assert!(!rt.register("ghost", dead_pid));
+
+        let p = rt.spawn(|_| std::future::pending::<()>());
+        assert!(rt.register("one", p.pid()));
+        assert!(rt.register("two", p.pid()));
+        assert_eq!(rt.whereis("one"), Some(p.pid()));
+        assert_eq!(rt.whereis("two"), Some(p.pid()));
+        p.kill();
+        p.join().await;
+        assert_eq!(rt.whereis("one"), None); // all of a pid's names go on exit
+        assert_eq!(rt.whereis("two"), None);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn send_after_delivers_when_the_timer_fires() {
+        let rt = Runtime::new();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let target = rt.spawn(move |mut ctx| async move {
+            let msg = ctx.recv().await.message().unwrap();
+            let _ = tx.send(msg);
+        });
+        rt.send_after(target.pid(), Duration::from_secs(60), b"ding".to_vec());
+        // Paused time auto-advances to the timer once everything else is idle.
+        assert_eq!(rx.await.unwrap(), b"ding".to_vec());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_cancelled_timer_never_fires() {
+        let rt = Runtime::new();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let target = rt.spawn(move |mut ctx| async move {
+            loop {
+                let _ = tx.send(ctx.recv().await);
+            }
+        });
+        let timer = rt.send_after(target.pid(), Duration::from_secs(60), b"x".to_vec());
+        timer.cancel();
+        tokio::time::advance(Duration::from_secs(120)).await;
+        tokio::task::yield_now().await; // let any (erroneous) delivery land before we check
+        assert!(
+            rx.try_recv().is_err(),
+            "a cancelled timer must deliver nothing"
+        );
+        target.kill();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn shutdown_stops_every_process() {
+        let rt = Runtime::new();
+        let procs: Vec<_> = (0..5)
+            .map(|_| rt.spawn(|_| std::future::pending::<()>()))
+            .collect();
+        assert_eq!(rt.process_count(), 5);
+        assert_eq!(rt.shutdown(), 5);
+        for p in procs {
+            p.join().await;
+        }
+        assert_eq!(rt.process_count(), 0);
+        assert_eq!(rt.shutdown(), 0); // nothing left to stop
     }
 }

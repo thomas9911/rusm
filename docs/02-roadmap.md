@@ -22,7 +22,7 @@ data to real measurements.
 | **1 ✅** | **Process & scheduler core** — task + process table + abort-based lifecycle, pluggable body | **spawn-storm** (live) |
 | **2 ✅** | **Mailboxes & message passing** — per-process mailbox, `send`/`recv`, selective `recv_match` | **ping-pong** (live) |
 | **3 ✅** | **Links, monitors, supervision, fault tolerance** — exit reasons, `link`/`monitor`/`trap_exit`/`spawn_link`/`exit`, cascades | **fault-recovery** (live) |
-| 4 | **Process management** — registry, lifecycle, timers, graceful shutdown | — |
+| **4 ✅** | **Process management** — named registry, timers (`send_after`/`cancel`), graceful `shutdown` | — |
 | 5 | **Connectivity: TCP/TLS** — process-per-connection | **connection-storm** (native) |
 | 6 | **Embed Wasmtime as the process backend** — instance-per-process, host ABI, fuel/epoch | **fairness**; spawn/conn re-measured |
 | 7 | **WASI + per-process sandbox/permissions** — true memory isolation | — |

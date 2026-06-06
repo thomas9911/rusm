@@ -10,34 +10,34 @@
 
 ## How to read this
 
-This is not apples-to-apples. RUSM is at **Phase 3 of 10**: the Wasm-free OTP
-core spawns real lightweight processes, passes real messages, and supervises
-them (spawn-storm, ping-pong and fault-recovery show real data), atop the Phase-0 observability
-foundation — but there is still **no Wasm execution** (the
-Wasmtime backend is Phase 6). Lunatic is the full runtime. So most runtime rows
-show RUSM as *planned (Phase N)*. The value is in the **efficiency playbook** below.
+This is not apples-to-apples. RUSM is at **Phase 4 of 10**: the Wasm-free OTP
+core now spawns, messages, supervises, and manages real lightweight processes
+(spawn-storm, ping-pong and fault-recovery run live), atop the Phase-0
+observability foundation — but the processes are still **native Rust bodies, not
+Wasm** (the Wasmtime backend is Phase 6). Lunatic is the full runtime, so the
+later runtime rows still show RUSM as *planned (Phase N)*. The value is in the
+**efficiency playbook** below.
 
 > ### Does RUSM handle lightweight processes as efficiently as Lunatic — today?
 >
-> **No. Today RUSM does not run lightweight processes at all.** There is no
-> Wasmtime, no instance, no spawn, no scheduler for guests. The processes shown in
-> the dashboard are **synthetic placeholders** that exercise the observability/UI
-> before the engine exists. Lunatic genuinely runs them; RUSM does not yet.
+> **For the actor model — yes, and in places better** (one channel per process
+> vs two, free abort-handle cancellation, a sharded registry, Tokio-wheel timers;
+> ~1.4M spawns/sec, ~3M messages/sec, ~100k restarts/sec measured live). **For
+> Wasm execution — not yet:** processes run as native Rust bodies, so there is no
+> Wasmtime instance/sandbox per process until **Phase 6**. Lunatic runs Wasm
+> guests today; RUSM runs the OTP machinery that will host them.
 >
-> The "superiority" targets below are **intent, to be proven on the dashboard** —
-> not achievements. The actor model is built first (Phases 1–5, native bodies);
-> the lightweight-process *efficiency* race begins when Wasmtime becomes the
-> backend at **Phase 6**, where the levers meant to beat Lunatic kick in: pooling
-> allocation, copy-on-write memory init, and epoch preemption (see Phase 6 in the
-> playbook below).
+> The lightweight-process *Wasm-efficiency* race begins at **Phase 6**, where the
+> levers meant to beat Lunatic kick in: pooling allocation, copy-on-write memory
+> init, and epoch preemption (see Phase 6 in the playbook below).
 
 ## Snapshot
 
 | | RUSM (today) | Lunatic |
 | --- | --- | --- |
-| Status | Active, Phase 3 of 10 complete | Dormant since 2023 (v0.13.0) |
-| Rust LOC | ~2,560 (4 crates) + 790 TS | ~15,150 (20 crates) |
-| Tests | 87 Rust + 18 TS, ~99.5% cov | ~26 test annotations |
+| Status | Active, Phase 4 of 10 complete | Dormant since 2023 (v0.13.0) |
+| Rust LOC | ~4,640 (5 crates) + ~790 TS | ~15,150 (20 crates) |
+| Tests | ~150 Rust + 21 TS, ~99% cov | ~26 test annotations |
 | Wasmtime | none yet (target: modern) | v8 (2023) |
 | Guest target | planned `wasm32-wasip1` | `wasm32-wasi` (preview1) |
 | License | MIT | MIT + Apache-2.0 |
@@ -54,7 +54,7 @@ phase, same themes, same order.
 | 1 ✅ | Process & scheduler core | ✅ done (`rusm-otp`) | ✅ `WasmProcess` |
 | 2 ✅ | Mailboxes & message passing | ✅ done (one channel + selective receive) | ✅ selective-receive |
 | 3 ✅ | Links, monitors, supervision, fault tolerance | ✅ done (links/monitors/trap/exit) | ✅ `Signal` enum |
-| 4 | Process management (registry, timers, lifecycle) | ❌ | ✅ |
+| 4 ✅ | Process management (registry, timers, lifecycle) | ✅ done (sharded registry, Tokio timers) | ✅ |
 | 5 | Connectivity — TCP/TLS | ⚠️ WS (dashboard) | ✅ TCP/UDP/DNS/TLS |
 | 6 | Wasmtime backend (instance-per-process, preemption) | ❌ → epoch | ✅ (fuel) |
 | 7 | WASI + per-process sandbox | ❌ | ✅ |
@@ -107,12 +107,12 @@ own.)
 | `Signal::{Link,Monitor,LinkDied}` + `die_when_link_dies` — `lunatic-process/src/lib.rs` | unified, configurable supervision | **✅ Done, beaten** — `link`/`monitor`/`trap_exit`/`spawn_link`/`exit`, but exit signals ride the *mailbox* (a `Received` enum) and kill rides the abort handle, so there's still **no separate signal channel** to multiplex |
 | trap → `ResultValue::Failed` → `LinkDied` propagation — `runtimes/wasmtime.rs` | a crash notifies linked peers | **✅ Done** — a crash is caught via `std::thread::panicking()` in the teardown guard (no `catch_unwind`, no per-poll cost); the abnormal reason cascades down links and is *staged* so a cascaded peer reports the original reason, not a bare kill |
 
-## Phase 4 — Process management
+## Phase 4 — Process management ✅
 
-| Borrow from Lunatic | Why it helps | RUSM plan |
+| Borrow from Lunatic | Why it helps | RUSM status |
 | --- | --- | --- |
-| Named registry `Arc<RwLock<HashMap>>` — `lunatic-registry-api` | async-safe name → pid | Adopt |
-| Timers: `BinaryHeap` + `HashMapId` (O(log n) cancel) — `lunatic-timer-api` | cheap cancellation of many timers | Adopt, built on `tokio::time` |
+| Named registry `Arc<RwLock<HashMap>>` — `lunatic-registry-api` | async-safe name → pid | **✅ Done, beaten** — a sharded `DashMap` registry (name lookups never take a global lock), with names auto-released on process exit |
+| Timers: `BinaryHeap` + `HashMapId` (O(log n) cancel) — `lunatic-timer-api` | cheap cancellation of many timers | **✅ Done, simpler** — `send_after` rides Tokio's hierarchical timer wheel and cancellation is a free `AbortHandle`, so there's no hand-rolled heap and no single timer-service bottleneck |
 
 ## Phase 5 — Connectivity (TCP/TLS)
 
