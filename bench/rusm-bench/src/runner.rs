@@ -1,6 +1,7 @@
 use rusm_metrics::{LatencyHistogram, TimeSeries};
 use rusm_observer::{NodeSample, Observer};
 
+use crate::connectionstorm::ConnectionStormEngine;
 use crate::engine::SpawnStormEngine;
 use crate::faultrecovery::FaultRecoveryEngine;
 use crate::pingpong::PingPongEngine;
@@ -52,6 +53,7 @@ enum Engine {
     SpawnStorm(SpawnStormEngine),
     PingPong(PingPongEngine),
     FaultRecovery(FaultRecoveryEngine),
+    ConnectionStorm(ConnectionStormEngine),
 }
 
 impl Engine {
@@ -72,6 +74,10 @@ impl Engine {
                 config.spawn_workers,
                 config.scheduler_count,
             )),
+            Scenario::ConnectionStorm => Engine::ConnectionStorm(ConnectionStormEngine::new(
+                config.spawn_workers,
+                config.scheduler_count,
+            )),
             _ => Engine::Synthetic(SyntheticSource::new(scenario)),
         }
     }
@@ -87,6 +93,7 @@ impl Engine {
             Engine::SpawnStorm(engine) => engine.tick(),
             Engine::PingPong(engine) => engine.tick(),
             Engine::FaultRecovery(engine) => engine.tick(),
+            Engine::ConnectionStorm(engine) => engine.tick(),
         }
     }
 }
@@ -139,7 +146,10 @@ impl Runner {
         self.profile = profile;
         // Restart whichever real engine is running so the new tuning takes effect.
         if let Some(
-            scenario @ (Scenario::SpawnStorm | Scenario::PingPong | Scenario::FaultRecovery),
+            scenario @ (Scenario::SpawnStorm
+            | Scenario::PingPong
+            | Scenario::FaultRecovery
+            | Scenario::ConnectionStorm),
         ) = self.scenario()
         {
             self.start(scenario);
@@ -274,12 +284,12 @@ mod tests {
     #[test]
     fn start_then_tick_produces_running_frame() {
         let mut r = runner();
-        r.start(Scenario::ConnectionStorm);
+        r.start(Scenario::Fairness);
         assert!(r.is_running());
-        assert_eq!(r.scenario(), Some(Scenario::ConnectionStorm));
+        assert_eq!(r.scenario(), Some(Scenario::Fairness));
         let frame = r.tick(50);
         assert!(frame.running);
-        assert_eq!(frame.scenario.as_deref(), Some("connection-storm"));
+        assert_eq!(frame.scenario.as_deref(), Some("fairness"));
         assert!(frame.ops_per_sec > 0.0);
         assert_eq!(
             frame.latency.count as usize,
@@ -291,7 +301,7 @@ mod tests {
     #[test]
     fn peak_concurrent_is_monotonic_across_ticks() {
         let mut r = runner();
-        r.start(Scenario::ConnectionStorm);
+        r.start(Scenario::Fairness);
         let mut peak = 0;
         for tick in 0..20 {
             let frame = r.tick(tick);
@@ -303,7 +313,7 @@ mod tests {
     #[test]
     fn stop_returns_to_idle() {
         let mut r = runner();
-        r.start(Scenario::ConnectionStorm);
+        r.start(Scenario::Fairness);
         r.stop();
         assert!(!r.is_running());
         assert!(!r.tick(0).running);
@@ -312,7 +322,7 @@ mod tests {
     #[test]
     fn restart_resets_metrics() {
         let mut r = runner();
-        r.start(Scenario::ConnectionStorm);
+        r.start(Scenario::DistributedFanout);
         for tick in 0..10 {
             r.tick(tick);
         }
@@ -330,7 +340,7 @@ mod tests {
     fn observer_detail_toggle_persists_across_restart() {
         let mut r = runner();
         r.set_observer_detail(false);
-        r.start(Scenario::ConnectionStorm);
+        r.start(Scenario::Fairness);
         assert!(!r.observer_detail_enabled());
         let frame = r.tick(0);
         assert!(frame.observer.processes.is_empty());
@@ -390,10 +400,22 @@ mod tests {
         assert!(frame.observer.process_count >= 1);
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn connection_storm_runs_real_tcp() {
+        // Real loopback TCP, one process per accepted connection.
+        let mut r = runner();
+        r.start(Scenario::ConnectionStorm);
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await; // ramp up
+        let frame = r.tick(50);
+        assert_eq!(frame.scenario.as_deref(), Some("connection-storm"));
+        assert!(frame.ops_per_sec > 0.0); // connections/sec
+        assert!(frame.observer.process_count > 1); // live connections + acceptor
+    }
+
     #[test]
     fn throughput_window_is_bounded() {
         let mut r = runner();
-        r.start(Scenario::ConnectionStorm);
+        r.start(Scenario::Fairness);
         for tick in 0..500 {
             r.tick(tick);
         }

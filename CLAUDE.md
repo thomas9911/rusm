@@ -8,19 +8,22 @@ distributed clusters you can hook into live. See `README.md` for the pitch and
 
 ## Status
 
-**Phase 4 of 10 — complete.** The Wasm-free OTP core (`rusm-otp`) spawns,
-schedules, kills, messages, supervises, and **manages** **real** lightweight
-processes: links, monitors, exit reasons, `trap_exit`, `spawn_link`, `exit/2`,
-exit cascades, plus a named **registry**, **timers** (`send_after`/`cancel`), and
-graceful `shutdown`. Three benchmarks are live — spawn-storm (~1.4M spawns/sec),
-ping-pong (~3M messages/sec, round-trip p50 ~2 µs), and fault-recovery (~100k
-restarts/sec). Each process keeps a single channel; exit signals ride the mailbox
-(a `Received` enum) and kill rides a `futures` abort handle (no second signal
-channel — we beat Lunatic's two). The registry is a sharded `DashMap` (no global
-lock) and timers use Tokio's timer wheel (no hand-rolled heap). Phase 0 (metrics,
-live observer, benchmark harness + WebSocket server, `rusm` CLI, React dashboard,
-examples) is done. The Wasmtime backend and clustering are later phases; see
-`docs/02-roadmap.md`.
+**Phase 5 of 10 — complete.** The Wasm-free OTP core (`rusm-otp`) spawns,
+schedules, kills, messages, supervises, manages, and **connects** **real**
+lightweight processes: links, monitors, exit reasons, `trap_exit`, `spawn_link`,
+`exit/2`, exit cascades, a named **registry**, **timers** (`send_after`/`cancel`),
+graceful `shutdown`, and **TCP** (`listen`/`connect`, one process per connection).
+Four benchmarks are live — spawn-storm (~1.4M spawns/sec), ping-pong (~3M
+messages/sec, round-trip p50 ~2 µs), fault-recovery (~100k restarts/sec), and
+connection-storm (thousands of concurrent real connections, each a process;
+connect p50 ~70 µs). Each process keeps a single channel; exit signals ride the
+mailbox (a `Received` enum) and kill rides a `futures` abort handle (no second
+signal channel — we beat Lunatic's two). The registry is a sharded `DashMap`,
+timers use Tokio's timer wheel, and TCP is process-per-connection — the
+connection ceiling is the OS (fds, ports), not RUSM. Phase 0 (metrics, live
+observer, benchmark harness + WebSocket server, `rusm` CLI, React dashboard,
+examples) is done. TLS folds into the Phase 9 secure cluster transport; the
+Wasmtime backend is Phase 6. See `docs/02-roadmap.md`.
 
 ## Tech stack
 

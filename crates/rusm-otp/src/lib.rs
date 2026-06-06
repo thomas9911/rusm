@@ -8,6 +8,7 @@
 
 mod exit;
 mod message;
+mod net;
 mod pid;
 mod runtime;
 

@@ -3,6 +3,7 @@
 //! server feeding the dashboard and the `rusm attach` REPL.
 
 mod config;
+mod connectionstorm;
 mod engine;
 mod faultrecovery;
 mod pingpong;

@@ -145,7 +145,7 @@ mod tests {
         assert!(hello.tick_frame().is_none());
 
         let mut runner = crate::runner::Runner::new(crate::runner::RunnerConfig::default());
-        runner.start(crate::scenario::Scenario::ConnectionStorm);
+        runner.start(crate::scenario::Scenario::Fairness);
         let tick = ServerMessage::Tick {
             frame: Box::new(runner.tick(0)),
         };

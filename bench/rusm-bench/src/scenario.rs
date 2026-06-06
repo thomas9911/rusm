@@ -109,12 +109,12 @@ impl Scenario {
             ),
             Scenario::ConnectionStorm => (
                 "Connection storm",
-                "Open connections as fast as possible; measures conns/sec, peak concurrent, latency.",
+                "Open real TCP connections, one process each; measures peak concurrent, conns/sec, latency.",
                 vec![
-                    "Opens connections as fast as possible — the headline benchmark of the whole project.",
-                    "Headline: connections/sec, peak concurrent, and accept latency.",
-                    "Goal: prove ~300k/s (hopefully more) — Lunatic's famous number, on a years-old laptop.",
-                    "Each connection gets its own lightweight process; cheap spawn + async I/O is the entire game.",
+                    "Opens real loopback TCP connections, each served by its own rusm-otp process — process-per-connection, the headline scenario.",
+                    "Headline: peak concurrent connections (the live process count), plus connections/sec and connect latency.",
+                    "Phase 5: REAL TCP — thousands of simultaneous connections, each a cheap isolated process, measured live.",
+                    "The ceiling is the OS — file descriptors, ephemeral ports, TIME_WAIT — not RUSM: minting a process per connection is near-free (the spawn storm does ~1.4M/s). Lunatic's famous ~300k/s is runtime-ready here; the loopback rate is OS-bound.",
                     "Tip: compare observer-on vs observer-off to confirm live introspection is nearly free.",
                 ],
                 5,

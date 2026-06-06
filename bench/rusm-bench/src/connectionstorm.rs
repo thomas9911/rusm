@@ -1,0 +1,212 @@
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use rusm_otp::{ProcessHandle, Runtime};
+use tokio::io::AsyncReadExt;
+use tokio::net::TcpStream;
+use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
+use tokio::task::JoinHandle;
+
+use crate::sample::Sample;
+
+/// Connect latency is sampled every Nth new connection.
+const LATENCY_EVERY: u64 = 64;
+/// Most latency samples surfaced in a single tick.
+const LATENCY_SAMPLE: usize = 64;
+/// How often a client recycles one held connection once at target — gentle,
+/// sustained churn that keeps the storm live without exhausting ephemeral ports
+/// (loopback churn is TIME_WAIT-bound to a few hundred/sec; holding is not).
+const CHURN_INTERVAL: Duration = Duration::from_millis(20);
+/// Held connections per client worker (the fd budget caps it further). Kept
+/// well under the client's ephemeral-port range so the gentle churn always has a
+/// free port — holding right at the port ceiling would stall it.
+const PER_WORKER_TARGET: usize = 1536;
+
+/// A **real** TCP connection storm over `rusm-otp`, the headline scenario.
+///
+/// A loopback listener serves **one process per connection**; client workers ramp
+/// up to a held-open target (bounded by the open-file limit, which we raise first)
+/// and then gently recycle connections. [`tick`](Self::tick) samples
+/// connections/sec (server-side accepts — high during the ramp burst, then the
+/// recycle rate) and connect latency; **peak-concurrent** is the headline, the
+/// live process count.
+///
+/// The ceiling is the **OS**, not RUSM: holding connections is fd-bound, and
+/// *churning* them is TIME_WAIT-bound to a few hundred/sec on loopback. Minting a
+/// process per connection is near-free — the spawn storm does 1.4M/s — so RUSM is
+/// never the bottleneck. Must be constructed inside a Tokio runtime.
+pub struct ConnectionStormEngine {
+    runtime: Runtime,
+    accepted: Arc<AtomicU64>,
+    latency_rx: UnboundedReceiver<u64>,
+    acceptor: ProcessHandle,
+    clients: Vec<JoinHandle<()>>,
+    last_accepted: u64,
+    last_at: Instant,
+    scheduler_count: usize,
+}
+
+impl ConnectionStormEngine {
+    pub fn new(workers: usize, scheduler_count: usize) -> Self {
+        let workers = workers.max(1);
+        // Raise the soft open-file limit to the hard cap so we can hold many
+        // sockets; the target is then a fraction of that budget (each in-process
+        // connection costs ~2 fds: client + accepted server side).
+        let _ = rlimit::increase_nofile_limit(u64::MAX);
+        let soft = rlimit::Resource::NOFILE
+            .get()
+            .map(|(soft, _hard)| soft as usize)
+            .unwrap_or(256);
+        let budget = (soft / 2).saturating_sub(64);
+        let target = budget.min(workers * PER_WORKER_TARGET).max(workers);
+        let share = (target / workers).max(1);
+
+        let runtime = Runtime::new();
+        let accepted = Arc::new(AtomicU64::new(0));
+        let (latency_tx, latency_rx) = unbounded_channel();
+
+        let listener = {
+            let std_listener =
+                std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback listener");
+            std_listener
+                .set_nonblocking(true)
+                .expect("set listener non-blocking");
+            tokio::net::TcpListener::from_std(std_listener).expect("adopt std listener")
+        };
+        let addr = listener.local_addr().expect("listener address");
+
+        // Acceptor: one process per accepted connection, each holding the socket
+        // open (a read that parks until the client closes).
+        let accept_rt = runtime.clone();
+        let accept_count = Arc::clone(&accepted);
+        let acceptor = runtime.spawn(move |_ctx| async move {
+            while let Ok((stream, _peer)) = listener.accept().await {
+                accept_count.fetch_add(1, Ordering::Relaxed);
+                accept_rt.spawn(move |_ctx| async move {
+                    let mut stream = stream;
+                    let mut buf = [0u8; 1];
+                    loop {
+                        match stream.read(&mut buf).await {
+                            Ok(0) | Err(_) => break,
+                            Ok(_) => {}
+                        }
+                    }
+                });
+            }
+        });
+
+        let clients = (0..workers)
+            .map(|_| {
+                let client_rt = runtime.clone();
+                let latency_tx = latency_tx.clone();
+                tokio::spawn(async move {
+                    let mut held: Vec<TcpStream> = Vec::new();
+                    let mut opened: u64 = 0;
+                    loop {
+                        if held.len() < share {
+                            let started = Instant::now();
+                            match client_rt.connect(addr).await {
+                                Ok(stream) => {
+                                    held.push(stream);
+                                    opened += 1;
+                                    if opened % LATENCY_EVERY == 0 {
+                                        let _ =
+                                            latency_tx.send(started.elapsed().as_nanos() as u64);
+                                    }
+                                }
+                                // fd / ephemeral-port pressure: ease off, then retry.
+                                Err(_) => tokio::time::sleep(Duration::from_millis(5)).await,
+                            }
+                        } else {
+                            tokio::time::sleep(CHURN_INTERVAL).await;
+                            held.swap_remove(0); // recycle the oldest connection
+                        }
+                    }
+                })
+            })
+            .collect();
+
+        Self {
+            runtime,
+            accepted,
+            latency_rx,
+            acceptor,
+            clients,
+            last_accepted: 0,
+            last_at: Instant::now(),
+            scheduler_count,
+        }
+    }
+
+    pub fn tick(&mut self) -> Sample {
+        let now = Instant::now();
+        let accepted = self.accepted.load(Ordering::Relaxed);
+        let dt = now
+            .duration_since(self.last_at)
+            .as_secs_f64()
+            .max(f64::MIN_POSITIVE);
+        let ops_per_sec = accepted.saturating_sub(self.last_accepted) as f64 / dt;
+        self.last_accepted = accepted;
+        self.last_at = now;
+
+        let mut latencies_ns = Vec::new();
+        while let Ok(ns) = self.latency_rx.try_recv() {
+            latencies_ns.push(ns);
+        }
+        if latencies_ns.len() > LATENCY_SAMPLE {
+            latencies_ns = latencies_ns.split_off(latencies_ns.len() - LATENCY_SAMPLE);
+        }
+
+        // process_count ≈ live connection handlers (+ the acceptor): the
+        // peak-concurrent connections the runner charts.
+        let process_count = self.runtime.process_count() as u64;
+        Sample {
+            ops_per_sec,
+            process_count,
+            running: process_count,
+            waiting: 0,
+            total_memory_bytes: 0,
+            latencies_ns,
+            processes: Vec::new(),
+            scheduler_load: vec![0.0; self.scheduler_count],
+        }
+    }
+}
+
+impl Drop for ConnectionStormEngine {
+    fn drop(&mut self) {
+        self.acceptor.kill(); // stop accepting and drop the listener
+        for client in &self.clients {
+            client.abort(); // drop held client sockets, closing the connections
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn clients_open_connections_each_served_by_its_own_process() {
+        let mut engine = ConnectionStormEngine::new(2, 4);
+        tokio::time::sleep(Duration::from_millis(150)).await; // ramp up
+        let sample = engine.tick();
+        assert!(sample.ops_per_sec > 0.0, "connections should be accepted");
+        assert!(
+            sample.process_count > 1,
+            "live connections beyond the acceptor"
+        );
+        assert!(
+            !sample.latencies_ns.is_empty(),
+            "connect latency is sampled"
+        );
+        assert_eq!(sample.scheduler_load.len(), 4);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn there_is_always_at_least_one_client() {
+        let engine = ConnectionStormEngine::new(0, 1);
+        assert_eq!(engine.clients.len(), 1);
+    }
+}

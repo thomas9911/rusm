@@ -33,11 +33,11 @@ mod tests {
     #[test]
     fn renders_tick_as_summary() {
         let mut runner = Runner::new(RunnerConfig::default());
-        runner.start(Scenario::ConnectionStorm);
+        runner.start(Scenario::Fairness);
         let message = ServerMessage::Tick {
             frame: Box::new(runner.tick(10)),
         };
-        assert!(render_message(&message).contains("connection-storm"));
+        assert!(render_message(&message).contains("fairness"));
     }
 
     #[test]

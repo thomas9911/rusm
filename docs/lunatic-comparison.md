@@ -10,9 +10,9 @@
 
 ## How to read this
 
-This is not apples-to-apples. RUSM is at **Phase 4 of 10**: the Wasm-free OTP
-core now spawns, messages, supervises, and manages real lightweight processes
-(spawn-storm, ping-pong and fault-recovery run live), atop the Phase-0
+This is not apples-to-apples. RUSM is at **Phase 5 of 10**: the Wasm-free OTP
+core now spawns, messages, supervises, manages, and connects real lightweight
+processes over TCP (spawn-storm, ping-pong, fault-recovery and connection-storm run live), atop the Phase-0
 observability foundation — but the processes are still **native Rust bodies, not
 Wasm** (the Wasmtime backend is Phase 6). Lunatic is the full runtime, so the
 later runtime rows still show RUSM as *planned (Phase N)*. The value is in the
@@ -35,7 +35,7 @@ later runtime rows still show RUSM as *planned (Phase N)*. The value is in the
 
 | | RUSM (today) | Lunatic |
 | --- | --- | --- |
-| Status | Active, Phase 4 of 10 complete | Dormant since 2023 (v0.13.0) |
+| Status | Active, Phase 5 of 10 complete | Dormant since 2023 (v0.13.0) |
 | Rust LOC | ~4,640 (5 crates) + ~790 TS | ~15,150 (20 crates) |
 | Tests | ~150 Rust + 21 TS, ~99% cov | ~26 test annotations |
 | Wasmtime | none yet (target: modern) | v8 (2023) |
@@ -55,7 +55,7 @@ phase, same themes, same order.
 | 2 ✅ | Mailboxes & message passing | ✅ done (one channel + selective receive) | ✅ selective-receive |
 | 3 ✅ | Links, monitors, supervision, fault tolerance | ✅ done (links/monitors/trap/exit) | ✅ `Signal` enum |
 | 4 ✅ | Process management (registry, timers, lifecycle) | ✅ done (sharded registry, Tokio timers) | ✅ |
-| 5 | Connectivity — TCP/TLS | ⚠️ WS (dashboard) | ✅ TCP/UDP/DNS/TLS |
+| 5 ✅ | Connectivity — TCP | ✅ done (TCP, process-per-conn; TLS → P9) | ✅ TCP/UDP/DNS/TLS |
 | 6 | Wasmtime backend (instance-per-process, preemption) | ❌ → epoch | ✅ (fuel) |
 | 7 | WASI + per-process sandbox | ❌ | ✅ |
 | 8 | Guest crate | ❌ → `rusm-rs` | 🅛 `lunatic-rs` (separate repo) |
@@ -114,12 +114,13 @@ own.)
 | Named registry `Arc<RwLock<HashMap>>` — `lunatic-registry-api` | async-safe name → pid | **✅ Done, beaten** — a sharded `DashMap` registry (name lookups never take a global lock), with names auto-released on process exit |
 | Timers: `BinaryHeap` + `HashMapId` (O(log n) cancel) — `lunatic-timer-api` | cheap cancellation of many timers | **✅ Done, simpler** — `send_after` rides Tokio's hierarchical timer wheel and cancellation is a free `AbortHandle`, so there's no hand-rolled heap and no single timer-service bottleneck |
 
-## Phase 5 — Connectivity (TCP/TLS)
+## Phase 5 — Connectivity (TCP) ✅
 
-| Borrow from Lunatic | Why it helps | RUSM plan |
+| Borrow from Lunatic | Why it helps | RUSM status |
 | --- | --- | --- |
-| TCP owned read/write halves + per-conn timeouts in `HashMapId` — `lunatic-networking-api/src/lib.rs:71` | concurrent reader+writer without locking the stream | Adopt; **beat:** `RwLock` for the read-heavy timeout fields (Lunatic uses `Mutex`) |
-| TLS via `tokio-rustls` + `webpki-roots`, Arc'd `ServerConfig` — `tls_tcp.rs:392` | config reuse amortizes setup | Adopt; **beat:** TLS session resumption per node |
+| Process-per-connection accept loop — `lunatic-networking-api` | a slow/crashing connection can't affect the others | **✅ Done** — `Runtime::listen` spawns one rusm-otp process per accepted socket; the connection ceiling is the OS (fds, ephemeral ports, TIME_WAIT), not RUSM, since spawning is ~free (the spawn storm does 1.4M/s) |
+| TCP owned read/write halves + per-conn timeouts in `HashMapId` — `lunatic-networking-api/src/lib.rs:71` | concurrent reader+writer without locking the stream | **Deferred** — native handlers own the whole `TcpStream`; split halves / per-conn timeouts arrive with the guest host ABI (Phase 6) |
+| TLS via `tokio-rustls` + `webpki-roots` — `tls_tcp.rs:392` | secure transport | **Moved to Phase 9** — TLS's real home is the secure cluster transport (QUIC + TLS); bolting it onto the loopback storm would only tank throughput |
 
 ## Phase 6 — Wasmtime backend  ← the biggest efficiency win
 

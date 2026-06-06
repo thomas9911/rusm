@@ -9,14 +9,16 @@ core** (pure Rust); **WebAssembly is the sandboxed execution backend** that late
 runs each process as an isolated instance. Rust + Tokio do the scheduling;
 Wasmtime does the isolation.
 
-> **Status: Phase 4 of 10.** The Wasm-free OTP core (`rusm-otp`) already spawns,
-> schedules, kills, messages, **supervises**, and **manages** **real** lightweight
-> processes — links, monitors, `trap_exit`, exit cascades ("let it crash"), a
-> named registry, timers, and graceful shutdown. Three benchmarks show real
-> numbers: spawn-storm at **~1.4M spawns/sec**, ping-pong at **~3M messages/sec**
-> (round-trip p50 ~2 µs), and fault-recovery at **~100k restarts/sec**. The
-> Wasmtime backend and clustering come in later phases. See the
-> [roadmap](docs/02-roadmap.md).
+> **Status: Phase 5 of 10.** The Wasm-free OTP core (`rusm-otp`) already spawns,
+> schedules, kills, messages, **supervises**, **manages**, and **connects** **real**
+> lightweight processes — links, monitors, `trap_exit`, exit cascades ("let it
+> crash"), a named registry, timers, graceful shutdown, and **TCP** (one process
+> per connection). Four benchmarks show real numbers: spawn-storm at **~1.4M
+> spawns/sec**, ping-pong at **~3M messages/sec** (round-trip p50 ~2 µs),
+> fault-recovery at **~100k restarts/sec**, and connection-storm holding
+> **thousands of concurrent real connections** (each a process; connect p50 ~70 µs)
+> — the connection ceiling is the OS, not RUSM. The Wasmtime backend and
+> clustering come in later phases. See the [roadmap](docs/02-roadmap.md).
 
 ## Why
 

@@ -14,10 +14,13 @@ serde_json = { workspace = true }
 rusm-metrics = { path = "../../crates/rusm-metrics" }
 rusm-observer = { path = "../../crates/rusm-observer" }
 rusm-otp = { path = "../../crates/rusm-otp" }
-tokio = { version = "1.52.3", features = ["rt-multi-thread", "macros", "sync", "time", "net"] }
+tokio = { version = "1.52.3", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util"] }
 tokio-tungstenite = "0.29.0"
 futures-util = "0.3.32"
 toml = "1.1.2"
+# Raise the open-file limit so the connection storm can hold many sockets at once
+# — the connection ceiling is the OS, not the runtime.
+rlimit = "0.10.2"
 
 # Runnable examples live in the repo-root `examples/<name>/` directories,
 # each with its own README.

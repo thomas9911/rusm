@@ -193,13 +193,13 @@ mod tests {
     fn apply_run_starts_known_scenario() {
         let node = Node::new(RunnerConfig::default());
         node.apply(ClientCommand::Run {
-            scenario: "connection-storm".to_string(),
+            scenario: "fairness".to_string(),
         })
         .unwrap();
         let message = node.tick_message();
         let frame = message.tick_frame().unwrap();
         assert!(frame.running);
-        assert_eq!(frame.scenario.as_deref(), Some("connection-storm"));
+        assert_eq!(frame.scenario.as_deref(), Some("fairness"));
     }
 
     #[test]
@@ -217,7 +217,7 @@ mod tests {
     fn apply_stop_and_detail_toggle() {
         let node = Node::new(RunnerConfig::default());
         node.apply(ClientCommand::Run {
-            scenario: "connection-storm".to_string(), // synthetic — no Tokio runtime needed here
+            scenario: "fairness".to_string(), // synthetic — no Tokio runtime needed here
         })
         .unwrap();
         node.apply(ClientCommand::SetObserverDetail { enabled: false })

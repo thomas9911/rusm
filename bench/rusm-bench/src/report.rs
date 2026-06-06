@@ -21,9 +21,9 @@ mod tests {
     #[test]
     fn summarizes_a_running_frame() {
         let mut runner = Runner::new(RunnerConfig::default());
-        runner.start(Scenario::ConnectionStorm);
+        runner.start(Scenario::Fairness);
         let line = summarize_frame(&runner.tick(100));
-        assert!(line.contains("connection-storm"));
+        assert!(line.contains("fairness"));
         assert!(line.contains("ops/s"));
         assert!(line.contains("p99"));
     }
