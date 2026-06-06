@@ -8,6 +8,7 @@
 resolver = "2"
 members = [
     "crates/rusm-otp",
+    "crates/rusm-wasm",
     "crates/rusm-metrics",
     "crates/rusm-observer",
     "bench/rusm-bench",

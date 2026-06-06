@@ -1,0 +1,15 @@
+[package]
+name = "rusm-wasm"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "The Wasmtime backend for RUSM: each process runs as an isolated Wasm instance."
+
+[dependencies]
+rusm-otp = { path = "../rusm-otp" }
+anyhow = { workspace = true }
+tokio = { version = "1.52.3", features = ["rt", "rt-multi-thread", "macros", "time"] }
+wasmtime = "45.0.1"
