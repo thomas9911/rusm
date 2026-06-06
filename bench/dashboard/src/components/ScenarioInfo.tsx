@@ -16,8 +16,11 @@ export function ScenarioInfo({ scenario }: ScenarioInfoProps) {
     <section className="scenario-info">
       <div className="scenario-info-head">
         <h2>{scenario.label}</h2>
-        <span className="phase-badge" title="Phase 0 uses synthetic data">
-          synthetic now · real data from phase {scenario.real_after_phase}
+        <span
+          className={`phase-badge ${scenario.real ? 'phase-badge--live' : ''}`}
+          title={scenario.real ? 'Driven by the real runtime' : 'Synthetic until its phase lands'}
+        >
+          {scenario.real ? 'live data' : `synthetic · real from phase ${scenario.real_after_phase}`}
         </span>
       </div>
       <p className="scenario-info-desc">{scenario.description}</p>

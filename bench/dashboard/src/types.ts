@@ -57,6 +57,8 @@ export interface ScenarioMeta {
   description: string;
   details: string[];
   real_after_phase: number;
+  /** True once this scenario runs on real runtime data (vs synthetic). */
+  real: boolean;
 }
 
 export interface ResourceProfileMeta {

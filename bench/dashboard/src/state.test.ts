@@ -55,7 +55,14 @@ test('hello populates the scenario and profile menus', () => {
   const s = applyMessage(initialState(), {
     type: 'hello',
     scenarios: [
-      { id: 'ping-pong', label: 'Ping', description: 'd', details: ['x'], real_after_phase: 5 },
+      {
+        id: 'ping-pong',
+        label: 'Ping',
+        description: 'd',
+        details: ['x'],
+        real_after_phase: 5,
+        real: true,
+      },
     ],
     profiles: [{ id: 'balanced', label: 'Balanced', description: 'd' }],
   });

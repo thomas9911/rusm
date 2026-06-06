@@ -1,9 +1,13 @@
 use serde::{Deserialize, Serialize};
 
+/// The roadmap phase RUSM has reached. A scenario runs on **real** runtime data
+/// once its `real_after_phase` is at or below this — bump it as each phase lands.
+pub const CURRENT_PHASE: u8 = 5;
+
 /// A benchmark scenario the dashboard can run.
 ///
-/// In Phase 0 every scenario is driven by synthetic data; `real_after_phase`
-/// records the roadmap phase at which it switches to measuring the real runtime.
+/// `real_after_phase` records the roadmap phase at which a scenario switches from
+/// synthetic data to measuring the real runtime; see [`CURRENT_PHASE`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Scenario {
@@ -27,6 +31,9 @@ pub struct ScenarioMeta {
     /// watch, and the background — shown above the metrics.
     pub details: Vec<String>,
     pub real_after_phase: u8,
+    /// Whether this scenario is driven by the **real** runtime now (vs synthetic),
+    /// i.e. `real_after_phase <= CURRENT_PHASE`.
+    pub real: bool,
 }
 
 impl Scenario {
@@ -139,6 +146,7 @@ impl Scenario {
             description: description.to_string(),
             details: details.into_iter().map(str::to_string).collect(),
             real_after_phase,
+            real: real_after_phase <= CURRENT_PHASE,
         }
     }
 
@@ -189,6 +197,26 @@ mod tests {
     #[test]
     fn all_meta_covers_every_scenario() {
         assert_eq!(Scenario::all_meta().len(), Scenario::ALL.len());
+    }
+
+    #[test]
+    fn graduated_scenarios_are_marked_real() {
+        let real: Vec<String> = Scenario::all_meta()
+            .into_iter()
+            .filter(|m| m.real)
+            .map(|m| m.id)
+            .collect();
+        // Exactly the scenarios with a real engine (real_after_phase <= 5); the
+        // later ones are still synthetic.
+        assert_eq!(
+            real,
+            vec![
+                "spawn-storm",
+                "ping-pong",
+                "fault-recovery",
+                "connection-storm"
+            ]
+        );
     }
 
     #[test]
