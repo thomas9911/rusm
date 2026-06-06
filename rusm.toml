@@ -1,0 +1,18 @@
+# rusm.toml — startup configuration for `rusm node start`.
+#
+# Layering: built-in defaults → this file → CLI flags. So `--listen` / `--profile`
+# on the command line override what's here, and this file overrides the defaults.
+# Every field is optional; unknown fields are rejected (to catch typos).
+
+# WebSocket address the node listens on (the dashboard and `rusm attach` connect here).
+listen = "127.0.0.1:4000"
+
+# Starting resource profile — the throughput dial (spawn workers, relative to cores):
+#   light    — ~¼ of cores; gentle, throughput isn't the point
+#   balanced — ~⅖ of cores; good throughput with headroom (default)
+#   max      — ~½ of cores; most performant (spawners balanced against reapers), still smooth
+# It can also be changed live from the dashboard while the node runs.
+profile = "balanced"
+
+# Snapshot / sampling rate in Hz (10–60).
+ticks_per_second = 20

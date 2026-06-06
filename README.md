@@ -77,6 +77,27 @@ make run        # run a scenario in the terminal (SCENARIO=… SECONDS=…)
 make example    # run an example app (EX=headless_run)
 ```
 
+## Configuration
+
+`rusm node start` reads an optional **`rusm.toml`** from the working directory
+(or `--config <file>`). Layering is **built-in defaults → `rusm.toml` → CLI
+flags**:
+
+```toml
+listen = "127.0.0.1:4000"   # WebSocket address
+profile = "balanced"        # light | balanced | max — how hard a storm drives the machine
+ticks_per_second = 20       # snapshot / sampling rate (Hz)
+```
+
+```sh
+rusm node start                                    # uses ./rusm.toml if present, else defaults
+rusm node start --config prod.toml                 # an explicit config file
+rusm node start --profile max --listen 0.0.0.0:80  # flags override the file
+```
+
+The `profile` can also be switched **live** from the dashboard — see
+[`docs/03-benchmark-dashboard.md`](docs/03-benchmark-dashboard.md).
+
 ## Running tests
 
 ```sh

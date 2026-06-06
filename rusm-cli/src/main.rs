@@ -1,10 +1,8 @@
 use futures_util::{SinkExt, StreamExt};
-use rusm_bench::{serve, ClientCommand, Node, RunnerConfig};
+use rusm_bench::{serve, ClientCommand, Node, NodeConfig, ResourceProfile};
 use rusm_cli::{normalize_target, parse, render_message, ReplInput, DEFAULT_HOST, HELP};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio_tungstenite::tungstenite::Message;
-
-const DEFAULT_LISTEN: &str = "127.0.0.1:4000";
 
 #[tokio::main]
 async fn main() {
@@ -13,10 +11,19 @@ async fn main() {
     let subcommand = args.get(2).map(String::as_str);
 
     if command == Some("node") && subcommand == Some("start") {
-        let addr = flag(&args, "--listen").unwrap_or_else(|| DEFAULT_LISTEN.to_string());
-        let node = Node::new(RunnerConfig::default());
-        println!("rusm node listening on ws://{addr}");
-        if let Err(error) = serve(&addr, node).await {
+        let cfg = load_node_config(&args);
+        let node = Node::new(cfg.runner_config());
+        // Apply the startup profile (sets the spawn tuning and is reflected in frames).
+        let _ = node.apply(ClientCommand::SetResourceProfile {
+            profile: cfg.profile.id().to_string(),
+        });
+        println!(
+            "rusm node listening on ws://{} (profile: {}, {} Hz)",
+            cfg.listen,
+            cfg.profile.id(),
+            cfg.ticks_per_second
+        );
+        if let Err(error) = serve(&cfg.listen, node).await {
             eprintln!("node error: {error}");
             std::process::exit(1);
         }
@@ -29,7 +36,9 @@ async fn main() {
         }
     } else {
         eprintln!("usage:");
-        eprintln!("  rusm node start [--listen <addr>]");
+        eprintln!(
+            "  rusm node start [--config <file>] [--listen <addr>] [--profile light|balanced|max]"
+        );
         eprintln!("  rusm attach [<host | host:port | ws-url>]   (defaults to 127.0.0.1:4000)");
         std::process::exit(2);
     }
@@ -38,6 +47,38 @@ async fn main() {
 fn flag(args: &[String], name: &str) -> Option<String> {
     let idx = args.iter().position(|a| a == name)?;
     args.get(idx + 1).cloned()
+}
+
+/// Loads node config: defaults → `rusm.toml` (or `--config <file>`) → CLI flags.
+fn load_node_config(args: &[String]) -> NodeConfig {
+    let explicit = flag(args, "--config");
+    let path = explicit.clone().unwrap_or_else(|| "rusm.toml".to_string());
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => Some(text),
+        // A missing default rusm.toml is fine; a missing explicit --config is not.
+        Err(_) if explicit.is_none() => None,
+        Err(error) => {
+            eprintln!("cannot read {path}: {error}");
+            std::process::exit(2);
+        }
+    };
+    let mut cfg = match text {
+        Some(text) => NodeConfig::from_toml(&text).unwrap_or_else(|error| {
+            eprintln!("invalid {path}: {error}");
+            std::process::exit(2);
+        }),
+        None => NodeConfig::default(),
+    };
+    if let Some(listen) = flag(args, "--listen") {
+        cfg.listen = listen;
+    }
+    if let Some(profile) = flag(args, "--profile") {
+        cfg.profile = ResourceProfile::from_id(&profile).unwrap_or_else(|| {
+            eprintln!("unknown profile: {profile} (use light | balanced | max)");
+            std::process::exit(2);
+        });
+    }
+    cfg
 }
 
 async fn attach(url: &str) -> Result<(), Box<dyn std::error::Error>> {
