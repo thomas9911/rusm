@@ -482,6 +482,7 @@ name = "rusm-otp"
 version = "0.0.0"
 dependencies = [
  "dashmap",
+ "futures-util",
  "tokio",
 ]
 

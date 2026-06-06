@@ -6,10 +6,11 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-description = "The Wasm-free Erlang/OTP core of RUSM: processes, scheduling, signals."
+description = "The Wasm-free Erlang/OTP core of RUSM: processes, mailboxes, scheduling."
 
 # Invariant: this crate must NOT depend on `wasmtime` or any Wasm type — the
 # actor model stands alone. Wasm is a separate, optional backend (`rusm-wasm`).
 [dependencies]
 dashmap = "6.2.1"
+futures-util = { version = "0.3.32", default-features = false, features = ["alloc"] }
 tokio = { version = "1.52.3", features = ["rt", "rt-multi-thread", "sync", "macros"] }
