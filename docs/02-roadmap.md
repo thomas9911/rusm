@@ -19,8 +19,8 @@ data to real measurements.
 | Phase | Theme | Graduates to real data |
 | --- | --- | --- |
 | **0 ✅** | Observability + benchmark dashboard (synthetic) | — |
-| **1 ✅** | **Process & scheduler core** — task + mailbox + biased signal loop, pluggable body | **spawn-storm** (live) |
-| 2 | **Mailboxes & message passing** — byte+resource messages, selective receive | **ping-pong** |
+| **1 ✅** | **Process & scheduler core** — task + process table + abort-based lifecycle, pluggable body | **spawn-storm** (live) |
+| **2 ✅** | **Mailboxes & message passing** — per-process mailbox, `send`/`recv`, selective `recv_match` | **ping-pong** (live) |
 | 3 | **Links, monitors, supervision, fault tolerance** — "let it crash" (task-panic isolation) | **fault-recovery** |
 | 4 | **Process management** — registry, lifecycle, timers, graceful shutdown | — |
 | 5 | **Connectivity: TCP/TLS** — process-per-connection | **connection-storm** (native) |

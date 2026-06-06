@@ -76,10 +76,11 @@ impl Scenario {
                 "Message ping-pong",
                 "Two processes bounce messages; measures messages/sec and round-trip latency.",
                 vec![
-                    "Two processes bounce a message back and forth — the mailbox and scheduler hot path.",
+                    "Pairs of processes bounce messages back and forth — the mailbox and scheduler hot path.",
                     "Headline: messages/sec and round-trip latency.",
-                    "Messages are copied across isolated memories by the host; nothing is shared, exactly like Erlang.",
+                    "Each ping carries the sender's pid so the ponger knows whom to reply to; messages move by value, nothing is shared, exactly like Erlang.",
                     "Low, stable round-trip latency under load means wakeups are cheap and scheduling is fair.",
+                    "Phase 2: these are REAL rusm-otp processes exchanging real messages — messages/sec and round-trip latency are measured live.",
                 ],
                 2,
             ),

@@ -8,13 +8,15 @@ distributed clusters you can hook into live. See `README.md` for the pitch and
 
 ## Status
 
-**Phase 1 of 10 — complete.** The Wasm-free OTP core (`rusm-otp`) spawns,
-schedules, and kills **real** lightweight processes; the spawn-storm benchmark
-shows real data — ~1.4M sustained spawns/sec across all cores (bounded live
-population), p50 ~1 µs. Phase 0 (metrics, live observer,
-benchmark harness + WebSocket server, `rusm` CLI, React dashboard, examples) is
-done. Messaging, supervision, the Wasmtime backend, and clustering are later
-phases; see `docs/02-roadmap.md`.
+**Phase 2 of 10 — complete.** The Wasm-free OTP core (`rusm-otp`) spawns,
+schedules, kills, and **passes messages** between **real** lightweight processes:
+per-process mailboxes with `send`/`recv` and selective `recv_match`. Two
+benchmarks are live — spawn-storm (~1.4M sustained spawns/sec, p50 ~1 µs) and
+ping-pong (~3M messages/sec, round-trip p50 ~2 µs). Each process keeps a single
+channel; kill rides a `futures` abort handle (no second signal channel — we beat
+Lunatic's two). Phase 0 (metrics, live observer, benchmark harness + WebSocket
+server, `rusm` CLI, React dashboard, examples) is done. Supervision, the Wasmtime
+backend, and clustering are later phases; see `docs/02-roadmap.md`.
 
 ## Tech stack
 

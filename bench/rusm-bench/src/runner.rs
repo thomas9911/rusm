@@ -2,6 +2,7 @@ use rusm_metrics::{LatencyHistogram, TimeSeries};
 use rusm_observer::{NodeSample, Observer};
 
 use crate::engine::SpawnStormEngine;
+use crate::pingpong::PingPongEngine;
 use crate::profile::ResourceProfile;
 use crate::protocol::Frame;
 use crate::sample::Sample;
@@ -48,6 +49,7 @@ impl Default for RunnerConfig {
 enum Engine {
     Synthetic(SyntheticSource),
     SpawnStorm(SpawnStormEngine),
+    PingPong(PingPongEngine),
 }
 
 impl Engine {
@@ -57,6 +59,12 @@ impl Engine {
                 config.spawn_workers,
                 config.scheduler_count,
                 config.spawn_max_in_flight,
+            )),
+            // The pair count tracks the resource profile's worker count, so the
+            // dial scales ping-pong too.
+            Scenario::PingPong => Engine::PingPong(PingPongEngine::new(
+                config.spawn_workers,
+                config.scheduler_count,
             )),
             _ => Engine::Synthetic(SyntheticSource::new(scenario)),
         }
@@ -71,6 +79,7 @@ impl Engine {
                 config.scheduler_count,
             ),
             Engine::SpawnStorm(engine) => engine.tick(),
+            Engine::PingPong(engine) => engine.tick(),
         }
     }
 }
@@ -121,8 +130,9 @@ impl Runner {
         self.config.spawn_workers = workers;
         self.config.spawn_max_in_flight = cap;
         self.profile = profile;
-        if self.scenario() == Some(Scenario::SpawnStorm) {
-            self.start(Scenario::SpawnStorm);
+        // Restart whichever real engine is running so the new tuning takes effect.
+        if let Some(scenario @ (Scenario::SpawnStorm | Scenario::PingPong)) = self.scenario() {
+            self.start(scenario);
         }
     }
 
@@ -283,7 +293,7 @@ mod tests {
     #[test]
     fn stop_returns_to_idle() {
         let mut r = runner();
-        r.start(Scenario::PingPong);
+        r.start(Scenario::ConnectionStorm);
         r.stop();
         assert!(!r.is_running());
         assert!(!r.tick(0).running);
@@ -292,7 +302,7 @@ mod tests {
     #[test]
     fn restart_resets_metrics() {
         let mut r = runner();
-        r.start(Scenario::PingPong);
+        r.start(Scenario::ConnectionStorm);
         for tick in 0..10 {
             r.tick(tick);
         }
@@ -343,6 +353,19 @@ mod tests {
         r.set_resource_profile(ResourceProfile::Max);
         assert_eq!(r.scenario(), Some(Scenario::SpawnStorm));
         assert_eq!(r.resource_profile(), ResourceProfile::Max);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn ping_pong_runs_real_processes() {
+        // The ping-pong scenario bounces messages between real rusm-otp process
+        // pairs, unlike the synthetic scenarios.
+        let mut r = runner();
+        r.start(Scenario::PingPong);
+        tokio::time::sleep(std::time::Duration::from_millis(80)).await; // warm up
+        let frame = r.tick(50);
+        assert_eq!(frame.scenario.as_deref(), Some("ping-pong"));
+        assert!(frame.ops_per_sec > 0.0);
+        assert!(frame.observer.process_count >= 2); // at least one live pair
     }
 
     #[test]

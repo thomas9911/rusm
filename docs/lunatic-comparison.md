@@ -10,9 +10,10 @@
 
 ## How to read this
 
-This is not apples-to-apples. RUSM is at **Phase 1 of 10**: the Wasm-free OTP
-core spawns real lightweight processes (spawn-storm shows real data), atop the
-Phase-0 observability foundation — but there is still **no Wasm execution** (the
+This is not apples-to-apples. RUSM is at **Phase 2 of 10**: the Wasm-free OTP
+core spawns real lightweight processes and passes real messages between them
+(spawn-storm and ping-pong show real data), atop the Phase-0 observability
+foundation — but there is still **no Wasm execution** (the
 Wasmtime backend is Phase 6). Lunatic is the full runtime. So most runtime rows
 show RUSM as *planned (Phase N)*. The value is in the **efficiency playbook** below.
 
@@ -34,7 +35,7 @@ show RUSM as *planned (Phase N)*. The value is in the **efficiency playbook** be
 
 | | RUSM (today) | Lunatic |
 | --- | --- | --- |
-| Status | Active, Phase 1 of 10 complete | Dormant since 2023 (v0.13.0) |
+| Status | Active, Phase 2 of 10 complete | Dormant since 2023 (v0.13.0) |
 | Rust LOC | ~2,560 (4 crates) + 790 TS | ~15,150 (20 crates) |
 | Tests | 87 Rust + 18 TS, ~99.5% cov | ~26 test annotations |
 | Wasmtime | none yet (target: modern) | v8 (2023) |
@@ -51,7 +52,7 @@ phase, same themes, same order.
 | Phase | Capability | RUSM | Lunatic |
 | --- | --- | :---: | --- |
 | 1 ✅ | Process & scheduler core | ✅ done (`rusm-otp`) | ✅ `WasmProcess` |
-| 2 | Mailboxes & message passing | ❌ | ✅ selective-receive |
+| 2 ✅ | Mailboxes & message passing | ✅ done (one channel + selective receive) | ✅ selective-receive |
 | 3 | Links, monitors, supervision, fault tolerance | ❌ | ✅ `Signal` enum |
 | 4 | Process management (registry, timers, lifecycle) | ❌ | ✅ |
 | 5 | Connectivity — TCP/TLS | ⚠️ WS (dashboard) | ✅ TCP/UDP/DNS/TLS |
@@ -84,21 +85,20 @@ own.)
 
 | Borrow from Lunatic | Why it helps | RUSM plan |
 | --- | --- | --- |
-| Biased `tokio::select!` loop, signals before the body — `lunatic-process/src/lib.rs` | deterministic signal priority, no starvation, cancellation-safe | **Adopted** (`rusm-otp`) |
-| Single `Signal` enum over one mpsc channel — `lunatic-process/src/lib.rs` | one channel for messages *and* control — uniform | **Adopted** |
+| Biased `tokio::select!` loop, signals before the body — `lunatic-process/src/lib.rs` | deterministic signal priority, no starvation, cancellation-safe | **Beaten in Phase 2:** kill now rides a `futures` abort handle, so there's no select loop and no control channel at all |
+| Single `Signal` enum over one mpsc channel — `lunatic-process/src/lib.rs` | one channel for messages *and* control — uniform | **Beaten:** RUSM keeps one channel for *messages only*; control needs none, so we removed the `Signal` type entirely |
 | `HashMapId<T>` id→resource table — `crates/hash-map-id` | one uniform resource table everywhere | Adopt the *pattern*; **beat:** a slotmap / generational-index arena (array-indexed, no hashing, safe id reuse) instead of `HashMap<u64,T>` |
-| Unbounded signal mailbox (`UnboundedSender`) — `lunatic-process/src/lib.rs` | Erlang-style, but unbounded → flood/memory risk | **Beat (stability):** bounded + observable mailbox depth |
+| Unbounded signal mailbox (`UnboundedSender`) — `lunatic-process/src/lib.rs` | Erlang-style, but unbounded → flood/memory risk | RUSM's mailbox is unbounded too (Erlang-style); **bounded + observable mailbox depth** is a later hardening option |
 
-## Phase 2 — Mailboxes & message passing
+## Phase 2 — Mailboxes & message passing ✅
 
-| Borrow from Lunatic | Why it helps | RUSM plan |
+| Borrow from Lunatic | Why it helps | RUSM status |
 | --- | --- | --- |
-| `DataMessage{buffer, resources: Vec<Arc<Resource>>}` — resources moved by `Arc`, only bytes copied — `message.rs:68-103` | zero-copy handoff of sockets/modules | Adopt |
-| Resources by index; `push_*`/`take_*` re-register on receive — `lunatic-messaging-api/src/lib.rs` | no serializing live handles; O(1) transfer | Adopt |
-| Cancellation-safe selective receive by tag (waker + found-on-cancel re-queue) — `mailbox.rs:39-169` | safe in `select!`, no lost messages | Adopt (own code + tests) |
-| Address peers via held `Arc<dyn Process>` handles — no global-table lookup on `send` — `lunatic-process/src/lib.rs` | the send hot path never locks a global table | **Adopt** handle addressing; keep the process table for observability/enumeration only (our current `Mutex<HashMap>` must not be on the send path) |
-| ⚠️ Data messages share the single `Signal` mpsc with control | a message flood can delay `Kill`/`Link` handling (FIFO within one channel) | **Beat:** a separate high-priority control channel; messages on their own queue, control biased-first |
-| ⚠️ Two queues per message (signal mpsc → `Mutex<VecDeque>`) + a `Vec<u8>` per message | double handoff + an allocation per message | **Beat:** collapse toward one queue; inline small messages (smallvec) and pool buffers |
+| Cancellation-safe selective receive by tag (waker + found-on-cancel re-queue) — `mailbox.rs:39-169` | safe in `select!`, no lost messages | **✅ Done** — `Context::recv_match` scans a save queue then the channel, leaving non-matches in arrival order (own code + tests) |
+| ⚠️ Data messages share the single `Signal` mpsc with control | a message flood can delay `Kill`/`Link` handling (FIFO within one channel) | **✅ Beaten** — control (kill) rides a free abort handle, so messages have the mailbox entirely to themselves; *zero* control channels vs Lunatic's shared signal mpsc |
+| ⚠️ Two queues per message (signal mpsc → `Mutex<VecDeque>`) + a `Vec<u8>` per message | double handoff + an allocation per message | **✅ Beaten** — one mailbox queue per process, no double handoff; small-message inlining (smallvec) and buffer pooling remain a later option |
+| `DataMessage{buffer, resources: Vec<Arc<Resource>>}` — resources moved by `Arc`, only bytes copied — `message.rs:68-103` | zero-copy handoff of sockets/modules | **Planned** — Phase 2 carries opaque bytes (pids encoded inline); first-class typed resources land with the host ABI (Phase 6) |
+| Address peers via held handles — no global-table lookup on `send` — `lunatic-process/src/lib.rs` | the send hot path never locks a global table | **Partial** — `send` goes through a *sharded* `DashMap` (no global lock, unlike our old `Mutex<HashMap>`); pure handle addressing is a later option |
 
 ## Phase 3 — Links, supervision, fault tolerance
 
