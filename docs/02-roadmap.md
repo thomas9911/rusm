@@ -21,7 +21,7 @@ data to real measurements.
 | **0 ✅** | Observability + benchmark dashboard (synthetic) | — |
 | **1 ✅** | **Process & scheduler core** — task + process table + abort-based lifecycle, pluggable body | **spawn-storm** (live) |
 | **2 ✅** | **Mailboxes & message passing** — per-process mailbox, `send`/`recv`, selective `recv_match` | **ping-pong** (live) |
-| 3 | **Links, monitors, supervision, fault tolerance** — "let it crash" (task-panic isolation) | **fault-recovery** |
+| **3 ✅** | **Links, monitors, supervision, fault tolerance** — exit reasons, `link`/`monitor`/`trap_exit`/`spawn_link`/`exit`, cascades | **fault-recovery** (live) |
 | 4 | **Process management** — registry, lifecycle, timers, graceful shutdown | — |
 | 5 | **Connectivity: TCP/TLS** — process-per-connection | **connection-storm** (native) |
 | 6 | **Embed Wasmtime as the process backend** — instance-per-process, host ABI, fuel/epoch | **fairness**; spawn/conn re-measured |

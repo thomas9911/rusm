@@ -4,6 +4,7 @@
 
 mod config;
 mod engine;
+mod faultrecovery;
 mod pingpong;
 mod profile;
 mod protocol;

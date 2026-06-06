@@ -2,6 +2,7 @@ use rusm_metrics::{LatencyHistogram, TimeSeries};
 use rusm_observer::{NodeSample, Observer};
 
 use crate::engine::SpawnStormEngine;
+use crate::faultrecovery::FaultRecoveryEngine;
 use crate::pingpong::PingPongEngine;
 use crate::profile::ResourceProfile;
 use crate::protocol::Frame;
@@ -50,19 +51,24 @@ enum Engine {
     Synthetic(SyntheticSource),
     SpawnStorm(SpawnStormEngine),
     PingPong(PingPongEngine),
+    FaultRecovery(FaultRecoveryEngine),
 }
 
 impl Engine {
     fn for_scenario(scenario: Scenario, config: &RunnerConfig) -> Self {
+        // Real engines scale their worker/pair/supervisor count with the resource
+        // profile; the rest are still synthetic.
         match scenario {
             Scenario::SpawnStorm => Engine::SpawnStorm(SpawnStormEngine::new(
                 config.spawn_workers,
                 config.scheduler_count,
                 config.spawn_max_in_flight,
             )),
-            // The pair count tracks the resource profile's worker count, so the
-            // dial scales ping-pong too.
             Scenario::PingPong => Engine::PingPong(PingPongEngine::new(
+                config.spawn_workers,
+                config.scheduler_count,
+            )),
+            Scenario::FaultRecovery => Engine::FaultRecovery(FaultRecoveryEngine::new(
                 config.spawn_workers,
                 config.scheduler_count,
             )),
@@ -80,6 +86,7 @@ impl Engine {
             ),
             Engine::SpawnStorm(engine) => engine.tick(),
             Engine::PingPong(engine) => engine.tick(),
+            Engine::FaultRecovery(engine) => engine.tick(),
         }
     }
 }
@@ -131,7 +138,10 @@ impl Runner {
         self.config.spawn_max_in_flight = cap;
         self.profile = profile;
         // Restart whichever real engine is running so the new tuning takes effect.
-        if let Some(scenario @ (Scenario::SpawnStorm | Scenario::PingPong)) = self.scenario() {
+        if let Some(
+            scenario @ (Scenario::SpawnStorm | Scenario::PingPong | Scenario::FaultRecovery),
+        ) = self.scenario()
+        {
             self.start(scenario);
         }
     }
@@ -366,6 +376,18 @@ mod tests {
         assert_eq!(frame.scenario.as_deref(), Some("ping-pong"));
         assert!(frame.ops_per_sec > 0.0);
         assert!(frame.observer.process_count >= 2); // at least one live pair
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn fault_recovery_runs_real_supervisors() {
+        // Real supervisors trap exits and restart crashing children.
+        let mut r = runner();
+        r.start(Scenario::FaultRecovery);
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await; // warm up
+        let frame = r.tick(50);
+        assert_eq!(frame.scenario.as_deref(), Some("fault-recovery"));
+        assert!(frame.ops_per_sec > 0.0); // restarts/sec
+        assert!(frame.observer.process_count >= 1);
     }
 
     #[test]

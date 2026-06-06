@@ -10,9 +10,9 @@
 
 ## How to read this
 
-This is not apples-to-apples. RUSM is at **Phase 2 of 10**: the Wasm-free OTP
-core spawns real lightweight processes and passes real messages between them
-(spawn-storm and ping-pong show real data), atop the Phase-0 observability
+This is not apples-to-apples. RUSM is at **Phase 3 of 10**: the Wasm-free OTP
+core spawns real lightweight processes, passes real messages, and supervises
+them (spawn-storm, ping-pong and fault-recovery show real data), atop the Phase-0 observability
 foundation — but there is still **no Wasm execution** (the
 Wasmtime backend is Phase 6). Lunatic is the full runtime. So most runtime rows
 show RUSM as *planned (Phase N)*. The value is in the **efficiency playbook** below.
@@ -35,7 +35,7 @@ show RUSM as *planned (Phase N)*. The value is in the **efficiency playbook** be
 
 | | RUSM (today) | Lunatic |
 | --- | --- | --- |
-| Status | Active, Phase 2 of 10 complete | Dormant since 2023 (v0.13.0) |
+| Status | Active, Phase 3 of 10 complete | Dormant since 2023 (v0.13.0) |
 | Rust LOC | ~2,560 (4 crates) + 790 TS | ~15,150 (20 crates) |
 | Tests | 87 Rust + 18 TS, ~99.5% cov | ~26 test annotations |
 | Wasmtime | none yet (target: modern) | v8 (2023) |
@@ -53,7 +53,7 @@ phase, same themes, same order.
 | --- | --- | :---: | --- |
 | 1 ✅ | Process & scheduler core | ✅ done (`rusm-otp`) | ✅ `WasmProcess` |
 | 2 ✅ | Mailboxes & message passing | ✅ done (one channel + selective receive) | ✅ selective-receive |
-| 3 | Links, monitors, supervision, fault tolerance | ❌ | ✅ `Signal` enum |
+| 3 ✅ | Links, monitors, supervision, fault tolerance | ✅ done (links/monitors/trap/exit) | ✅ `Signal` enum |
 | 4 | Process management (registry, timers, lifecycle) | ❌ | ✅ |
 | 5 | Connectivity — TCP/TLS | ⚠️ WS (dashboard) | ✅ TCP/UDP/DNS/TLS |
 | 6 | Wasmtime backend (instance-per-process, preemption) | ❌ → epoch | ✅ (fuel) |
@@ -100,12 +100,12 @@ own.)
 | `DataMessage{buffer, resources: Vec<Arc<Resource>>}` — resources moved by `Arc`, only bytes copied — `message.rs:68-103` | zero-copy handoff of sockets/modules | **Planned** — Phase 2 carries opaque bytes (pids encoded inline); first-class typed resources land with the host ABI (Phase 6) |
 | Address peers via held handles — no global-table lookup on `send` — `lunatic-process/src/lib.rs` | the send hot path never locks a global table | **Partial** — `send` goes through a *sharded* `DashMap` (no global lock, unlike our old `Mutex<HashMap>`); pure handle addressing is a later option |
 
-## Phase 3 — Links, supervision, fault tolerance
+## Phase 3 — Links, supervision, fault tolerance ✅
 
-| Borrow from Lunatic | Why it helps | RUSM plan |
+| Borrow from Lunatic | Why it helps | RUSM status |
 | --- | --- | --- |
-| `Signal::{Link,Monitor,LinkDied}` + `die_when_link_dies` — `lunatic-process/src/lib.rs` | unified, configurable supervision | Adopt |
-| trap → `ResultValue::Failed` → `LinkDied` propagation — `runtimes/wasmtime.rs` | a crash notifies linked peers | Adopt — task-panic isolation now, trap-level at Phase 7 |
+| `Signal::{Link,Monitor,LinkDied}` + `die_when_link_dies` — `lunatic-process/src/lib.rs` | unified, configurable supervision | **✅ Done, beaten** — `link`/`monitor`/`trap_exit`/`spawn_link`/`exit`, but exit signals ride the *mailbox* (a `Received` enum) and kill rides the abort handle, so there's still **no separate signal channel** to multiplex |
+| trap → `ResultValue::Failed` → `LinkDied` propagation — `runtimes/wasmtime.rs` | a crash notifies linked peers | **✅ Done** — a crash is caught via `std::thread::panicking()` in the teardown guard (no `catch_unwind`, no per-poll cost); the abnormal reason cascades down links and is *staged* so a cascaded peer reports the original reason, not a bare kill |
 
 ## Phase 4 — Process management
 

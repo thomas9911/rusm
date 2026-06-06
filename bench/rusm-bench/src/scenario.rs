@@ -101,8 +101,9 @@ impl Scenario {
                 vec![
                     "Deliberately crashes supervised child processes and watches them come back.",
                     "Headline: restarts/sec and recovery latency — \"let it crash\" in action.",
-                    "A trap tears down only the failing Wasm instance; a supervisor restarts a clean one and the rest of the system never notices.",
+                    "Each supervisor traps exits and links its children; a child's crash arrives as an exit signal, and the supervisor starts a clean replacement while the rest of the system never notices.",
                     "Background: per-process isolation is what makes crashes survivable rather than fatal.",
+                    "Phase 3: these are REAL rusm-otp supervisors restarting real crashing children — restarts/sec and recovery latency are measured live.",
                 ],
                 3,
             ),
