@@ -120,8 +120,8 @@ own.)
 
 | Borrow from Lunatic | Why it helps | RUSM plan |
 | --- | --- | --- |
-| Biased `tokio::select!` loop, signals before the body — `lunatic-process/src/lib.rs` | deterministic signal priority, no starvation, cancellation-safe | **Beaten in Phase 2:** kill now rides a `futures` abort handle, so there's no select loop and no control channel at all |
-| Single `Signal` enum over one mpsc channel — `lunatic-process/src/lib.rs` | one channel for messages *and* control — uniform | **Beaten:** RUSM keeps one channel for *messages only*; control needs none, so we removed the `Signal` type entirely |
+| Biased `tokio::select!` loop, signals before the body — `lunatic-process/src/lib.rs` | deterministic signal priority, no starvation, cancellation-safe | **Ahead (Phase 2):** kill now rides a `futures` abort handle, so there's no select loop and no control channel at all |
+| Single `Signal` enum over one mpsc channel — `lunatic-process/src/lib.rs` | one channel for messages *and* control — uniform | **Ahead:** RUSM keeps one channel for *messages only*; control needs none, so we removed the `Signal` type entirely |
 | `HashMapId<T>` id→resource table — `crates/hash-map-id` | one uniform resource table everywhere | Adopt the *pattern*; **beat:** a slotmap / generational-index arena (array-indexed, no hashing, safe id reuse) instead of `HashMap<u64,T>` |
 | Unbounded signal mailbox (`UnboundedSender`) — `lunatic-process/src/lib.rs` | Erlang-style, but unbounded → flood/memory risk | RUSM's mailbox is unbounded too (Erlang-style); **bounded + observable mailbox depth** is a later hardening option |
 
@@ -130,8 +130,8 @@ own.)
 | Borrow from Lunatic | Why it helps | RUSM status |
 | --- | --- | --- |
 | Cancellation-safe selective receive by tag (waker + found-on-cancel re-queue) — `mailbox.rs:39-169` | safe in `select!`, no lost messages | **✅ Done** — `Context::recv_match` scans a save queue then the channel, leaving non-matches in arrival order (own code + tests) |
-| ⚠️ Data messages share the single `Signal` mpsc with control | a message flood can delay `Kill`/`Link` handling (FIFO within one channel) | **✅ Beaten** — control (kill) rides a free abort handle, so messages have the mailbox entirely to themselves; *zero* control channels vs Lunatic's shared signal mpsc |
-| ⚠️ Two queues per message (signal mpsc → `Mutex<VecDeque>`) + a `Vec<u8>` per message | double handoff + an allocation per message | **✅ Beaten** — one mailbox queue per process, no double handoff; small-message inlining (smallvec) and buffer pooling remain a later option |
+| ⚠️ Data messages share the single `Signal` mpsc with control | a message flood can delay `Kill`/`Link` handling (FIFO within one channel) | **✅ Ahead** — control (kill) rides a free abort handle, so messages have the mailbox entirely to themselves; *zero* control channels vs Lunatic's shared signal mpsc |
+| ⚠️ Two queues per message (signal mpsc → `Mutex<VecDeque>`) + a `Vec<u8>` per message | double handoff + an allocation per message | **✅ Ahead** — one mailbox queue per process, no double handoff; small-message inlining (smallvec) and buffer pooling remain a later option |
 | `DataMessage{buffer, resources: Vec<Arc<Resource>>}` — resources moved by `Arc`, only bytes copied — `message.rs:68-103` | zero-copy handoff of sockets/modules | **Planned** — Phase 2 carries opaque bytes (pids encoded inline); first-class typed resources land with the host ABI (Phase 6) |
 | Address peers via held handles — no global-table lookup on `send` — `lunatic-process/src/lib.rs` | the send hot path never locks a global table | **Partial** — `send` goes through a *sharded* `DashMap` (no global lock, unlike our old `Mutex<HashMap>`); pure handle addressing is a later option |
 
@@ -139,14 +139,14 @@ own.)
 
 | Borrow from Lunatic | Why it helps | RUSM status |
 | --- | --- | --- |
-| `Signal::{Link,Monitor,LinkDied}` + `die_when_link_dies` — `lunatic-process/src/lib.rs` | unified, configurable supervision | **✅ Done, beaten** — `link`/`monitor`/`trap_exit`/`spawn_link`/`exit`, but exit signals ride the *mailbox* (a `Received` enum) and kill rides the abort handle, so there's still **no separate signal channel** to multiplex |
+| `Signal::{Link,Monitor,LinkDied}` + `die_when_link_dies` — `lunatic-process/src/lib.rs` | unified, configurable supervision | **✅ Done, ahead** — `link`/`monitor`/`trap_exit`/`spawn_link`/`exit`, but exit signals ride the *mailbox* (a `Received` enum) and kill rides the abort handle, so there's still **no separate signal channel** to multiplex |
 | trap → `ResultValue::Failed` → `LinkDied` propagation — `runtimes/wasmtime.rs` | a crash notifies linked peers | **✅ Done** — a crash is caught via `std::thread::panicking()` in the teardown guard (no `catch_unwind`, no per-poll cost); the abnormal reason cascades down links and is *staged* so a cascaded peer reports the original reason, not a bare kill |
 
 ## Phase 4 — Process management ✅
 
 | Borrow from Lunatic | Why it helps | RUSM status |
 | --- | --- | --- |
-| Named registry `Arc<RwLock<HashMap>>` — `lunatic-registry-api` | async-safe name → pid | **✅ Done, beaten** — a sharded `DashMap` registry (name lookups never take a global lock), with names auto-released on process exit |
+| Named registry `Arc<RwLock<HashMap>>` — `lunatic-registry-api` | async-safe name → pid | **✅ Done, ahead** — a sharded `DashMap` registry (name lookups never take a global lock), with names auto-released on process exit |
 | Timers: `BinaryHeap` + `HashMapId` (O(log n) cancel) — `lunatic-timer-api` | cheap cancellation of many timers | **✅ Done, simpler** — `send_after` rides Tokio's hierarchical timer wheel and cancellation is a free `AbortHandle`, so there's no hand-rolled heap and no single timer-service bottleneck |
 
 ## Phase 5 — Connectivity (TCP) ✅
@@ -162,9 +162,9 @@ own.)
 | Borrow from Lunatic | Why it helps | RUSM status |
 | --- | --- | --- |
 | `InstancePre` (imports type-checked once) + Arc'd `Module` + async — `runtimes/wasmtime.rs:34,63,163` | fast instantiation, compile-once | **✅ Done** — the linker is built once and each module's imports resolve once into an `InstancePre`; a spawn skips import resolution entirely (the 2.6× step to ~167k/s) |
-| `InstanceAllocationStrategy::OnDemand` — `runtimes/wasmtime.rs:173` | fresh memory per instance → slower, heavier spawn | **✅ Beaten** — pooling allocator (pre-reserved slabs) → spawns reuse slots, no mmap; **~167k/s vs ~53k/s on-demand** |
-| `static_memory_forced(true)` on v8 (no CoW) — `runtimes/wasmtime.rs:175` | static memories, but no copy-on-write | **✅ Beaten** — `memory_init_cow`: a fresh instance shares the module image until first write, so init is near-free |
-| Preemption via **fuel** (`consume_fuel`, `out_of_fuel_async_yield`) — `runtimes/wasmtime.rs:166,56` | works, but per-unit accounting overhead | **✅ Beaten** — epoch interruption: a periodic atomic bump, ≈ near-zero steady-state; an infinite-loop guest still yields and stays killable |
+| `InstanceAllocationStrategy::OnDemand` — `runtimes/wasmtime.rs:173` | fresh memory per instance → slower, heavier spawn | **✅ Ahead** — pooling allocator (pre-reserved slabs) → spawns reuse slots, no mmap; **~167k/s vs ~53k/s on-demand** |
+| `static_memory_forced(true)` on v8 (no CoW) — `runtimes/wasmtime.rs:175` | static memories, but no copy-on-write | **✅ Ahead** — `memory_init_cow`: a fresh instance shares the module image until first write, so init is near-free |
+| Preemption via **fuel** (`consume_fuel`, `out_of_fuel_async_yield`) — `runtimes/wasmtime.rs:166,56` | works, but per-unit accounting overhead | **✅ Ahead** — epoch interruption: a periodic atomic bump, ≈ near-zero steady-state; an infinite-loop guest still yields and stays killable |
 
 **Why this phase matters most:** pooling + CoW + epoch + `InstancePre` are exactly
 the levers for cheap instance-per-process. They're now in (`rusm-wasm`), giving
