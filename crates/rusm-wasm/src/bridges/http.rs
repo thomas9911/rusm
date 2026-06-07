@@ -158,6 +158,7 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     const HELLO: &[u8] = include_bytes!("../../tests/fixtures/http_hello.wasm");
+    const SSE: &[u8] = include_bytes!("../../tests/fixtures/sse_ticker.wasm");
 
     /// One raw HTTP/1.1 GET (Connection: close) → the full response text.
     async fn get(addr: std::net::SocketAddr) -> String {
@@ -187,6 +188,65 @@ mod tests {
         assert!(
             response.contains("hello from RUSM"),
             "the component produced the body: {response}"
+        );
+
+        handle.abort();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_wasm_component_streams_server_sent_events() {
+        use std::time::{Duration, Instant};
+
+        let wr = WasmRuntime::new(Runtime::new()).unwrap();
+        let prepared = wr
+            .prepare_http(&wr.compile_component(SSE).unwrap())
+            .unwrap();
+        let server = wr.http_server(&prepared, CapabilityProfile::Trusted.capabilities());
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = tokio::spawn(server.serve(listener));
+
+        let mut conn = tokio::net::TcpStream::connect(addr).await.unwrap();
+        conn.write_all(b"GET / HTTP/1.1\r\nHost: rusm\r\nConnection: close\r\n\r\n")
+            .await
+            .unwrap();
+
+        // Read incrementally, stamping when the first event lands vs the last byte —
+        // the gap proves the body was streamed over time, not buffered then flushed.
+        let start = Instant::now();
+        let mut buf = Vec::new();
+        let mut chunk = [0u8; 1024];
+        let mut first_event_at = None;
+        loop {
+            let n = conn.read(&mut chunk).await.unwrap();
+            if n == 0 {
+                break;
+            }
+            buf.extend_from_slice(&chunk[..n]);
+            if first_event_at.is_none() && String::from_utf8_lossy(&buf).contains("data: tick 0") {
+                first_event_at = Some(start.elapsed());
+            }
+        }
+        let total = start.elapsed();
+        let text = String::from_utf8_lossy(&buf);
+
+        assert!(text.starts_with("HTTP/1.1 200"), "got: {text}");
+        assert!(
+            text.to_lowercase().contains("text/event-stream"),
+            "SSE content-type from the guest: {text}"
+        );
+        for n in 0..5 {
+            assert!(
+                text.contains(&format!("data: tick {n}")),
+                "missing event {n}"
+            );
+        }
+        // Five events 50ms apart: the first must arrive well before the stream ends.
+        let first = first_event_at.expect("the first SSE event was seen");
+        assert!(
+            total - first >= Duration::from_millis(120),
+            "events should stream over time (first at {first:?}, done at {total:?})"
         );
 
         handle.abort();
