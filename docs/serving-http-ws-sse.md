@@ -160,7 +160,7 @@ sandbox overhead is explicit — the honest number.
 
 | Scenario | Drives | Headline metrics |
 | --- | --- | --- |
-| **http-throughput** ✅ *(live dashboard scenario + [`http_bench`](../examples/http_bench/))* | many keep-alive clients hitting a 200-OK component, instance-per-request | **measured: ~52k req/s, p50 ~160µs** (moderate load). Breakdown: instantiation is only **~30µs** — per-request isolation is cheap; the rest is the wstd guest + `wasi:http` marshaling. So a warm-instance pool is **not** worth it (it would trade isolation for ~30µs); instance-per-request is optimal. |
+| **http-throughput** ✅ *(live dashboard scenario + [`http_bench`](../examples/http_bench/))* | keep-alive clients hitting a 200-OK component, instance-per-request | **measured (64 clients): lean raw-`wasi:http` ~64.5k req/s, wstd ~51k, bare hyper ~197k.** Instantiate-only ~11µs (lean) — per-request isolation is cheap, so warm-pooling is **not** worth it. The guest library is a ~26% lever (wstd's reactor); the residual ~3× vs bare hyper is `wasi:http` component-model marshaling. |
 | **sse-fanout** | N concurrent SSE subscribers, each fed M events/sec from long-lived instances | sustained events/sec, concurrent streams held, per-event p50/p99 — stresses the long-lived-instance + overflow tier + stream backpressure |
 | **ws-echo** | N concurrent WS connections, echo round-trip | messages/sec, round-trip p50/p99, concurrent sockets |
 

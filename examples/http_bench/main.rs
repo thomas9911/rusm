@@ -1,13 +1,15 @@
 //! **HTTP stress benchmark** — real throughput + latency of serving a WASM
-//! component as an HTTP handler, against a **bare-hyper baseline** (the same server
-//! loop returning a static response, no Wasm) so the sandbox overhead is explicit.
+//! component as an HTTP handler. Three servers, so each cost is explicit: a **lean**
+//! raw-`wasi:http` component, the ergonomic **wstd** component (async reactor per
+//! request), and a **bare-hyper baseline** (no Wasm). The lean-vs-wstd gap is the
+//! guest's cost; the lean-vs-baseline gap is the true sandbox cost.
 //!
 //! ```sh
 //! cargo run --release -p rusm-bench --example http_bench -- [seconds] [clients]
 //! ```
 //!
 //! Each client holds one keep-alive connection and fires requests back-to-back; we
-//! report sustained requests/sec and per-request p50/p99 latency for both servers.
+//! report sustained requests/sec, per-request p50/p99, and instantiate-only cost.
 
 use std::convert::Infallible;
 use std::net::SocketAddr;
