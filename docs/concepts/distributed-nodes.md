@@ -9,10 +9,12 @@ message across them, exactly like distributed Erlang. This ships in the Wasm-fre
 
 Nodes connect over **QUIC** with **TLS 1.3** (think `Node.connect/1`, but secure by
 default). Each node has a name; on connect, both ends exchange names over a
-dedicated control stream and remember the peer. A whole cluster shares one
-self-signed certificate (a *pre-shared cluster cert*) — a peer presenting the wrong
-certificate is rejected at the handshake. Per-node certs signed by a cluster CA are
-a later refinement.
+dedicated control stream and remember the peer. Links are **mutually
+authenticated** — both ends present a certificate and verify the other against a
+shared trust anchor, so a peer without a trusted certificate is rejected at the
+handshake. Use a `ClusterCa` to issue each node its own CA-signed certificate
+(per-node keys, independently revocable), or a single shared `Identity::generate()`
+for a small/trusted cluster.
 
 ## Location transparency
 

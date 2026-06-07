@@ -11,7 +11,8 @@ distributed clusters you can hook into live. See `README.md` for the pitch and
 **Phase 9 of 11 — complete.** RUSM **hosts real WASM components** as isolated,
 supervised processes, and now **clusters across nodes**. The Wasm-free
 **`rusm-cluster`** crate (over `rusm-otp`, never Wasmtime) connects nodes over
-**QUIC + TLS** (quinn + rustls/ring; a pre-shared cluster cert): a `ClusterNode`
+**QUIC + TLS** (quinn + rustls/ring; **mutual TLS** — a `ClusterCa` issues per-node
+certs, or a shared self-signed `Identity`): a `ClusterNode`
 wraps a `Runtime` with a QUIC endpoint, exchanges names on a per-peer **control
 stream**, and routes each message on its own **uni-stream**. It gives cross-node
 `send`, a **gossiped global registry** (`register_global`/`whereis_global`/

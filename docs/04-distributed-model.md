@@ -55,12 +55,19 @@ doing. This is the cluster-level primitive; the dashboard's remote observer and 
 
 ## Security
 
-Every link is QUIC, i.e. TLS 1.3 — encrypted and authenticated. Today a cluster
-shares one self-signed `Identity` (a **pre-shared cluster certificate**): a node
-only completes a handshake with a peer presenting the same cert, and the client
-pins that cert as its sole trust root — a wrong certificate is rejected at the
-handshake. Per-node certificates signed by a cluster CA are a later refinement; the
-transport seam does not change.
+Every link is QUIC (TLS 1.3) and **mutually authenticated**: both ends present a
+certificate and verify the other against a shared trust anchor, so a peer without a
+trusted certificate is rejected at the handshake. Two trust models:
+
+- **`ClusterCa` (Phase 10, recommended)** — `ClusterCa::generate()` then
+  `ca.issue("node")` gives each node its **own** keypair and a CA-signed
+  certificate. A compromised node is excluded by rotating the CA, without re-keying
+  every other node. A node whose cert is signed by a *different* CA is rejected.
+- **`Identity::generate()` (simple)** — one self-signed certificate, its own trust
+  root, shared across a small/trusted cluster. Same mutual-TLS path, just not
+  per-node revocable.
+
+The cost is handshake-only; steady-state throughput is unaffected.
 
 ## Performance
 

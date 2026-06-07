@@ -18,9 +18,11 @@ Expected output:
 
 ## What to take away
 
-- **One identity per cluster.** `Identity::generate()` is the shared TLS
-  certificate every node presents. A peer that doesn't have it can't complete the
-  handshake — the cluster is encrypted and closed by default.
+- **Mutual TLS, closed by default.** This demo shares one `Identity::generate()`
+  certificate across both nodes — every link is mutually authenticated, so a peer
+  without the certificate can't complete the handshake. For production, prefer a
+  `ClusterCa`: `ca.issue("node")` gives each node its own key and a CA-signed cert,
+  so a compromised node can be revoked without re-keying the cluster.
 - **Nodes have names and their own runtime.** `ClusterNode::bind("london", …)`
   wraps a normal `rusm_otp::Runtime` with a QUIC endpoint.
 - **The global registry hides location.** `london.register_global("greeter", pid)`
