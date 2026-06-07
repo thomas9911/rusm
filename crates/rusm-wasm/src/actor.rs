@@ -7,7 +7,7 @@
 //! get async" property). The runtime stays the source of truth; this never
 //! reimplements OTP.
 
-use rusm_otp::{stream, Pid, Received};
+use rusm_otp::{stream, ExitReason, Pid, Received};
 
 use crate::bridges::WasiHost;
 
@@ -55,6 +55,18 @@ impl actor::Host for WasiHost {
         Ok(child.pid().raw())
     }
 
+    /// Monitor `target`: when it dies, this process receives a `__down` message
+    /// (Erlang's `monitor` — the basis for a guest `Supervisor`). Capability-gated
+    /// like spawn (supervisors pair spawn + monitor). No watcher process and no
+    /// polling: the runtime's monitor delivers the `Down`, which `receive`
+    /// translates — event-driven and cheap.
+    async fn monitor(&mut self, target: u64) {
+        if self.caps.can_spawn() || self.caps.process_control() {
+            self.rt
+                .monitor(Pid::from_raw(self.pid), Pid::from_raw(target));
+        }
+    }
+
     async fn send(&mut self, to: u64, message: Vec<u8>) {
         self.rt.send(Pid::from_raw(to), message);
     }
@@ -64,11 +76,17 @@ impl actor::Host for WasiHost {
             .ctx
             .as_mut()
             .expect("receive runs inside a spawned process");
-        // Deliver user messages; skip signals/streams (richer receive arrives in
-        // later phases).
         loop {
-            if let Received::Message(bytes) = ctx.recv().await {
-                return bytes;
+            match ctx.recv().await {
+                Received::Message(bytes) => return bytes,
+                // A monitored process died — surface it as a `__down` message so a
+                // supervisor's `receive` sees it (Erlang delivers Down to the mailbox).
+                Received::Down { pid, reason, .. } => {
+                    let reason = down_reason(reason);
+                    return format!(r#"{{"__down":"{}","reason":"{reason}"}}"#, pid.raw())
+                        .into_bytes();
+                }
+                _ => {} // streams / other signals are skipped here
             }
         }
     }
@@ -179,5 +197,15 @@ impl actor::Host for WasiHost {
             }
             None => None, // end of stream
         }
+    }
+}
+
+/// The wire name for an exit reason carried in a `__down` message.
+fn down_reason(reason: ExitReason) -> &'static str {
+    match reason {
+        ExitReason::Normal => "normal",
+        ExitReason::Killed => "killed",
+        ExitReason::Crashed => "crashed",
+        ExitReason::NoProc => "noproc",
     }
 }

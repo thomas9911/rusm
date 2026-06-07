@@ -29,7 +29,10 @@ pub use rusm_rs_macros::service;
 pub use serde;
 pub use serde_json;
 
+pub mod supervisor;
 pub mod wire;
+
+pub use supervisor::{Strategy, Supervisor};
 
 /// A process identifier (Erlang's pid).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -84,6 +87,12 @@ pub fn list() -> Vec<Pid> {
 /// Spawn a registered component by name → its pid (capability-gated `spawn`).
 pub fn spawn(component: &str) -> Result<Pid, String> {
     actor::spawn(component).map(Pid)
+}
+
+/// Monitor a process: when it dies, this process receives a `__down` message
+/// (see [`supervisor`]). Capability-gated like spawn.
+pub fn monitor(target: Pid) {
+    actor::monitor(target.0);
 }
 
 /// Register this process under a name in the node registry.

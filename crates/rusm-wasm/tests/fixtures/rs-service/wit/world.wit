@@ -29,6 +29,10 @@ interface actor {
     /// more. `err` with a message if spawn is denied or the name is unknown.
     spawn: func(component: string) -> result<pid, string>;
 
+    /// Monitor a process: when `target` dies, this process receives a `__down`
+    /// message (Erlang's `monitor`) — the basis for a guest Supervisor.
+    monitor: func(target: pid);
+
     /// Send a byte message to another process; silently dropped if it's gone
     /// (like Erlang's `send`).
     send: func(to: pid, message: list<u8>);

@@ -717,6 +717,47 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_rust_supervisor_restarts_a_dead_child() {
+        // `rusm_rs::Supervisor` (one-for-one): it spawns + monitors the `flaky`
+        // child, which announces its pid to the registered collector. Killing the
+        // child makes the supervisor restart it as a fresh process.
+        const FLAKY: &[u8] = include_bytes!("../../tests/fixtures/rs_flaky.wasm");
+        const SUP: &[u8] = include_bytes!("../../tests/fixtures/rs_sup.wasm");
+        let rt = Runtime::new();
+        let wr = WasmRuntime::new(rt.clone()).unwrap();
+        let flaky = wr
+            .prepare_component(&wr.compile_component(FLAKY).unwrap(), "run")
+            .unwrap();
+        let sup = wr
+            .prepare_component(&wr.compile_component(SUP).unwrap(), "run")
+            .unwrap();
+        wr.register_component("flaky", flaky);
+
+        // A collector forwards each "started:<pid>" announcement to a channel.
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let collector = rt.spawn(move |mut ctx| async move {
+            loop {
+                if let rusm_otp::Received::Message(b) = ctx.recv().await {
+                    let _ = tx.send(String::from_utf8(b).unwrap());
+                }
+            }
+        });
+        rt.register("collector", collector.pid());
+
+        // The supervisor needs spawn + monitor (Trusted grants both).
+        let _sup = wr.spawn_component_with(&sup, CapabilityProfile::Trusted.capabilities());
+
+        let parse = |m: String| -> u64 { m.strip_prefix("started:").unwrap().parse().unwrap() };
+        let pid_a = parse(rx.recv().await.unwrap());
+        rt.kill(rusm_otp::Pid::from_raw(pid_a)); // the supervisor should restart it
+        let pid_b = parse(rx.recv().await.unwrap());
+        assert_ne!(
+            pid_a, pid_b,
+            "the supervisor restarted the dead child as a fresh process"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_rust_service_macro_dispatches_and_a_typed_client_calls_it() {
         // `#[rusm_rs::service] mod calc` → a serve() dispatch loop + a typed Client.
         // One component plays both roles: the commander spawns a sibling `calc` by
