@@ -717,6 +717,44 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_typescript_supervisor_restarts_a_dead_child() {
+        // The TS `supervise()` helper (one-for-one): a `flaky` worker announces its
+        // pid to the collector then waits; killing it makes the supervisor restart it.
+        const FLAKY: &str = r#"
+            module.exports.default = async function () {
+                const c = Process.whereis("collector");   // null, or a bigint pid (may be 0n)
+                if (c !== null) Process.send(c, "started:" + Process.self());
+                for (;;) await Process.receive();
+            };
+        "#;
+        const SUP: &str = r#"
+            module.exports.default = async function () {
+                await supervise({ strategy: "one_for_one", children: ["flaky"] });
+            };
+        "#;
+        let rt = Runtime::new();
+        let wr = WasmRuntime::new(rt.clone()).unwrap();
+        wr.register_js_component("flaky", FLAKY.as_bytes());
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let collector = rt.spawn(move |mut ctx| async move {
+            loop {
+                if let rusm_otp::Received::Message(b) = ctx.recv().await {
+                    let _ = tx.send(String::from_utf8(b).unwrap());
+                }
+            }
+        });
+        rt.register("collector", collector.pid());
+        let _sup = wr.spawn_js_with(SUP.as_bytes(), CapabilityProfile::Trusted.capabilities());
+
+        let parse = |m: String| -> u64 { m.strip_prefix("started:").unwrap().parse().unwrap() };
+        let pid_a = parse(rx.recv().await.unwrap());
+        rt.kill(rusm_otp::Pid::from_raw(pid_a));
+        let pid_b = parse(rx.recv().await.unwrap());
+        assert_ne!(pid_a, pid_b, "the TS supervisor restarted the dead child");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_rust_supervisor_restarts_a_dead_child() {
         // `rusm_rs::Supervisor` (one-for-one): it spawns + monitors the `flaky`
         // child, which announces its pid to the registered collector. Killing the

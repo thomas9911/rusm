@@ -25,6 +25,8 @@ export interface ProcessApi {
   list(): bigint[];
   /** Spawn a registered component by name → its pid (capability-gated). */
   spawn(name: string): bigint;
+  /** Monitor a process: its death arrives as a `{ __down }` message. */
+  monitor(pid: bigint | string): void;
   send(to: bigint | string, msg: string | Uint8Array): void;
   receive(): Promise<Uint8Array>;
   receiveText(): Promise<string>;
@@ -60,11 +62,23 @@ export type ServiceClient<T> = {
   stop(): void;
 };
 
+/** How a supervisor reacts when one child dies. */
+export type Strategy = "one_for_one" | "one_for_all" | "rest_for_one";
+
+/** Options for [`supervise`]: which children (registered component names) to run,
+ *  the restart strategy, and an optional restart ceiling (overload protection). */
+export interface SupervisorOptions {
+  children: string[];
+  strategy?: Strategy;
+  maxRestarts?: number;
+}
+
 // The runner installs these globals before the bundle runs (and wraps the bundle
 // in a CommonJS scope, so this module's bindings never clobber them).
 const g = globalThis as unknown as {
   Process: ProcessApi;
   spawn: <T>(component: string) => ServiceClient<T>;
+  supervise: (opts: SupervisorOptions) => Promise<void>;
 };
 
 /** The actor API for this process. */
@@ -76,3 +90,7 @@ export const Process: ProcessApi = g.Process;
 export const spawn = <T = Record<string, (...args: any[]) => any>>(
   component: string,
 ): ServiceClient<T> => g.spawn<T>(component);
+
+/** Run a **supervisor**: spawn + monitor the given child components and restart
+ *  them per the strategy when one dies. `await` it as your worker's body. */
+export const supervise = (opts: SupervisorOptions): Promise<void> => g.supervise(opts);

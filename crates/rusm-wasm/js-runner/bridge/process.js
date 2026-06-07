@@ -39,6 +39,8 @@ globalThis.Process = {
   list() { return __list().map(BigInt); },
   // Spawn a registered component by name (capability-gated); returns its pid.
   spawn(name) { return BigInt(__spawn(name)); },
+  // Monitor a process: its death arrives as a `{ __down, reason }` message.
+  monitor(pid) { __monitor(String(pid)); },
   send(to, msg) {
     if (typeof msg === "string") __send_text(String(to), msg);
     else __send(String(to), msg);

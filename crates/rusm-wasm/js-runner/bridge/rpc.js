@@ -173,6 +173,37 @@ async function __rusm_serve(handlers) {
   }
 }
 
+// A guest **supervisor**: spawn + monitor named children and restart per a
+// strategy ("one_for_one" | "one_for_all" | "rest_for_one") when one dies. A dead
+// child arrives as a `{ __down }` message (no polling). `await supervise({...})`.
+globalThis.supervise = async function ({ strategy = "one_for_one", children = [], maxRestarts = 0 }) {
+  const start = (name) => {
+    const pid = Process.spawn(name);
+    Process.monitor(pid);
+    return pid;
+  };
+  let pids = children.map(start);
+  let restarts = 0;
+  for (;;) {
+    let m;
+    try { m = JSON.parse(await Process.receiveText()); } catch { continue; }
+    if (!m || m.__down == null) continue;
+    const dead = BigInt(m.__down);
+    const i = pids.findIndex((p) => p === dead);
+    if (i < 0) continue;
+    if (maxRestarts && ++restarts > maxRestarts) return;
+    if (strategy === "one_for_all") {
+      pids.forEach((p, j) => { if (j !== i) Process.kill(p); });
+      pids = children.map(start);
+    } else if (strategy === "rest_for_one") {
+      for (let j = i + 1; j < pids.length; j++) Process.kill(pids[j]);
+      for (let j = i; j < pids.length; j++) pids[j] = start(children[j]);
+    } else {
+      pids[i] = start(children[i]);
+    }
+  }
+};
+
 // Called by the runner after evaluating the bundle; returns the promise the runner
 // drives to completion. A component is a SERVICE if it exports named functions (run
 // the dispatch loop), a WORKER if it exports `default` (run it), or a bare script

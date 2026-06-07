@@ -97,6 +97,7 @@ impl Guest for Component {
             def!("__kill", |p: String| actor::kill(p.parse().unwrap_or(0)));
             def!("__set_label", |l: String| actor::set_label(&l));
             def!("__spawn", js_spawn);
+            def!("__monitor", |p: String| actor::monitor(p.parse().unwrap_or(0)));
 
             // --- streams (handles are small ints carried as JS numbers) ---
             def!("__stream_open", |to: String| actor::stream_open(
