@@ -52,6 +52,11 @@ pub const DEFAULT_MAX_MEMORY: usize = 16 << 20;
 /// wasi-sdk (QuickJS is C); see that crate's README to regenerate.
 const JS_RUNNER_WASM: &[u8] = include_bytes!("../js-runner/js_runner.wasm");
 
+/// The prebuilt rquickjs **js-http-runner** (`wasi:http`) component (rusm-ts),
+/// embedded so a TS/JS `fetch` handler can be served with no extra artifacts. Built
+/// from `js-http-runner/` with wasi-sdk; see that crate's README to regenerate.
+const JS_HTTP_RUNNER_WASM: &[u8] = include_bytes!("../js-http-runner/js_http_runner.wasm");
+
 /// Counters shared by every instance of one [`WasmRuntime`], so host functions
 /// can report aggregate activity (e.g. guest progress for the fairness scenario).
 #[derive(Default)]
@@ -136,6 +141,9 @@ pub struct WasmRuntime {
     /// The prebuilt rquickjs **js-runner** component (for `spawn_js`), compiled +
     /// prepared lazily on first use so non-JS nodes pay nothing.
     js_runner: std::sync::OnceLock<PreparedComponent>,
+    /// The prebuilt rquickjs **js-http-runner** `wasi:http` component (for
+    /// `http_server_js`), compiled + prepared lazily on first use.
+    js_http_runner: std::sync::OnceLock<PreparedHttp>,
     shared: Arc<Counters>,
     epoch_stop: Arc<AtomicBool>,
     epoch_ticker: Option<JoinHandle<()>>,
@@ -241,6 +249,7 @@ impl WasmRuntime {
             component_linker,
             overflow_component_linker,
             js_runner: std::sync::OnceLock::new(),
+            js_http_runner: std::sync::OnceLock::new(),
             shared: Arc::new(Counters::default()),
             epoch_stop,
             epoch_ticker: Some(epoch_ticker),

@@ -1,0 +1,33 @@
+# The rusm-ts "js-http-runner": a wasi:http component that embeds rquickjs and runs
+# a Bun-built TS/JS bundle's `fetch` handler — the TS twin of the wstd HTTP path.
+# The bundle is delivered via the RUSM_JS_BUNDLE env var (a capability the host
+# grants per served component). Built for wasm32-wasip2 (needs wasi-sdk for QuickJS's
+# C); checked in. Regenerate:
+#   CC_wasm32_wasip2=$HOME/.wasi-sdk/bin/clang \
+#   AR_wasm32_wasip2=$HOME/.wasi-sdk/bin/llvm-ar \
+#   CFLAGS_wasm32_wasip2=--sysroot=$HOME/.wasi-sdk/share/wasi-sysroot \
+#   cargo build --target wasm32-wasip2 --release
+#   cp target/wasm32-wasip2/release/js_http_runner.wasm ./js_http_runner.wasm
+# (run from this crate dir; the .wasm is embedded by rusm-wasm via include_bytes!)
+[workspace]
+
+[package]
+name = "js-http-runner"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "js_http_runner"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = "z"
+lto = true
+strip = true
+
+[dependencies]
+wstd = "0.6.6"
+rquickjs = "0.9"
+anyhow = "1"
+http-body-util = "0.1"

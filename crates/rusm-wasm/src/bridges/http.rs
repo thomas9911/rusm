@@ -54,6 +54,29 @@ impl WasmRuntime {
             caps,
         }
     }
+
+    /// Build an HTTP server whose handler is a **TypeScript/JS `fetch` bundle**
+    /// (Bun-built) on the embedded js-http-runner — the TS twin of [`http_server`].
+    /// The bundle is delivered to each per-request instance via the
+    /// `RUSM_JS_BUNDLE` env capability; the guest writes `export default { fetch }`.
+    pub fn http_server_js(&self, bundle: impl Into<String>, caps: Capabilities) -> HttpServer {
+        let caps = caps.env("RUSM_JS_BUNDLE", bundle.into());
+        let prepared = self.js_http_runner().clone();
+        self.http_server(&prepared, caps)
+    }
+
+    /// The shared, embedded js-http-runner, compiled + prepared once (lazily) so
+    /// non-serving nodes pay nothing.
+    fn js_http_runner(&self) -> &PreparedHttp {
+        self.js_http_runner.get_or_init(|| {
+            self.prepare_http(
+                &self
+                    .compile_component(crate::JS_HTTP_RUNNER_WASM)
+                    .expect("embedded js-http-runner compiles"),
+            )
+            .expect("embedded js-http-runner prepares")
+        })
+    }
 }
 
 impl HttpServer {
@@ -159,6 +182,7 @@ mod tests {
 
     const HELLO: &[u8] = include_bytes!("../../tests/fixtures/http_hello.wasm");
     const SSE: &[u8] = include_bytes!("../../tests/fixtures/sse_ticker.wasm");
+    const TS_HELLO: &str = include_str!("../../tests/fixtures/ts_http_hello.js");
 
     /// One raw HTTP/1.1 GET (Connection: close) → the full response text.
     async fn get(addr: std::net::SocketAddr) -> String {
@@ -247,6 +271,26 @@ mod tests {
         assert!(
             total - first >= Duration::from_millis(120),
             "events should stream over time (first at {first:?}, done at {total:?})"
+        );
+
+        handle.abort();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_typescript_component_serves_an_http_request() {
+        // The response is produced by a TS `fetch` handler on the js-http-runner.
+        let wr = WasmRuntime::new(Runtime::new()).unwrap();
+        let server = wr.http_server_js(TS_HELLO, CapabilityProfile::Trusted.capabilities());
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = tokio::spawn(server.serve(listener));
+
+        let response = get(addr).await;
+        assert!(response.starts_with("HTTP/1.1 200"), "got: {response}");
+        assert!(
+            response.contains("hello from TS"),
+            "the TS fetch handler produced the body: {response}"
         );
 
         handle.abort();
