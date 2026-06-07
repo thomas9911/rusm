@@ -25,4 +25,4 @@ ordinary serialized data (the `rusm-rs` guest crate will use serde + bincode).
 [fibers & blocking→async](./fibers-and-blocking-to-async.md)), so a million
 waiting processes cost almost nothing.
 
-> Implemented in Phase 2. Phase 0 models mailbox depth in the observer snapshot.
+> Shipped in Phase 2 (opt-in mailbox depth surfaces in the observer snapshot).

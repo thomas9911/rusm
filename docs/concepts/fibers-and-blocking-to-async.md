@@ -26,4 +26,4 @@ the same idea — stack switching — but battle-tested and safe, so RUSM uses i
 first (a hand-rolled version is a Phase 10 stretch). See also
 [epoch preemption](./epoch-preemption.md) for *fair* scheduling on top of this.
 
-> Implemented in Phase 6 (Wasmtime backend).
+> Shipped in Phase 6 (Wasmtime backend).

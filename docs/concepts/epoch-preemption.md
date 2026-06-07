@@ -25,4 +25,4 @@ Phase 6 ships a fairness test: spawn a process with an infinite loop alongside
 others that must keep making progress (e.g. still receive messages). With epoch
 interruption on, the bystanders are never starved.
 
-> Implemented in Phase 6 (needs the Wasmtime backend).
+> Shipped in Phase 6 (needs the Wasmtime backend).

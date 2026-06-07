@@ -12,8 +12,9 @@ functions (syscalls). Nothing is shared with other processes.
   [links & supervision](./links-and-supervision.md)).
 - **Isolation = security.** Each instance only has the host functions and
   resources it was granted (see [permissions & sandboxing](./permissions-and-sandboxing.md)).
-- **Cheap.** A fresh instance is small and fast to create — the basis for the
-  300k spawns/sec goal. Memory is bounded per process via Wasmtime store limits.
+- **Cheap.** A fresh instance is small and fast to create (pooling allocator +
+  copy-on-write + `InstancePre`) — RUSM sustains ~440k component spawns/sec, and
+  ~2.4M for native bodies. Memory is bounded per process via Wasmtime store limits.
 
 ## How it maps to Tokio
 
@@ -23,6 +24,6 @@ Tokio task. Because host calls are async (see
 "blocks" simply parks its task, freeing the worker thread for other processes.
 
 > The process *abstraction* (task + mailbox, with an abort-based lifecycle and
-> links/monitors) is built on native Rust bodies in Phases 1–3. A process becomes
-> a real isolated **Wasm instance** when the Wasmtime backend is slotted in at
-> Phase 6 — the actor layer above is unchanged.
+> links/monitors) was built on native Rust bodies in Phases 1–3; since Phase 6 a
+> process is a real isolated **Wasm instance** (core module or component) — the
+> actor layer above is unchanged.

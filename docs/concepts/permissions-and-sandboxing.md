@@ -14,6 +14,19 @@ where any goroutine/process can touch the whole machine.
 - **Host functions**: only the `rusm::*` imports the process was linked with are
   callable.
 
+## Default-deny profiles
+
+A process gets **nothing** unless granted. Named profiles (`caps.rs`) bundle
+sensible defaults, and a per-spawn `Capabilities` builder overrides them:
+
+- **`Sandboxed`** — CPU + a bounded heap only: no fs, net, env, or stdio.
+- **`NetworkClient`** — sandboxed plus outbound network.
+- **`Trusted`** — inherits stdio, allows network, a large heap.
+
+Grants map onto **standard WASI** (`wasi:cli/environment`, `wasi:filesystem`,
+`wasi:sockets`) plus a `StoreLimiter` memory cap — no wasmCloud-style
+`wasi:config/store`.
+
 ## Why it matters
 
 You can run untrusted or risky code — even a C library compiled to Wasm with a
@@ -23,7 +36,8 @@ the other half.
 
 ## The test that proves it
 
-Phase 7 ships tests where an allowed-directory read succeeds, a denied one fails,
-and a memory-limit breach traps a single process without disturbing the rest.
+Tests cover a memory-limit breach trapping a single process (both the component
+and core-module paths) without disturbing the rest, and an unbuildable grant
+(a preopen of a missing path) crashing only that process before it runs.
 
-> Implemented in Phase 7.
+> Shipped in Phase 7.

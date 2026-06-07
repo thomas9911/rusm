@@ -73,10 +73,13 @@ only core modules with its own ABI — it has no component-model host at all.
 
 ## Concepts introduced
 
+- [Components & the actor world](../concepts/components-and-the-actor-world.md) —
+  the component model + the `rusm:runtime` WIT world; composition is message passing.
 - [Permissions & sandboxing](../concepts/permissions-and-sandboxing.md) — per-process
-  WASI capabilities, default-deny.
-- The component model + the `rusm:runtime` WIT world — see the
-  [host ABI](../05-host-abi.md).
+  WASI capabilities, default-deny profiles.
+- [Byte streams](../concepts/byte-streams.md) — cross-process, Tokio-backpressured.
+- [The app model](../concepts/app-model.md) — `rusm.toml`, `./wasm/`, `rusm dev`.
+- The full ABI — see the [host ABI](../05-host-abi.md).
 
 ## Play with it
 
