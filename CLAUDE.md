@@ -23,9 +23,14 @@ high-throughput **HTTP / WS / SSE** server, all in `rusm-wasm` (hyper +
 sandboxed **component process per connection** — inbound frame → mailbox message,
 replies via a Wasm-free writer process that owns the socket sink; ~192k echo
 round-trips/s, sandbox cost inside noise), and **SSE** (a `wasi:http` streaming body —
-~1.5M events/s across 128 held streams). Benches: `http_bench`/`ws_bench`/`sse_bench`.
-Still to land: `rusm serve` + `rusm.toml [[http]]`, serving TLS, ws-echo/sse-fanout
-dashboard scenarios. The Wasm-free
+~1.5M events/s across 128 held streams). **Both guest languages serve all three**:
+RS compiles to `wasi:http`/the actor world; **TS** runs on embedded rquickjs runners —
+`http_server_js` + the raw-`wasi:http` **js-http-runner** (runs `export default { fetch }`,
+pull-based streaming for SSE) and `ws_server_js` (a TS worker, one process per
+connection). Benches: `http_bench`/`ws_bench`/`sse_bench`; the **ws-echo**,
+**sse-fanout**, and **connection-scale** (held-open concurrency to the OS fd ceiling)
+dashboard scenarios are live. Still to land: `rusm serve` + `rusm.toml [[http]]`,
+serving TLS. The Wasm-free
 **`rusm-cluster`** crate (over `rusm-otp`, never Wasmtime) connects nodes over
 **QUIC + TLS** (quinn + rustls/ring; **mutual TLS** — a `ClusterCa` issues per-node
 certs, or a shared self-signed `Identity`): a `ClusterNode`
