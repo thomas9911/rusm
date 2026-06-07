@@ -15,6 +15,8 @@ rusm-metrics = { path = "../../crates/rusm-metrics" }
 rusm-observer = { path = "../../crates/rusm-observer" }
 rusm-otp = { path = "../../crates/rusm-otp" }
 rusm-wasm = { path = "../../crates/rusm-wasm" }
+rusm-cluster = { path = "../../crates/rusm-cluster" }
+anyhow = { workspace = true }
 tokio = { version = "1.52.3", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util"] }
 tokio-tungstenite = "0.29.0"
 futures-util = "0.3.32"
@@ -50,3 +52,11 @@ path = "../../examples/synthetic_source/main.rs"
 [[example]]
 name = "observer_overhead"
 path = "../../examples/observer_overhead/main.rs"
+
+[[example]]
+name = "cluster"
+path = "../../examples/cluster/main.rs"
+
+[[example]]
+name = "cluster_fanout"
+path = "../../examples/cluster_fanout/main.rs"
