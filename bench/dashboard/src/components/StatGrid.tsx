@@ -1,4 +1,4 @@
-import { formatBytes, formatCount, formatDuration, formatRate } from '../format';
+import { formatBytes, formatCount, formatDuration, formatThroughput } from '../format';
 import type { Averages } from '../state';
 import type { Frame } from '../types';
 
@@ -8,6 +8,8 @@ interface StatGridProps {
   frame: Frame | null;
   averages: Averages | null;
   mode: MetricMode;
+  /** The active scenario's throughput unit (count vs byte rate). */
+  unit?: 'count' | 'bytes';
 }
 
 type Hint = 'higher is better' | 'lower is better' | 'in-host, not OS' | 'session peak';
@@ -34,7 +36,7 @@ function Stat({
   );
 }
 
-export function StatGrid({ frame, averages, mode }: StatGridProps) {
+export function StatGrid({ frame, averages, mode, unit = 'count' }: StatGridProps) {
   // Use averages only in 'average' mode and only once a sample exists.
   const avg = mode === 'average' ? averages : null;
   const o = frame?.observer;
@@ -44,7 +46,13 @@ export function StatGrid({ frame, averages, mode }: StatGridProps) {
     <div className="stat-grid">
       <Stat
         label={`${prefix}throughput`}
-        value={avg ? formatRate(avg.opsPerSec) : frame ? formatRate(frame.ops_per_sec) : '—'}
+        value={
+          avg
+            ? formatThroughput(avg.opsPerSec, unit)
+            : frame
+              ? formatThroughput(frame.ops_per_sec, unit)
+              : '—'
+        }
         hint="higher is better"
         accent
       />

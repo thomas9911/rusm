@@ -26,6 +26,6 @@ pub use protocol::{ClientCommand, Frame, ServerMessage};
 pub use report::summarize_frame;
 pub use runner::{Runner, RunnerConfig};
 pub use sample::Sample;
-pub use scenario::{Scenario, ScenarioMeta};
+pub use scenario::{MetricUnit, Scenario, ScenarioMeta};
 pub use server::{serve, serve_on, Node};
 pub use synthetic::SyntheticSource;

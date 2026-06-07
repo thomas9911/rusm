@@ -123,8 +123,19 @@ export function App() {
               </div>
             </div>
           </div>
-          <StatGrid frame={state.frame} averages={averages(state)} mode={mode} />
-          <Chart data={state.history} label="throughput (ops/sec)" color={ACCENT} />
+          <StatGrid
+            frame={state.frame}
+            averages={averages(state)}
+            mode={mode}
+            unit={selectedMeta?.unit}
+          />
+          <Chart
+            data={state.history}
+            label={
+              selectedMeta?.unit === 'bytes' ? 'throughput (bytes/sec)' : 'throughput (ops/sec)'
+            }
+            color={ACCENT}
+          />
           <ObserverPanel
             observer={state.frame?.observer ?? null}
             detail={detail}

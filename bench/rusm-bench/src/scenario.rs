@@ -22,6 +22,17 @@ pub enum Scenario {
     StreamPipe,
 }
 
+/// What a scenario's headline throughput number *counts*, so the dashboard can
+/// format it correctly (a plain count uses k/M/B; a byte rate uses KB/MB/GB/s).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum MetricUnit {
+    /// A per-second count — spawns, messages, restarts, …
+    Count,
+    /// A per-second byte rate — streaming throughput.
+    Bytes,
+}
+
 /// Display metadata for a [`Scenario`], sent to the dashboard menu and the
 /// per-scenario explanation panel.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -37,6 +48,8 @@ pub struct ScenarioMeta {
     /// Whether this scenario is driven by the **real** runtime now (vs synthetic),
     /// i.e. `real_after_phase <= CURRENT_PHASE`.
     pub real: bool,
+    /// How to read/format the throughput headline (count vs byte rate).
+    pub unit: MetricUnit,
 }
 
 impl Scenario {
@@ -71,6 +84,15 @@ impl Scenario {
 
     pub fn from_id(id: &str) -> Option<Scenario> {
         Scenario::ALL.into_iter().find(|s| s.id() == id)
+    }
+
+    /// What this scenario's throughput number measures — bytes/sec for the byte
+    /// pipe, a plain per-second count for everything else.
+    pub fn metric_unit(self) -> MetricUnit {
+        match self {
+            Scenario::StreamPipe => MetricUnit::Bytes,
+            _ => MetricUnit::Count,
+        }
     }
 
     pub fn meta(self) -> ScenarioMeta {
@@ -187,6 +209,7 @@ impl Scenario {
             details: details.into_iter().map(str::to_string).collect(),
             real_after_phase,
             real: real_after_phase <= CURRENT_PHASE,
+            unit: self.metric_unit(),
         }
     }
 
@@ -212,6 +235,18 @@ mod tests {
     #[test]
     fn from_id_rejects_unknown() {
         assert_eq!(Scenario::from_id("nope"), None);
+    }
+
+    #[test]
+    fn only_the_byte_pipe_reports_a_byte_rate() {
+        assert_eq!(Scenario::StreamPipe.metric_unit(), MetricUnit::Bytes);
+        for s in Scenario::ALL {
+            if s != Scenario::StreamPipe {
+                assert_eq!(s.metric_unit(), MetricUnit::Count, "{} is a count", s.id());
+            }
+        }
+        // The unit travels in the meta the dashboard receives.
+        assert_eq!(Scenario::StreamPipe.meta().unit, MetricUnit::Bytes);
     }
 
     #[test]

@@ -59,6 +59,8 @@ export interface ScenarioMeta {
   real_after_phase: number;
   /** True once this scenario runs on real runtime data (vs synthetic). */
   real: boolean;
+  /** How to format the throughput headline: a plain count or a byte rate. */
+  unit: 'count' | 'bytes';
 }
 
 export interface ResourceProfileMeta {

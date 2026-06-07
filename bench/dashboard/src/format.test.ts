@@ -1,5 +1,13 @@
 import { expect, test } from 'bun:test';
-import { formatBytes, formatCount, formatDuration, formatPercent, formatRate } from './format';
+import {
+  formatByteRate,
+  formatBytes,
+  formatCount,
+  formatDuration,
+  formatPercent,
+  formatRate,
+  formatThroughput,
+} from './format';
 
 test('formatDuration picks a unit per magnitude', () => {
   expect(formatDuration(500)).toBe('500 ns');
@@ -17,6 +25,18 @@ test('formatCount compacts thousands, millions, billions', () => {
 
 test('formatRate appends per-second', () => {
   expect(formatRate(300_000)).toBe('300.0k/s');
+});
+
+test('formatByteRate uses data-rate units (so 17.5e9 reads as GB/s, not 17.5B/s)', () => {
+  expect(formatByteRate(800)).toBe('800 B/s');
+  expect(formatByteRate(12_300)).toBe('12.3 KB/s');
+  expect(formatByteRate(812_000_000)).toBe('812.0 MB/s');
+  expect(formatByteRate(17_500_000_000)).toBe('17.50 GB/s');
+});
+
+test('formatThroughput switches on unit', () => {
+  expect(formatThroughput(300_000, 'count')).toBe('300.0k/s');
+  expect(formatThroughput(17_500_000_000, 'bytes')).toBe('17.50 GB/s');
 });
 
 test('formatBytes uses binary units', () => {

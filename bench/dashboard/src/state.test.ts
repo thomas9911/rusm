@@ -62,6 +62,7 @@ test('hello populates the scenario and profile menus', () => {
         details: ['x'],
         real_after_phase: 5,
         real: true,
+        unit: 'count',
       },
     ],
     profiles: [{ id: 'balanced', label: 'Balanced', description: 'd' }],
