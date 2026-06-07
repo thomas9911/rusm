@@ -60,6 +60,7 @@ impl CapabilityProfile {
                 max_memory: TRUSTED_MAX_MEMORY,
                 allow_network: true,
                 inherit_stdio: true,
+                allow_process_control: true,
                 ..Capabilities::nothing()
             },
         }
@@ -84,6 +85,7 @@ pub struct Capabilities {
     preopens: Vec<Preopen>,
     allow_network: bool,
     inherit_stdio: bool,
+    allow_process_control: bool,
 }
 
 impl Capabilities {
@@ -95,6 +97,7 @@ impl Capabilities {
             preopens: Vec::new(),
             allow_network: false,
             inherit_stdio: false,
+            allow_process_control: false,
         }
     }
 
@@ -138,10 +141,24 @@ impl Capabilities {
         self
     }
 
+    /// Allows this process to **control other processes** via the actor ABI —
+    /// `kill`/`list-processes`/`info`/`is-alive` over pids other than its own.
+    /// Default-deny: a sandboxed process can manage *itself* and message/name-
+    /// coordinate, but can't enumerate, inspect, or kill its neighbours.
+    pub fn allow_process_control(mut self, allow: bool) -> Self {
+        self.allow_process_control = allow;
+        self
+    }
+
     /// Sets the per-process memory ceiling in bytes (enforced by a `StoreLimiter`).
     pub fn max_memory(mut self, bytes: usize) -> Self {
         self.max_memory = bytes;
         self
+    }
+
+    /// Whether this process may control others via the actor ABI.
+    pub(crate) fn process_control(&self) -> bool {
+        self.allow_process_control
     }
 
     /// The memory ceiling, for the runtime's `StoreLimiter`.
@@ -204,11 +221,20 @@ mod tests {
 
         let sandbox = CapabilityProfile::Sandboxed.capabilities();
         assert!(!sandbox.allow_network && !sandbox.inherit_stdio && sandbox.env.is_empty());
+        assert!(
+            !sandbox.process_control(),
+            "sandboxed: no control of others"
+        );
         let client = CapabilityProfile::NetworkClient.capabilities();
-        assert!(client.allow_network && !client.inherit_stdio);
+        assert!(client.allow_network && !client.inherit_stdio && !client.process_control());
         let trusted = CapabilityProfile::Trusted.capabilities();
         assert!(trusted.allow_network && trusted.inherit_stdio);
+        assert!(trusted.process_control(), "trusted: may control others");
         assert!(trusted.memory_limit() > sandbox.memory_limit());
+        // The builder grants it explicitly too.
+        assert!(Capabilities::nothing()
+            .allow_process_control(true)
+            .process_control());
     }
 
     #[test]

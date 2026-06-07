@@ -28,6 +28,9 @@ pub(crate) struct WasiHost {
     pub(crate) max_memory: usize,
     /// The owning process's pid (for `own-pid`, `register`, `set-label`).
     pub(crate) pid: u64,
+    /// Whether this process may control *other* processes (kill/list/info/is-alive
+    /// over foreign pids). Default-deny: a sandboxed guest manages only itself.
+    pub(crate) process_control: bool,
     /// Handle to the actor runtime, backing the actor host functions.
     pub(crate) rt: Runtime,
     /// The process's mailbox, for `receive`. `None` only for a bare host built
@@ -88,6 +91,7 @@ mod tests {
             table: ResourceTable::new(),
             max_memory: 1 << 20,
             pid: 0,
+            process_control: false,
             rt: Runtime::new(),
             ctx: None,
             out_streams: HashMap::new(),

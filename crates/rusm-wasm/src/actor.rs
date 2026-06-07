@@ -51,10 +51,17 @@ impl actor::Host for WasiHost {
     }
 
     async fn list_processes(&mut self) -> Vec<u64> {
+        // Default-deny: without process-control a guest sees only itself.
+        if !self.process_control {
+            return vec![self.pid];
+        }
         self.rt.list().into_iter().map(|p| p.raw()).collect()
     }
 
     async fn info(&mut self, target: u64) -> Option<actor::ProcessInfo> {
+        if !self.process_control && target != self.pid {
+            return None; // may inspect only itself
+        }
         self.rt
             .info(Pid::from_raw(target))
             .map(|i| actor::ProcessInfo {
@@ -69,10 +76,16 @@ impl actor::Host for WasiHost {
     }
 
     async fn is_alive(&mut self, target: u64) -> bool {
+        if !self.process_control && target != self.pid {
+            return false; // may probe only itself
+        }
         self.rt.is_alive(Pid::from_raw(target))
     }
 
     async fn kill(&mut self, target: u64) -> bool {
+        if !self.process_control && target != self.pid {
+            return false; // may terminate only itself
+        }
         self.rt.kill(Pid::from_raw(target))
     }
 

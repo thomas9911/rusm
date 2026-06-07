@@ -31,17 +31,19 @@ pub use caps::{Capabilities, CapabilityProfile};
 /// How often the epoch is bumped. A guest runs at most this long before it must
 /// yield to the scheduler, so tight loops can't starve other processes.
 const EPOCH_TICK: Duration = Duration::from_millis(10);
-/// Pool slots: the most Wasm instances that may be live at once. The pooling
-/// allocator pre-reserves their memory slabs so a spawn is a slab reuse, not an
-/// mmap — the lever that makes instance-per-process cheap. The virtual reservation
-/// is `MAX_INSTANCES` × `MAX_MEMORY` (lazy, copy-on-write), so the two trade off:
-/// real components need MiBs of linear memory, so we keep the slot count modest.
-/// A busy node tunes these up (made configurable when the benchmark lands).
-const MAX_INSTANCES: u32 = 256;
-/// Per-instance linear-memory ceiling (virtual, copy-on-write). Sized for real
-/// components (a minimal Rust component already needs ~1 MiB); a per-process
-/// capability `StoreLimiter` caps usage *below* this.
-const MAX_MEMORY: usize = 16 << 20;
+/// Default pool slots: the most Wasm instances that may be live at once. The
+/// pooling allocator pre-reserves their memory slabs so a spawn is a slab reuse,
+/// not an mmap — the lever that makes instance-per-process cheap. The reservation
+/// (`max_instances` × `max_memory`) is **lazy, copy-on-write virtual address
+/// space** (e.g. 1024 × 16 MiB = 16 GiB virtual), so real RSS scales only with
+/// *live* instances. A busy node raises this via [`WasmRuntime::with_limits`].
+/// (A true "millions of Wasm processes" tier needs an on-demand fallback above
+/// the pool — see the roadmap.)
+const DEFAULT_MAX_INSTANCES: u32 = 1024;
+/// Default per-instance linear-memory ceiling (virtual, copy-on-write). Sized for
+/// real components (a minimal Rust component needs ~1 MiB; the rquickjs js-runner
+/// a few); a per-process capability `StoreLimiter` caps usage *below* this.
+const DEFAULT_MAX_MEMORY: usize = 16 << 20;
 
 /// Counters shared by every instance of one [`WasmRuntime`], so host functions
 /// can report aggregate activity (e.g. guest progress for the fairness scenario).
@@ -68,9 +70,18 @@ pub struct WasmRuntime {
 }
 
 impl WasmRuntime {
-    /// Builds a backend over an existing process [`Runtime`]. Must run inside a
-    /// Tokio runtime (it starts the epoch ticker).
+    /// Builds a backend over an existing process [`Runtime`], with the default pool
+    /// limits ([`DEFAULT_MAX_INSTANCES`] live instances × [`DEFAULT_MAX_MEMORY`] each).
+    /// Must run inside a Tokio runtime (it starts the epoch ticker).
     pub fn new(rt: Runtime) -> Result<Self> {
+        Self::with_limits(rt, DEFAULT_MAX_INSTANCES, DEFAULT_MAX_MEMORY)
+    }
+
+    /// Like [`new`](Self::new) but with explicit pool limits — raise
+    /// `max_instances` for a node that hosts many concurrent Wasm processes (the
+    /// reservation is lazy virtual memory; real RSS tracks live instances), and
+    /// `max_memory` for components that need larger heaps.
+    pub fn with_limits(rt: Runtime, max_instances: u32, max_memory: usize) -> Result<Self> {
         let mut config = Config::new();
         // Epoch interruption: the preemption lever (see `EPOCH_TICK`). Async
         // support (fibers — a guest's "blocking" host call suspends the whole
@@ -87,14 +98,14 @@ impl WasmRuntime {
         // per spawn. This is the instance-per-process efficiency win over a
         // naive on-demand allocator.
         let mut pool = PoolingAllocationConfig::default();
-        pool.total_core_instances(MAX_INSTANCES);
-        pool.total_memories(MAX_INSTANCES);
-        pool.total_tables(MAX_INSTANCES);
-        pool.max_memory_size(MAX_MEMORY);
+        pool.total_core_instances(max_instances);
+        pool.total_memories(max_instances);
+        pool.total_tables(max_instances);
+        pool.max_memory_size(max_memory);
         // Component guests also draw a *component-instance* slot from the pool (on
         // top of the core-instance/memory slots above); without this a component
         // spawn can't use the pooling allocator.
-        pool.total_component_instances(MAX_INSTANCES);
+        pool.total_component_instances(max_instances);
         config.allocation_strategy(InstanceAllocationStrategy::Pooling(pool));
         let engine = Engine::new(&config)?;
         let linker = bridges::wasip1::build_linker(&engine)?;

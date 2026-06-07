@@ -113,6 +113,7 @@ async fn run(
         table: ResourceTable::new(),
         max_memory: caps.memory_limit(),
         pid: pid.raw(),
+        process_control: caps.process_control(),
         rt,
         ctx: Some(ctx),
         out_streams: std::collections::HashMap::new(),
@@ -412,7 +413,9 @@ mod tests {
         let victim = rt.spawn(|_| std::future::pending::<()>());
         let victim_pid = victim.pid();
 
-        let guest = wr.spawn_component(&pre);
+        // Controlling *other* processes (kill/list/info/is-alive) needs the
+        // process-control capability — Trusted grants it.
+        let guest = wr.spawn_component_with(&pre, CapabilityProfile::Trusted.capabilities());
         let guest_pid = guest.pid();
 
         // A native process pings the guest with [its pid][victim pid], then awaits
@@ -447,6 +450,48 @@ mod tests {
         );
         assert_eq!(rt.whereis("echo"), None, "the guest released its name");
         guest.join().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_sandboxed_component_cannot_control_other_processes() {
+        // The SAME echo fixture, but spawned Sandboxed (default-deny): it may
+        // manage itself (register/whereis/info-self/list-self/unregister) but NOT
+        // inspect or kill its neighbours — so is-alive(victim) and kill(victim) are
+        // denied, and the victim survives.
+        const ECHO: &[u8] = include_bytes!("../../tests/fixtures/actor_echo.wasm");
+        let rt = Runtime::new();
+        let wr = WasmRuntime::new(rt.clone()).unwrap();
+        let pre = wr
+            .prepare_component(&wr.compile_component(ECHO).unwrap(), "run")
+            .unwrap();
+
+        let victim = rt.spawn(|_| std::future::pending::<()>());
+        let victim_pid = victim.pid();
+        let guest = wr.spawn_component(&pre); // Sandboxed (no process-control)
+        let guest_pid = guest.pid();
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let ping_rt = rt.clone();
+        rt.spawn(move |mut ctx| async move {
+            let mut msg = ctx.pid().raw().to_le_bytes().to_vec();
+            msg.extend_from_slice(&victim_pid.raw().to_le_bytes());
+            ping_rt.send(guest_pid, msg);
+            let _ = tx.send(ctx.recv().await.message().unwrap());
+        });
+
+        let flags = rx.await.unwrap()[8];
+        // Self-ops succeed (register, whereis, info-self, list-contains-self,
+        // unregister = bits 0,1,2,3,6); control-of-others denied (is-alive bit 4,
+        // kill bit 5 = 0).
+        assert_eq!(
+            flags, 0b0100_1111,
+            "self-ops allowed, control-of-others denied"
+        );
+        assert!(
+            rt.is_alive(victim_pid),
+            "the sandboxed guest must NOT be able to kill a neighbour"
+        );
+        guest.kill();
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -42,6 +42,9 @@ pub(crate) struct CoreHost {
     max_memory: usize,
     /// The owning process's pid (for `own_pid`/`register`/`set_label`).
     pid: u64,
+    /// Whether this process may control *other* processes (kill/list/is-alive over
+    /// foreign pids). Default-deny: a sandboxed guest manages only itself.
+    process_control: bool,
     /// Runtime-wide counters (the `notify` progress signal).
     shared: Arc<Counters>,
     /// Handle to the actor runtime, backing the actor host functions.
@@ -150,7 +153,12 @@ pub(crate) fn build_linker(engine: &Engine) -> Result<Linker<CoreHost>> {
         "rusm",
         "list_processes",
         |mut caller: Caller<'_, CoreHost>, ptr: i32, cap: i32| -> Result<i32> {
-            let pids = caller.data().rt.list();
+            // Default-deny: without process-control a guest sees only itself.
+            let pids = if caller.data().process_control {
+                caller.data().rt.list()
+            } else {
+                vec![Pid::from_raw(caller.data().pid)]
+            };
             let n = pids.len().min(cap.max(0) as usize);
             let mut buf = Vec::with_capacity(n * 8);
             for p in &pids[..n] {
@@ -166,7 +174,11 @@ pub(crate) fn build_linker(engine: &Engine) -> Result<Linker<CoreHost>> {
         "rusm",
         "is_alive",
         |caller: Caller<'_, CoreHost>, target: i64| -> i32 {
-            caller.data().rt.is_alive(Pid::from_raw(target as u64)) as i32
+            let host = caller.data();
+            if !host.process_control && target as u64 != host.pid {
+                return 0; // may probe only itself
+            }
+            host.rt.is_alive(Pid::from_raw(target as u64)) as i32
         },
     )?;
     // kill(pid) -> bool
@@ -174,7 +186,11 @@ pub(crate) fn build_linker(engine: &Engine) -> Result<Linker<CoreHost>> {
         "rusm",
         "kill",
         |caller: Caller<'_, CoreHost>, target: i64| -> i32 {
-            caller.data().rt.kill(Pid::from_raw(target as u64)) as i32
+            let host = caller.data();
+            if !host.process_control && target as u64 != host.pid {
+                return 0; // may terminate only itself
+            }
+            host.rt.kill(Pid::from_raw(target as u64)) as i32
         },
     )?;
     // register(ptr, len) -> bool: register the caller under the given name.
@@ -417,6 +433,7 @@ async fn run(
         wasi,
         max_memory: caps.memory_limit(),
         pid: pid.raw(),
+        process_control: caps.process_control(),
         shared,
         rt,
         ctx: Some(ctx),
@@ -624,7 +641,9 @@ mod tests {
         let victim = rt.spawn(|_| std::future::pending::<()>());
         let victim_pid = victim.pid();
 
-        let guest = wr.spawn(&pre);
+        // Controlling other processes (kill/list/is-alive over foreign pids) needs
+        // the process-control capability — Trusted grants it.
+        let guest = wr.spawn_with(&pre, CapabilityProfile::Trusted.capabilities());
         let guest_pid = guest.pid();
 
         // A native process pings the guest with [its pid][victim pid] and awaits
@@ -656,6 +675,35 @@ mod tests {
         assert!(!rt.is_alive(victim_pid), "the guest killed the victim");
         assert_eq!(rt.whereis("worker"), None, "the guest released its name");
         guest.join().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_sandboxed_core_module_cannot_control_other_processes() {
+        // The same raw-ABI guest, Sandboxed (default-deny): self-ops succeed but
+        // kill(victim) is denied (bit 6 clear) and the victim survives.
+        let rt = Runtime::new();
+        let wr = WasmRuntime::new(rt.clone()).unwrap();
+        let pre = wr.prepare(&wr.compile(ACTOR_ABI).unwrap(), "run").unwrap();
+        let victim = rt.spawn(|_| std::future::pending::<()>());
+        let victim_pid = victim.pid();
+        let guest = wr.spawn(&pre); // Sandboxed
+        let guest_pid = guest.pid();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let ping_rt = rt.clone();
+        rt.spawn(move |mut ctx| async move {
+            let mut msg = ctx.pid().raw().to_le_bytes().to_vec();
+            msg.extend_from_slice(&victim_pid.raw().to_le_bytes());
+            ping_rt.send(guest_pid, msg);
+            let _ = tx.send(ctx.recv().await.message().unwrap());
+        });
+        // is-alive(self) and list-self still pass; only kill(victim) (bit 6) is denied.
+        assert_eq!(
+            rx.await.unwrap()[8],
+            0b0011_1111,
+            "kill of a neighbour denied"
+        );
+        assert!(rt.is_alive(victim_pid), "the victim must survive");
+        guest.kill();
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
