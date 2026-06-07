@@ -15,6 +15,7 @@ shows, how to run it, and the output to expect). Run any from the repo root:
 | [`host_components`](./host_components/) | **Host real WASM components** as isolated, introspectable, capability-sandboxed processes (Phase 7) — the heart of RUSM. | `cargo run -p rusm-bench --example host_components` |
 | [`cluster`](./cluster/) | **A two-node cluster** (Phase 9): processes message across nodes over QUIC+TLS, a global registry hides location, and live attach lists a peer's processes. | `cargo run -p rusm-bench --example cluster` |
 | [`cluster_fanout`](./cluster_fanout/) | Benchmark the cross-node transport: unloaded round-trip latency + saturation throughput. | `cargo run --release -p rusm-bench --example cluster_fanout` |
+| [`http_bench`](./http_bench/) | **Serve a WASM component as HTTP** (Phase 11) and stress it vs a bare-hyper baseline — req/s + p50/p99, sandbox overhead. | `cargo run --release -p rusm-bench --example http_bench` |
 | [`headless_run`](./headless_run/) | Drive the benchmark runner directly (no network) and print sampled ticks. | `cargo run -p rusm-bench --example headless_run` |
 | [`synthetic_source`](./synthetic_source/) | The deterministic synthetic data source — reproducible per `(scenario, tick)`. | `cargo run -p rusm-bench --example synthetic_source` |
 | [`observer_overhead`](./observer_overhead/) | The observer's detail on/off switch (basis of the overhead proof). | `cargo run -p rusm-bench --example observer_overhead` |

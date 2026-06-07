@@ -64,6 +64,7 @@ impl HttpServer {
             let Ok((stream, _peer)) = listener.accept().await else {
                 break;
             };
+            stream.set_nodelay(true).ok(); // low request latency, no Nagle batching
             let server = self.clone();
             tokio::spawn(async move {
                 let service = hyper::service::service_fn(move |req| {

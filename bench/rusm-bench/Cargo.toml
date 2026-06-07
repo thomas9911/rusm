@@ -26,6 +26,9 @@ toml = "1.1.2"
 rlimit = "0.10.2"
 # Set SO_LINGER(0) on churned client sockets (RST close, no TIME_WAIT).
 socket2 = "0.5.7"
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
 
 # Runnable examples live in the repo-root `examples/<name>/` directories,
 # each with its own README.
@@ -60,3 +63,7 @@ path = "../../examples/cluster/main.rs"
 [[example]]
 name = "cluster_fanout"
 path = "../../examples/cluster_fanout/main.rs"
+
+[[example]]
+name = "http_bench"
+path = "../../examples/http_bench/main.rs"
