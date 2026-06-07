@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 use std::fmt;
 use std::future::Future;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -14,6 +14,7 @@ use tokio::task::JoinHandle;
 use crate::exit::{ExitReason, MonitorRef};
 use crate::message::{Message, Received};
 use crate::pid::Pid;
+use crate::stream::StreamHandle;
 
 /// What a process body receives when it starts: its own [`Pid`] and its
 /// **mailbox** — the receiving end of its message queue.
@@ -25,11 +26,22 @@ pub struct Context {
     /// receive sees them before anything still in the channel — the Erlang
     /// "save queue". Empty (and allocation-free) unless selective receive is used.
     saved: VecDeque<Received>,
+    /// Optional mailbox-depth counter (decrement side). `None` unless the runtime
+    /// was built with [`Runtime::with_mailbox_depth`] — so the default hot path
+    /// pays no allocation and no atomic.
+    depth: Option<Arc<AtomicUsize>>,
 }
 
 impl Context {
     pub fn pid(&self) -> Pid {
         self.pid
+    }
+
+    /// Records that one item left the mailbox (no-op unless depth is tracked).
+    fn note_consumed(&self) {
+        if let Some(depth) = &self.depth {
+            depth.fetch_sub(1, Ordering::Relaxed);
+        }
     }
 
     /// Receives the next item, suspending the process until one arrives (FIFO),
@@ -39,10 +51,12 @@ impl Context {
     /// process blocked here parks with zero cost until something arrives or a
     /// [`kill`](Runtime::kill) wakes it.
     pub async fn recv(&mut self) -> Received {
-        match self.saved.pop_front() {
+        let item = match self.saved.pop_front() {
             Some(item) => item,
             None => self.next_from_mailbox().await,
-        }
+        };
+        self.note_consumed();
+        item
     }
 
     /// Receives the next item for which `matches` is true, suspending until one
@@ -54,11 +68,14 @@ impl Context {
         F: FnMut(&Received) -> bool,
     {
         if let Some(pos) = self.saved.iter().position(&mut matches) {
-            return self.saved.remove(pos).expect("position is in bounds");
+            let item = self.saved.remove(pos).expect("position is in bounds");
+            self.note_consumed();
+            return item;
         }
         loop {
             let item = self.next_from_mailbox().await;
             if matches(&item) {
+                self.note_consumed();
                 return item;
             }
             self.saved.push_back(item);
@@ -110,6 +127,27 @@ impl ProcessHandle {
     }
 }
 
+/// A point-in-time snapshot of a live process for observability — the analogue
+/// of Erlang's `Process.info/1`. Cheap to produce (a single table lookup). Run
+/// vs. suspended *status* is deliberately omitted: Tokio doesn't expose a task's
+/// park state, and faking it would mislead.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProcessInfo {
+    pub pid: Pid,
+    /// Number of bidirectionally linked peers.
+    pub links: usize,
+    /// Number of processes monitoring this one.
+    pub monitors: usize,
+    /// Registry names this process holds.
+    pub names: Vec<String>,
+    /// The optional human-readable label (see [`Runtime::set_label`]).
+    pub label: Option<String>,
+    /// Items waiting in the mailbox (channel + save queue), not yet consumed.
+    pub mailbox_depth: usize,
+    /// Whether this process traps exits.
+    pub trap_exit: bool,
+}
+
 /// One process this entry records is monitoring us; on our exit it gets a
 /// [`Received::Down`] tagged with `reference`.
 struct Monitor {
@@ -140,10 +178,31 @@ struct ProcessEntry {
     /// A reason staged by a link cascade, so this process exits with the
     /// *original* reason rather than the bare `Killed` an abort would imply.
     exit_reason: Option<ExitReason>,
+    /// An optional human-readable label for observability (Elixir's
+    /// `Process.set_label`), distinct from a registered name. `None` and
+    /// allocation-free until set.
+    label: Option<String>,
+    /// Optional mailbox-depth counter (increment side). `None` unless the runtime
+    /// tracks depth (see [`Runtime::with_mailbox_depth`]); shared with the
+    /// [`Context`] receive side and read by [`ProcessInfo`].
+    depth: Option<Arc<AtomicUsize>>,
+}
+
+impl ProcessEntry {
+    /// Records that one item entered the mailbox (no-op unless depth is tracked).
+    fn note_enqueued(&self) {
+        if let Some(depth) = &self.depth {
+            depth.fetch_add(1, Ordering::Relaxed);
+        }
+    }
 }
 
 #[derive(Default)]
 struct Inner {
+    /// Whether to track per-process mailbox depth (off by default). Off means a
+    /// spawn allocates no counter and send/recv do no atomics — see
+    /// [`Runtime::with_mailbox_depth`].
+    track_depth: bool,
     next_id: AtomicU64,
     next_ref: AtomicU64,
     spawned: AtomicU64,
@@ -157,11 +216,28 @@ struct Inner {
 }
 
 impl Inner {
+    /// Enqueues `item` into `to`'s mailbox if it is still alive, keeping the
+    /// mailbox-depth counter in step. The single place a mailbox grows — used by
+    /// user sends, stream sends, and system deliveries alike. Returns whether it
+    /// landed. (The exit cascade in [`propagate_exit`] enqueues inline because it
+    /// already holds the entry lock.)
+    fn enqueue(&self, to: Pid, item: Received) -> bool {
+        match self.table.get(&to.0) {
+            Some(entry) => {
+                if entry.mailbox.send(item).is_ok() {
+                    entry.note_enqueued();
+                    true
+                } else {
+                    false
+                }
+            }
+            None => false,
+        }
+    }
+
     /// Delivers a system item to `to`'s mailbox if it is still alive.
     fn deliver(&self, to: Pid, item: Received) {
-        if let Some(entry) = self.table.get(&to.0) {
-            let _ = entry.mailbox.send(item);
-        }
+        self.enqueue(to, item);
     }
 
     /// Removes `pid`, counts it finished, and fans its exit out to everyone who
@@ -202,7 +278,9 @@ impl Inner {
         };
         entry.links.retain(|&linked| linked != from);
         if entry.trap_exit {
-            let _ = entry.mailbox.send(Received::Exit { from, reason });
+            if entry.mailbox.send(Received::Exit { from, reason }).is_ok() {
+                entry.note_enqueued();
+            }
         } else if reason.is_abnormal() {
             entry.exit_reason = Some(reason);
             entry.abort.abort();
@@ -220,6 +298,19 @@ pub struct Runtime {
 impl Runtime {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Like [`new`](Runtime::new) but **tracks per-process mailbox depth**, so
+    /// [`info`](Runtime::info) reports it. This costs a per-spawn counter
+    /// allocation and a relaxed atomic per send/receive, so it's opt-in: enable it
+    /// for an observer/REPL node; leave it off (the default) for peak throughput.
+    pub fn with_mailbox_depth() -> Self {
+        Self {
+            inner: Arc::new(Inner {
+                track_depth: true,
+                ..Default::default()
+            }),
+        }
     }
 
     /// Spawns a process running `body`, returning a handle to it. The body is a
@@ -256,6 +347,12 @@ impl Runtime {
         let pid = Pid(self.inner.next_id.fetch_add(1, Ordering::Relaxed));
         let (mailbox, mailbox_rx) = unbounded_channel();
         let (abort, abort_registration) = AbortHandle::new_pair();
+        // No allocation unless depth tracking is on (default off — see
+        // `with_mailbox_depth`), keeping the spawn hot path allocation-lean.
+        let depth = self
+            .inner
+            .track_depth
+            .then(|| Arc::new(AtomicUsize::new(0)));
 
         // One write registers the whole process *before* it is spawned: a message
         // sent the instant after can't be lost, the reaper's remove always
@@ -270,6 +367,8 @@ impl Runtime {
                 monitors: Vec::new(),
                 names: Vec::new(),
                 exit_reason: None,
+                label: None,
+                depth: depth.clone(),
             },
         );
         self.inner.spawned.fetch_add(1, Ordering::Relaxed);
@@ -278,6 +377,7 @@ impl Runtime {
             pid,
             mailbox: mailbox_rx,
             saved: VecDeque::new(),
+            depth,
         });
         // The guard is moved *into* the task, so the process is deregistered on
         // every teardown path: completion, panic (drop runs during unwind), or a
@@ -294,10 +394,16 @@ impl Runtime {
     /// Delivers `message` to `pid`'s mailbox. Returns `false` if there is no such
     /// live process — sending to a dead process is a silent no-op, like Erlang.
     pub fn send(&self, pid: Pid, message: Message) -> bool {
-        match self.inner.table.get(&pid.0) {
-            Some(entry) => entry.mailbox.send(Received::Message(message)).is_ok(),
-            None => false,
-        }
+        self.inner.enqueue(pid, Received::Message(message))
+    }
+
+    /// Delivers a byte `stream` to `pid` as a [`Received::Stream`]. Like
+    /// [`send`](Runtime::send), returns `false` if there's no such live process.
+    /// The recipient reads chunks at its own pace; back-pressure flows to the
+    /// writer (the channel is bounded). The stream itself is the Wasm-free
+    /// substrate the p3 component bridge maps `stream<u8>` onto.
+    pub fn send_stream(&self, pid: Pid, stream: StreamHandle) -> bool {
+        self.inner.enqueue(pid, Received::Stream(stream))
     }
 
     /// Number of currently-live processes.
@@ -317,6 +423,48 @@ impl Runtime {
 
     pub fn is_alive(&self, pid: Pid) -> bool {
         self.inner.table.contains_key(&pid.0)
+    }
+
+    /// A snapshot of every live process's pid — Erlang's `Process.list/0`. Walks
+    /// the sharded table without a global lock; a best-effort view (processes may
+    /// spawn/exit during the walk).
+    pub fn list(&self) -> Vec<Pid> {
+        self.inner
+            .table
+            .iter()
+            .map(|entry| Pid(*entry.key()))
+            .collect()
+    }
+
+    /// A [`ProcessInfo`] snapshot for `pid`, or `None` if it isn't live —
+    /// Erlang's `Process.info/1`. One table lookup; off the messaging hot path.
+    pub fn info(&self, pid: Pid) -> Option<ProcessInfo> {
+        self.inner.table.get(&pid.0).map(|entry| ProcessInfo {
+            pid,
+            links: entry.links.len(),
+            monitors: entry.monitors.len(),
+            names: entry.names.clone(),
+            label: entry.label.clone(),
+            mailbox_depth: entry
+                .depth
+                .as_ref()
+                .map_or(0, |d| d.load(Ordering::Relaxed)),
+            trap_exit: entry.trap_exit,
+        })
+    }
+
+    /// Attaches a human-readable `label` to `pid` for observability (like
+    /// Elixir's `Process.set_label/1`) — distinct from a registered name and
+    /// need not be unique. Returns `false` if `pid` isn't live. One allocation,
+    /// only when called; never touched on the send/receive path.
+    pub fn set_label(&self, pid: Pid, label: impl Into<String>) -> bool {
+        match self.inner.table.get_mut(&pid.0) {
+            Some(mut entry) => {
+                entry.label = Some(label.into());
+                true
+            }
+            None => false,
+        }
     }
 
     /// Stops `pid` at its next suspension point. Returns `false` if there is no
@@ -1158,5 +1306,172 @@ mod tests {
         }
         assert_eq!(rt.process_count(), 0);
         assert_eq!(rt.shutdown(), 0); // nothing left to stop
+    }
+
+    // --- Phase 7: introspection & labels -------------------------------------
+
+    #[tokio::test]
+    async fn list_reflects_live_processes() {
+        use std::collections::HashSet;
+        let rt = Runtime::new();
+        assert!(rt.list().is_empty());
+        let a = rt.spawn(|_| std::future::pending::<()>());
+        let b = rt.spawn(|_| std::future::pending::<()>());
+        let live: HashSet<u64> = rt.list().iter().map(|p| p.raw()).collect();
+        assert_eq!(live, HashSet::from([a.pid().raw(), b.pid().raw()]));
+        a.kill();
+        a.join().await;
+        assert_eq!(rt.list(), vec![b.pid()]);
+        b.kill();
+    }
+
+    #[tokio::test]
+    async fn info_reports_links_names_label_and_trap() {
+        let rt = Runtime::new();
+        let p = rt.spawn(|_| std::future::pending::<()>());
+        let peer = rt.spawn(|_| std::future::pending::<()>());
+        rt.link(p.pid(), peer.pid());
+        assert!(rt.register("svc", p.pid()));
+        rt.set_trap_exit(p.pid(), true);
+        assert!(rt.set_label(p.pid(), "worker #1"));
+
+        let info = rt.info(p.pid()).unwrap();
+        assert_eq!(info.pid, p.pid());
+        assert_eq!(info.links, 1);
+        assert_eq!(info.monitors, 0);
+        assert_eq!(info.names, vec!["svc".to_string()]);
+        assert_eq!(info.label.as_deref(), Some("worker #1"));
+        assert!(info.trap_exit);
+        assert_eq!(info.mailbox_depth, 0);
+        p.kill();
+        peer.kill();
+    }
+
+    #[tokio::test]
+    async fn info_and_set_label_on_a_dead_pid() {
+        let rt = Runtime::new();
+        let d = rt.spawn(|_| async {});
+        let pid = d.pid();
+        d.join().await;
+        assert!(rt.info(pid).is_none());
+        assert!(!rt.set_label(pid, "ghost"));
+    }
+
+    #[tokio::test]
+    async fn mailbox_depth_tracks_unconsumed_messages() {
+        let rt = Runtime::with_mailbox_depth();
+        let (go_tx, go_rx) = tokio::sync::oneshot::channel::<()>();
+        let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+        let p = rt.spawn(move |mut ctx| async move {
+            let _ = go_rx.await; // hold off consuming until the test has filled the box
+            for _ in 0..3 {
+                ctx.recv().await;
+            }
+            let _ = done_tx.send(());
+            std::future::pending::<()>().await;
+        });
+        // `send` increments depth synchronously, so this is race-free even though
+        // the process hasn't been polled past its gate yet.
+        for m in [b"a".to_vec(), b"b".to_vec(), b"c".to_vec()] {
+            assert!(rt.send(p.pid(), m));
+        }
+        assert_eq!(rt.info(p.pid()).unwrap().mailbox_depth, 3);
+
+        let _ = go_tx.send(());
+        let _ = done_rx.await; // all three consumed by now
+        assert_eq!(rt.info(p.pid()).unwrap().mailbox_depth, 0);
+        p.kill();
+    }
+
+    #[tokio::test]
+    async fn mailbox_depth_counts_messages_deferred_by_selective_receive() {
+        let rt = Runtime::with_mailbox_depth();
+        let (go_tx, go_rx) = tokio::sync::oneshot::channel::<()>();
+        let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+        let p = rt.spawn(move |mut ctx| async move {
+            let _ = go_rx.await;
+            // Consume only "B"; "A" and "C" stay deferred — still unconsumed.
+            let _ = ctx
+                .recv_match(|m| matches!(m, Received::Message(b) if b.first() == Some(&b'B')))
+                .await;
+            let _ = done_tx.send(());
+            std::future::pending::<()>().await;
+        });
+        for m in [b"A".to_vec(), b"B".to_vec(), b"C".to_vec()] {
+            assert!(rt.send(p.pid(), m));
+        }
+        assert_eq!(rt.info(p.pid()).unwrap().mailbox_depth, 3);
+
+        let _ = go_tx.send(());
+        let _ = done_rx.await;
+        // One consumed (B); A and C remain deferred but counted unconsumed.
+        while rt.info(p.pid()).map_or(false, |i| i.mailbox_depth != 2) {
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(rt.info(p.pid()).unwrap().mailbox_depth, 2);
+        p.kill();
+    }
+
+    // --- Phase 7: stream-carrying messages -----------------------------------
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_stream_is_delivered_and_read_in_order_after_a_message() {
+        use crate::stream::stream;
+        let rt = Runtime::new();
+        let (out_tx, out_rx) = tokio::sync::oneshot::channel();
+        let p = rt.spawn(move |mut ctx| async move {
+            // A normal message, then a stream — FIFO across both kinds.
+            let first = ctx.recv().await.message();
+            let mut handle = ctx.recv().await.stream().expect("a stream");
+            let mut chunks = Vec::new();
+            while let Some(chunk) = handle.read().await {
+                chunks.push(chunk);
+            }
+            let _ = out_tx.send((first, chunks));
+        });
+
+        assert!(rt.send(p.pid(), b"hello".to_vec()));
+        let (writer, handle) = stream();
+        assert!(rt.send_stream(p.pid(), handle));
+        tokio::spawn(async move {
+            for chunk in [b"a".to_vec(), b"b".to_vec(), b"c".to_vec()] {
+                writer.write(chunk).await.unwrap();
+            }
+            // Dropping the writer here closes the stream so the reader sees the end.
+        });
+
+        let (first, chunks) = out_rx.await.unwrap();
+        assert_eq!(first, Some(b"hello".to_vec()));
+        assert_eq!(chunks, vec![b"a".to_vec(), b"b".to_vec(), b"c".to_vec()]);
+        p.join().await;
+    }
+
+    #[tokio::test]
+    async fn send_stream_to_a_dead_pid_returns_false() {
+        use crate::stream::stream;
+        let rt = Runtime::new();
+        let (_writer, handle) = stream();
+        assert!(!rt.send_stream(Pid::from_raw(123_456), handle));
+    }
+
+    #[tokio::test]
+    async fn a_stream_counts_toward_mailbox_depth_until_consumed() {
+        use crate::stream::stream;
+        let rt = Runtime::with_mailbox_depth();
+        let (go_tx, go_rx) = tokio::sync::oneshot::channel::<()>();
+        let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+        let p = rt.spawn(move |mut ctx| async move {
+            let _ = go_rx.await;
+            let _ = ctx.recv().await; // consume the stream message
+            let _ = done_tx.send(());
+            std::future::pending::<()>().await;
+        });
+        let (_writer, handle) = stream();
+        assert!(rt.send_stream(p.pid(), handle));
+        assert_eq!(rt.info(p.pid()).unwrap().mailbox_depth, 1);
+        let _ = go_tx.send(());
+        let _ = done_rx.await;
+        assert_eq!(rt.info(p.pid()).unwrap().mailbox_depth, 0);
+        p.kill();
     }
 }
