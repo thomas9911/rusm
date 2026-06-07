@@ -191,13 +191,14 @@ fn ts_entrypoint(crate_dir: &Path) -> Option<std::path::PathBuf> {
         .find(|p| p.is_file())
 }
 
-/// Bundles one TS component to `wasm/<name>.js` with `bun build`. The bundle is a
-/// self-contained IIFE (no ESM import/export to leak) targeting `browser` (no
-/// node/bun globals assumed) — exactly what the js-runner's classic `eval` runs.
+/// Bundles one TS component to `wasm/<name>.js` with `bun build`, in **CommonJS**
+/// form (`--format=cjs`) so the runner sees its `export`s on `module.exports` — a
+/// service component's functions, or a worker's `export default`. Targets `browser`
+/// (no node/bun globals assumed); a bare script with no exports just runs.
 fn build_ts_component(entry: &Path, name: &str, wasm_dir: &Path) -> anyhow::Result<()> {
     let dest = wasm_dir.join(format!("{name}.js"));
     let status = Command::new("bun")
-        .args(["build", "--target=browser", "--format=iife", "--outfile"])
+        .args(["build", "--target=browser", "--format=cjs", "--outfile"])
         .arg(&dest)
         .arg(entry)
         .status()

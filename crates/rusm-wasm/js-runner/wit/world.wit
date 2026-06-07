@@ -23,6 +23,10 @@ interface actor {
     /// This process's own pid (Erlang's `self()`).
     own-pid: func() -> pid;
 
+    /// Spawn a registered component by name as a new process (Erlang's `spawn`).
+    /// Capability-gated and non-escalating; `err` if denied or the name is unknown.
+    spawn: func(component: string) -> result<pid, string>;
+
     /// Send a byte message to another process; silently dropped if it's gone
     /// (like Erlang's `send`).
     send: func(to: pid, message: list<u8>);

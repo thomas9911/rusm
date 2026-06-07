@@ -63,29 +63,38 @@ pub(crate) struct Counters {
 /// back-reference to the whole runtime. It carries exactly what a spawn needs (the
 /// engine, the process runtime, and a name → prepared-component registry) and
 /// nothing the prepare-time linkers own, keeping the per-spawn path lean.
+/// A component registered for spawn-by-name: the prepared component plus an
+/// optional first message to deliver on spawn. For a **TS service** the prepared
+/// component is the shared js-runner and `bundle` is the JS source (replayed as
+/// message 1, the runner's protocol); for a Rust component `bundle` is `None`.
+#[derive(Clone)]
+pub(crate) struct Registered {
+    pub(crate) prepared: PreparedComponent,
+    /// `Arc` so a lookup clone is cheap; the bytes copy once, on the actual send.
+    pub(crate) bundle: Option<Arc<Vec<u8>>>,
+}
+
 pub(crate) struct Spawner {
     pub(crate) engine: Engine,
     pub(crate) rt: Runtime,
     /// Components registered by name so a guest may `spawn` them. Read-mostly
     /// (written when an app loads, read per guest-initiated spawn), so a plain
     /// `RwLock` — uncontended reads, no extra dependency.
-    components: RwLock<HashMap<String, PreparedComponent>>,
+    components: RwLock<HashMap<String, Registered>>,
 }
 
 impl Spawner {
-    /// Registers a prepared component under `name` so guests may [`spawn`] it.
-    ///
-    /// [`spawn`]: crate::WasmRuntime::register_component
-    pub(crate) fn register(&self, name: impl Into<String>, prepared: PreparedComponent) {
+    /// Registers a component under `name` so guests may `spawn` it by that name.
+    pub(crate) fn register(&self, name: impl Into<String>, entry: Registered) {
         self.components
             .write()
             .expect("component registry is never poisoned")
-            .insert(name.into(), prepared);
+            .insert(name.into(), entry);
     }
 
     /// Looks up a registered component by name (cloned out so no lock is held
-    /// across the spawn — `PreparedComponent` is `Arc`-backed, so this is cheap).
-    pub(crate) fn lookup(&self, name: &str) -> Option<PreparedComponent> {
+    /// across the spawn — both fields are `Arc`-backed, so this is cheap).
+    pub(crate) fn lookup(&self, name: &str) -> Option<Registered> {
         self.components
             .read()
             .expect("component registry is never poisoned")
@@ -190,7 +199,27 @@ impl WasmRuntime {
     /// `spawn` it by that name through the actor ABI (capability-gated). The app
     /// loader registers each manifest component so siblings can spawn one another.
     pub fn register_component(&self, name: impl Into<String>, prepared: PreparedComponent) {
-        self.spawner.register(name, prepared);
+        self.spawner.register(
+            name,
+            Registered {
+                prepared,
+                bundle: None,
+            },
+        );
+    }
+
+    /// Registers a **TypeScript service** under `name`: a guest `spawn`ing it gets a
+    /// fresh js-runner instance fed this Bun-built bundle (the runner's protocol).
+    /// Lets a TS commander reach a TS service via the concealed typed client.
+    pub fn register_js_component(&self, name: impl Into<String>, bundle: impl Into<Vec<u8>>) {
+        let prepared = self.js_runner().clone();
+        self.spawner.register(
+            name,
+            Registered {
+                prepared,
+                bundle: Some(Arc::new(bundle.into())),
+            },
+        );
     }
 
     /// Spawns a **JavaScript/TypeScript** bundle as a sandboxed process via the
@@ -205,7 +234,16 @@ impl WasmRuntime {
     /// js-runner component is compiled + prepared once (lazily) and shared across
     /// all JS processes; each spawn is a fresh, isolated instance fed the bundle.
     pub fn spawn_js_with(&self, bundle: impl Into<Vec<u8>>, caps: Capabilities) -> ProcessHandle {
-        let runner = self.js_runner.get_or_init(|| {
+        let handle = self.spawn_component_with(self.js_runner(), caps);
+        // The runner's protocol: its first message is the JS bundle to execute.
+        self.spawner.rt.send(handle.pid(), bundle.into());
+        handle
+    }
+
+    /// The shared, embedded rquickjs js-runner — compiled + prepared once (lazily)
+    /// so non-JS nodes pay nothing. Backs `spawn_js` and TS-service registration.
+    fn js_runner(&self) -> &PreparedComponent {
+        self.js_runner.get_or_init(|| {
             // The runner is a known-good embedded artifact; a failure here is a
             // build bug, not a runtime condition.
             self.prepare_component(
@@ -215,11 +253,7 @@ impl WasmRuntime {
                 "run",
             )
             .expect("embedded js-runner prepares")
-        });
-        let handle = self.spawn_component_with(runner, caps);
-        // The runner's protocol: its first message is the JS bundle to execute.
-        self.spawner.rt.send(handle.pid(), bundle.into());
-        handle
+        })
     }
 
     /// Compiles a module from Wasm bytes or `.wat` text.

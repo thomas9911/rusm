@@ -20,7 +20,7 @@ wit_bindgen::generate!({
 });
 
 use rusm::runtime::actor;
-use rquickjs::{Ctx, Function, TypedArray};
+use rquickjs::{Ctx, Exception, Function, Promise, TypedArray};
 
 struct Component;
 
@@ -39,12 +39,21 @@ fn js_stream_write(h: f64, data: TypedArray<u8>) -> bool {
 fn js_stream_read(ctx: Ctx<'_>, h: f64) -> Option<TypedArray<'_, u8>> {
     actor::stream_read(h as u64).map(|b| TypedArray::new(ctx, b).unwrap())
 }
+// Spawn a registered component by name; a denied/unknown spawn throws into JS
+// (surfacing the host's error message) rather than returning a sentinel.
+fn js_spawn(ctx: Ctx<'_>, name: String) -> rquickjs::Result<String> {
+    match actor::spawn(&name) {
+        Ok(pid) => Ok(pid.to_string()),
+        Err(e) => Err(Exception::throw_message(&ctx, &e)),
+    }
+}
 
 /// The guest JS environment, split by concern (see `bridge/`): Web API polyfills
 /// (standards-only) then the `Process`/`Stream` actor API (over the host `__*`
 /// primitives). Both are evaluated before the user's bundle.
 const WEBAPI_JS: &str = include_str!("../bridge/webapi.js");
 const PROCESS_JS: &str = include_str!("../bridge/process.js");
+const RPC_JS: &str = include_str!("../bridge/rpc.js");
 
 impl Guest for Component {
     fn run() {
@@ -87,6 +96,7 @@ impl Guest for Component {
             ));
             def!("__kill", |p: String| actor::kill(p.parse().unwrap_or(0)));
             def!("__set_label", |l: String| actor::set_label(&l));
+            def!("__spawn", js_spawn);
 
             // --- streams (handles are small ints carried as JS numbers) ---
             def!("__stream_open", |to: String| actor::stream_open(
@@ -104,10 +114,24 @@ impl Guest for Component {
             // capability is granted; discarded for a sandboxed guest).
             def!("__print", |s: String| eprintln!("{s}"));
 
-            // Web API polyfills, then the actor API, then the user's bundle.
+            // Web API polyfills, the raw actor API, then the RPC/service layer.
             let _: () = ctx.eval(WEBAPI_JS).unwrap();
             let _: () = ctx.eval(PROCESS_JS).unwrap();
+            let _: () = ctx.eval(RPC_JS).unwrap();
+            // A CommonJS surface so a Bun-bundled (`--format=cjs`) service/worker can
+            // populate `module.exports`; a bare script just ignores it.
+            let _: () = ctx
+                .eval("globalThis.module={exports:{}};globalThis.exports=module.exports;")
+                .unwrap();
+            // The user's bundle: a bare script runs now; a service/worker only
+            // registers its exports here, for __rusm_entry to drive.
             let _: () = ctx.eval(bundle).unwrap();
+            // Drive the entry point (service dispatch / worker `default`) to
+            // completion. finish() pumps the QuickJS job queue; a long-running
+            // service blocks here (each receive suspends the fiber) until killed.
+            let entry: Function = ctx.globals().get("__rusm_entry").unwrap();
+            let outcome: Promise = entry.call(()).unwrap();
+            let _ = outcome.finish::<()>();
         });
     }
 }

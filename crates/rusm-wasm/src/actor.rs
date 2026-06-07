@@ -42,11 +42,16 @@ impl actor::Host for WasiHost {
             return Err("spawn denied: missing the spawn capability".to_string());
         }
         let spawner = self.spawner.as_ref().ok_or("spawn unavailable here")?;
-        let prepared = spawner
+        let entry = spawner
             .lookup(&component)
             .ok_or_else(|| format!("unknown component `{component}`"))?;
         // No escalation: the child gets exactly this process's capabilities.
-        let child = spawner.spawn_component(&prepared, self.caps.clone());
+        let child = spawner.spawn_component(&entry.prepared, self.caps.clone());
+        // A TS service carries its bundle as message 1 (the js-runner's protocol).
+        if let Some(bundle) = &entry.bundle {
+            self.rt
+                .send(Pid::from_raw(child.pid().raw()), (**bundle).clone());
+        }
         Ok(child.pid().raw())
     }
 

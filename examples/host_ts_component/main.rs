@@ -16,15 +16,19 @@
 use rusm_otp::{Received, Runtime};
 use rusm_wasm::WasmRuntime;
 
-// What `bun build --target=browser --format=iife` produces from an `index.ts`:
-//   const replyTo = Process.receiveText();
-//   Process.setLabel("ts-worker");
-//   Process.send(replyTo, `pong from ${Process.self()}`);
-const BUNDLE: &str = r#"(() => {
-  var replyTo = Process.receiveText();
-  Process.setLabel("ts-worker");
-  Process.send(replyTo, "pong from " + Process.self());
-})();"#;
+// What `bun build --format=cjs` produces from a worker `index.ts`:
+//   export default async function () {
+//     const replyTo = await Process.receiveText();
+//     Process.setLabel("ts-worker");
+//     Process.send(replyTo, `pong from ${Process.self()}`);
+//   }
+const BUNDLE: &str = r#"
+  module.exports.default = async function () {
+    const replyTo = await Process.receiveText();
+    Process.setLabel("ts-worker");
+    Process.send(replyTo, "pong from " + Process.self());
+  };
+"#;
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() {

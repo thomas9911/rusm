@@ -50,6 +50,8 @@ pub fn spawn_components(
             // TypeScript component: a Bun-built bundle run on the shared js-runner.
             let bundle = std::fs::read(&js_path)
                 .with_context(|| format!("reading {}", js_path.display()))?;
+            // Register by name so a running sibling may `spawn` it as a TS service.
+            wasm.register_js_component(spec.name.clone(), bundle.clone());
             wasm.spawn_js_with(bundle, caps)
         } else {
             let path = wasm_dir.join(format!("{}.wasm", spec.name));

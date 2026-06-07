@@ -4,6 +4,8 @@
 # the prebuilt .wasm, not the build output).
 crates/rusm-wasm/tests/fixtures/*/target/
 crates/rusm-wasm/js-runner/target/
+# Example apps build their components into a local wasm/ dir (checked-in source only).
+examples/*/wasm/
 **/*.rs.bk
 *.profraw
 

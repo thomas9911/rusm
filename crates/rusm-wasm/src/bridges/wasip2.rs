@@ -411,9 +411,11 @@ mod tests {
         // `Process.setLabel`, `Process.self`, and `Process.send` — proving a TS/JS
         // guest is a first-class, sandboxed RUSM process.
         const BUNDLE: &str = r#"
-            const replyTo = Process.receiveText();       // msg: who to answer
-            Process.setLabel("ts-worker");
-            Process.send(replyTo, "pong from " + Process.self());
+            module.exports.default = async function () {
+                const replyTo = await Process.receiveText();   // msg: who to answer
+                Process.setLabel("ts-worker");
+                Process.send(replyTo, "pong from " + Process.self());
+            };
         "#;
         let rt = Runtime::new();
         let wr = WasmRuntime::new(rt.clone()).unwrap();
@@ -441,9 +443,11 @@ mod tests {
         // (JSON.stringify can't serialise bigint). If `fmt` threw, the bundle would
         // trap before replying — so a reply proves console handled the pid.
         const BUNDLE: &str = r#"
-            const replyTo = Process.receiveText();
-            console.log("my pid is", Process.self(), undefined);
-            Process.send(replyTo, "logged ok");
+            module.exports.default = async function () {
+                const replyTo = await Process.receiveText();
+                console.log("my pid is", Process.self(), undefined);
+                Process.send(replyTo, "logged ok");
+            };
         "#;
         let rt = Runtime::new();
         let wr = WasmRuntime::new(rt.clone()).unwrap();
@@ -461,10 +465,12 @@ mod tests {
         // The runner installs Web API polyfills (webapi.js) before the bundle, so a
         // TS guest gets URL/TextEncoder/etc. transparently — no host support needed.
         const BUNDLE: &str = r#"
-            const replyTo = Process.receiveText();
-            const u = new URL("https://example.io:8080/a?x=1");
-            const n = new TextEncoder().encode("héllo").length;   // é = 2 bytes → 6
-            Process.send(replyTo, u.hostname + "|" + u.port + "|" + n);
+            module.exports.default = async function () {
+                const replyTo = await Process.receiveText();
+                const u = new URL("https://example.io:8080/a?x=1");
+                const n = new TextEncoder().encode("héllo").length;   // é = 2 bytes → 6
+                Process.send(replyTo, u.hostname + "|" + u.port + "|" + n);
+            };
         "#;
         let rt = Runtime::new();
         let wr = WasmRuntime::new(rt.clone()).unwrap();
@@ -486,9 +492,11 @@ mod tests {
         // JS receives a reply-to (text) and a binary message (Uint8Array), then
         // echoes the bytes back — proving binary marshalling both ways.
         const BUNDLE: &str = r#"
-            const replyTo = Process.receiveText();
-            const bytes = Process.receive();      // Uint8Array
-            Process.send(replyTo, bytes);         // send it back (binary path)
+            module.exports.default = async function () {
+                const replyTo = await Process.receiveText();
+                const bytes = await Process.receive();   // Uint8Array
+                Process.send(replyTo, bytes);            // send it back (binary path)
+            };
         "#;
         let rt = Runtime::new();
         let wr = WasmRuntime::new(rt.clone()).unwrap();
@@ -506,11 +514,13 @@ mod tests {
     async fn a_javascript_bundle_consumes_a_byte_stream() {
         // JS accepts a stream, reads Uint8Array chunks to EOF, reports the total.
         const BUNDLE: &str = r#"
-            const collector = Process.receiveText();
-            const s = Process.acceptStream();
-            let total = 0, chunk;
-            while ((chunk = s.read()) !== null) { total += chunk.length; }
-            Process.send(collector, "total:" + total);
+            module.exports.default = async function () {
+                const collector = await Process.receiveText();
+                const s = Process.acceptStream();
+                let total = 0, chunk;
+                while ((chunk = await s.read()) !== null) { total += chunk.length; }
+                Process.send(collector, "total:" + total);
+            };
         "#;
         let rt = Runtime::new();
         let wr = WasmRuntime::new(rt.clone()).unwrap();
@@ -531,6 +541,76 @@ mod tests {
 
         let reply = String::from_utf8(rx.await.unwrap()).unwrap();
         assert_eq!(reply, "total:18", "JS read all streamed bytes to EOF");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_javascript_service_dispatches_exported_functions() {
+        // A service component EXPORTS functions (no Process plumbing); the runner
+        // runs the request→dispatch→reply loop. A Rust "client" drives it: send a
+        // JSON request, get a JSON reply. Proves the service half of the typed RPC.
+        const SERVICE: &str = r#"
+            module.exports.add = (a, b) => a + b;
+            module.exports.greet = async ({ name }) => "hi " + name;   // async handler too
+        "#;
+        let rt = Runtime::new();
+        let wr = WasmRuntime::new(rt.clone()).unwrap();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let collector = rt.spawn(move |mut ctx| async move {
+            let _ = tx.send(ctx.recv().await.message().unwrap());
+        });
+        let svc = wr.spawn_js(SERVICE.as_bytes());
+        // request: call `add(2, 3)`, asking `collector` to be answered with ref 1.
+        let req = format!(
+            r#"{{"op":"add","args":[2,3],"from":"{}","ref":1}}"#,
+            collector.pid().raw()
+        );
+        rt.send(svc.pid(), req.into_bytes());
+
+        let reply = String::from_utf8(rx.await.unwrap()).unwrap();
+        assert!(
+            reply.contains("\"ref\":1") && reply.contains("\"ok\":5"),
+            "service should reply {{ref:1, ok:5}}, got {reply}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_typescript_commander_calls_a_service_via_the_typed_client() {
+        // The whole concealed-function-call story end to end, in JS: a `calc`
+        // service exports `add`; the commander spawns it BY NAME and `await`s a
+        // typed call — spawn + send + receive all hidden by the client proxy.
+        const CALC: &str = r#"module.exports.add = (a, b) => a + b;"#;
+        const COMMANDER: &str = r#"
+            module.exports.default = async function () {
+                const collector = await Process.receiveText();
+                const calc = spawn("calc");          // spawn-from-guest by name
+                const sum = await calc.add(2, 3);    // concealed call: send + await reply
+                Process.send(collector, "sum=" + sum);
+            };
+        "#;
+        let rt = Runtime::new();
+        let wr = WasmRuntime::new(rt.clone()).unwrap();
+        // Register the service by name so the commander can spawn it.
+        wr.register_js_component("calc", CALC.as_bytes());
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let collector = rt.spawn(move |mut ctx| async move {
+            let _ = tx.send(ctx.recv().await.message().unwrap());
+        });
+        // The commander needs the spawn capability (Trusted grants it).
+        let commander = wr.spawn_js_with(
+            COMMANDER.as_bytes(),
+            CapabilityProfile::Trusted.capabilities(),
+        );
+        rt.send(
+            commander.pid(),
+            collector.pid().raw().to_string().into_bytes(),
+        );
+
+        let reply = String::from_utf8(rx.await.unwrap()).unwrap();
+        assert_eq!(
+            reply, "sum=5",
+            "typed client called the service and got 2+3"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
