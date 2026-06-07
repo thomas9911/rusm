@@ -45,6 +45,7 @@ const sections = [
       { text: 'Benchmark & dashboard', link: '/03-benchmark-dashboard' },
       { text: 'Host ABI', link: '/05-host-abi' },
       { text: 'Distributed model', link: '/04-distributed-model' },
+      { text: 'Serving HTTP/WS/SSE (design)', link: '/serving-http-ws-sse' },
       { text: 'Glossary', link: '/07-glossary' },
     ],
   },
