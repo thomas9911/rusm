@@ -5,20 +5,28 @@
 //! the WS protocol (framing, ping/pong, close), and each connection is its own
 //! supervised task — a failure drops only that socket, never the listener.
 //!
-//! This slice serves a host-side **echo**, proving the upgrade + framing +
-//! concurrency on RUSM. Bridging a connection to a WASM component process (each WS
-//! message ↔ the process mailbox) is the next slice.
+//! Two entry points: [`serve_ws_echo`] is a host-side echo (the transport baseline);
+//! [`WsServer`] runs an actual **WASM component process** per connection — each
+//! inbound frame becomes one mailbox message, replies flow back through a Wasm-free
+//! writer process that owns the socket sink. Wasmtime stays inside this crate; the
+//! `rusm-otp` core never sees hyper, tungstenite, or `wasi:http`.
 
 use std::convert::Infallible;
+use std::sync::Arc;
 
 use futures_util::{SinkExt, StreamExt};
 use http_body_util::Empty;
 use hyper::body::Bytes;
+use hyper::upgrade::Upgraded;
 use hyper_util::rt::TokioIo;
 use tokio::net::TcpListener;
 use tokio_tungstenite::tungstenite::handshake::derive_accept_key;
 use tokio_tungstenite::tungstenite::protocol::Role;
+use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::WebSocketStream;
+
+use crate::caps::Capabilities;
+use crate::{PreparedComponent, Spawner, WasmRuntime};
 
 /// Serve a WebSocket **echo** on `listener` until it closes — one supervised task
 /// per connection. Abort the task driving this to stop.
@@ -30,7 +38,10 @@ pub async fn serve_ws_echo(listener: TcpListener) {
         stream.set_nodelay(true).ok();
         tokio::spawn(async move {
             let _ = hyper::server::conn::http1::Builder::new()
-                .serve_connection(TokioIo::new(stream), hyper::service::service_fn(upgrade))
+                .serve_connection(
+                    TokioIo::new(stream),
+                    hyper::service::service_fn(echo_upgrade),
+                )
                 // `with_upgrades` is what lets `hyper::upgrade::on` hand us the
                 // raw stream after the 101.
                 .with_upgrades()
@@ -39,31 +50,18 @@ pub async fn serve_ws_echo(listener: TcpListener) {
     }
 }
 
-/// Answer the HTTP `Upgrade` with a 101 and spawn the WebSocket task. A request
+/// Answer the HTTP `Upgrade` with a 101 and spawn a host-side echo task. A request
 /// without a WebSocket key gets a plain 426.
-async fn upgrade(
+async fn echo_upgrade(
     req: hyper::Request<hyper::body::Incoming>,
 ) -> Result<hyper::Response<Empty<Bytes>>, Infallible> {
-    let Some(key) = req
-        .headers()
-        .get("sec-websocket-key")
-        .and_then(|k| k.to_str().ok())
-        .map(|s| s.to_owned())
-    else {
-        return Ok(hyper::Response::builder()
-            .status(426)
-            .body(Empty::new())
-            .unwrap());
+    let Some(accept) = ws_accept(&req) else {
+        return Ok(upgrade_required());
     };
-    let accept = derive_accept_key(key.as_bytes());
-
-    // After the 101 is sent, take the upgraded stream and run the WS protocol.
     tokio::spawn(async move {
-        let Ok(upgraded) = hyper::upgrade::on(req).await else {
+        let Some(mut ws) = upgraded_ws(req).await else {
             return;
         };
-        let mut ws =
-            WebSocketStream::from_raw_socket(TokioIo::new(upgraded), Role::Server, None).await;
         while let Some(Ok(message)) = ws.next().await {
             if message.is_close() {
                 break;
@@ -73,14 +71,140 @@ async fn upgrade(
             }
         }
     });
+    Ok(switching_protocols(accept))
+}
 
-    Ok(hyper::Response::builder()
+/// The `Sec-WebSocket-Accept` for a request, or `None` if it carries no WS key.
+fn ws_accept(req: &hyper::Request<hyper::body::Incoming>) -> Option<String> {
+    req.headers()
+        .get("sec-websocket-key")
+        .and_then(|k| k.to_str().ok())
+        .map(|key| derive_accept_key(key.as_bytes()))
+}
+
+/// Complete the `Upgrade` and wrap the raw stream as a server-side `WebSocketStream`.
+async fn upgraded_ws(
+    req: hyper::Request<hyper::body::Incoming>,
+) -> Option<WebSocketStream<TokioIo<Upgraded>>> {
+    let upgraded = hyper::upgrade::on(req).await.ok()?;
+    Some(WebSocketStream::from_raw_socket(TokioIo::new(upgraded), Role::Server, None).await)
+}
+
+fn switching_protocols(accept: String) -> hyper::Response<Empty<Bytes>> {
+    hyper::Response::builder()
         .status(101)
         .header("connection", "Upgrade")
         .header("upgrade", "websocket")
         .header("sec-websocket-accept", accept)
         .body(Empty::new())
-        .unwrap())
+        .unwrap()
+}
+
+fn upgrade_required() -> hyper::Response<Empty<Bytes>> {
+    hyper::Response::builder()
+        .status(426)
+        .body(Empty::new())
+        .unwrap()
+}
+
+/// Serves each WebSocket connection with a **WASM component process** — the actor
+/// way. A connection's inbound messages land in the component's mailbox (one
+/// message = one frame); its replies go to a per-connection **writer** process that
+/// owns the socket sink. The component is pure sandboxed logic (no IO); the writer
+/// and reader are Wasm-free `rusm-otp` glue. A handler crash drops only that
+/// connection's processes — never the listener or other sockets.
+#[derive(Clone)]
+pub struct WsServer {
+    prepared: PreparedComponent,
+    spawner: Arc<Spawner>,
+    caps: Capabilities,
+}
+
+impl WasmRuntime {
+    /// Build a WebSocket server that runs `prepared` (a `rusm:runtime` actor
+    /// component) as the handler process for each connection, under `caps`.
+    pub fn ws_server(&self, prepared: &PreparedComponent, caps: Capabilities) -> WsServer {
+        WsServer {
+            prepared: prepared.clone(),
+            spawner: Arc::clone(&self.spawner),
+            caps,
+        }
+    }
+}
+
+impl WsServer {
+    /// Serve WebSockets on `listener` until it closes — one connection per task.
+    pub async fn serve(self, listener: TcpListener) {
+        loop {
+            let Ok((stream, _peer)) = listener.accept().await else {
+                break;
+            };
+            stream.set_nodelay(true).ok();
+            let server = self.clone();
+            tokio::spawn(async move {
+                let service = hyper::service::service_fn(move |req| {
+                    let server = server.clone();
+                    async move { server.upgrade(req).await }
+                });
+                let _ = hyper::server::conn::http1::Builder::new()
+                    .serve_connection(TokioIo::new(stream), service)
+                    .with_upgrades()
+                    .await;
+            });
+        }
+    }
+
+    async fn upgrade(
+        &self,
+        req: hyper::Request<hyper::body::Incoming>,
+    ) -> Result<hyper::Response<Empty<Bytes>>, Infallible> {
+        let Some(accept) = ws_accept(&req) else {
+            return Ok(upgrade_required());
+        };
+        let server = self.clone();
+        tokio::spawn(async move {
+            if let Some(ws) = upgraded_ws(req).await {
+                server.run_connection(ws).await;
+            }
+        });
+        Ok(switching_protocols(accept))
+    }
+
+    /// Wire one upgraded connection to a fresh component process.
+    async fn run_connection(&self, ws: WebSocketStream<TokioIo<Upgraded>>) {
+        let (mut sink, mut stream) = ws.split();
+        let rt = self.spawner.rt.clone();
+
+        // Writer: a Wasm-free process owning the socket sink; it frames whatever the
+        // component sends it. (Keeps all IO out of the sandboxed component.)
+        let writer = rt.spawn(move |mut ctx| async move {
+            while let Some(message) = ctx.recv().await.message() {
+                if sink.send(Message::binary(message)).await.is_err() {
+                    break;
+                }
+            }
+        });
+
+        // The sandboxed handler. Message 1 tells it where to send replies.
+        let component = self
+            .spawner
+            .spawn_component(&self.prepared, self.caps.clone());
+        rt.send(component.pid(), writer.pid().raw().to_string().into_bytes());
+
+        // Pump inbound frames into the component's mailbox (one message per frame).
+        while let Some(Ok(message)) = stream.next().await {
+            if message.is_close() {
+                break;
+            }
+            if message.is_text() || message.is_binary() {
+                rt.send(component.pid(), message.into_data().to_vec());
+            }
+        }
+
+        // Connection done — tear down just this connection's processes.
+        component.kill();
+        writer.kill();
+    }
 }
 
 #[cfg(test)]
@@ -102,5 +226,31 @@ mod tests {
         assert_eq!(&reply.into_data()[..], b"hello ws");
 
         server.abort();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_wasm_component_handles_a_websocket() {
+        use crate::{CapabilityProfile, WasmRuntime};
+        use rusm_otp::Runtime;
+
+        // The reply comes from a sandboxed WASM component (rs-ws-echo), not the host.
+        const WS_ECHO: &[u8] = include_bytes!("../../tests/fixtures/rs_ws_echo.wasm");
+        let wr = WasmRuntime::new(Runtime::new()).unwrap();
+        let prepared = wr
+            .prepare_component(&wr.compile_component(WS_ECHO).unwrap(), "run")
+            .unwrap();
+        let server = wr.ws_server(&prepared, CapabilityProfile::Trusted.capabilities());
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = tokio::spawn(server.serve(listener));
+
+        let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/"))
+            .await
+            .unwrap();
+        ws.send(Message::text("hi component")).await.unwrap();
+        let reply = ws.next().await.unwrap().unwrap();
+        assert_eq!(&reply.into_data()[..], b"hi component");
+
+        handle.abort();
     }
 }

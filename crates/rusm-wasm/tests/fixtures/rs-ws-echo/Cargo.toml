@@ -1,0 +1,25 @@
+# A WebSocket-handler component (rusm-rs): the host hands it a connection by
+# delivering each inbound WS message to its mailbox; it replies via the writer pid
+# it learns as message 1. Pure sandboxed actor logic — IO stays host-side.
+# Built for wasm32-wasip2, checked in as rs_ws_echo.wasm. Regenerate:
+#   cargo build --target wasm32-wasip2 --release
+#   cp target/wasm32-wasip2/release/rs_ws_echo.wasm ../rs_ws_echo.wasm
+[workspace]
+
+[package]
+name = "rs-ws-echo"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+name = "rs_ws_echo"
+
+[profile.release]
+opt-level = "z"
+strip = true
+
+[dependencies]
+rusm-rs = { path = "../../../../rusm-rs" }
+wit-bindgen = "0.46"

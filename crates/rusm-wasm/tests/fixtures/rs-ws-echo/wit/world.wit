@@ -1,0 +1,94 @@
+package rusm:runtime@0.1.0;
+
+/// The actor / process API a RUSM component imports. Composition is by **message
+/// passing** — components address each other by pid and send bytes; there is no
+/// static component-to-component wiring and no lattice. A Rust guest binds this
+/// with `wit-bindgen` (a TS guest via the planned Bun + rquickjs shell, no jco);
+/// both call the same functions.
+interface actor {
+    /// A process identifier (Erlang's pid).
+    type pid = u64;
+
+    /// A snapshot of a process, mirroring the host's `Process.info`.
+    record process-info {
+        pid: pid,
+        links: u32,
+        monitors: u32,
+        names: list<string>,
+        label: option<string>,
+        mailbox-depth: u32,
+        trap-exit: bool,
+    }
+
+    /// This process's own pid (Erlang's `self()`).
+    own-pid: func() -> pid;
+
+    /// Spawn a registered component (by the name it was registered under) as a new
+    /// process, returning its pid (Erlang's `spawn`). Capability-gated and
+    /// **non-escalating**: the child inherits the spawner's capabilities, never
+    /// more. `err` with a message if spawn is denied or the name is unknown.
+    spawn: func(component: string) -> result<pid, string>;
+
+    /// Monitor a process: when `target` dies, this process receives a `__down`
+    /// message (Erlang's `monitor`) — the basis for a guest Supervisor.
+    monitor: func(target: pid);
+
+    /// Send a byte message to another process; silently dropped if it's gone
+    /// (like Erlang's `send`).
+    send: func(to: pid, message: list<u8>);
+
+    /// Receive the next message, suspending until one arrives (FIFO). The host
+    /// runs this asynchronously, so a blocked guest frees its scheduler thread.
+    receive: func() -> list<u8>;
+
+    /// Every live pid (Erlang's `Process.list/0`).
+    list-processes: func() -> list<pid>;
+
+    /// A snapshot of a process (Erlang's `Process.info/1`), or none if it's gone.
+    info: func(target: pid) -> option<process-info>;
+
+    /// Whether a process is alive (`Process.alive?/1`).
+    is-alive: func(target: pid) -> bool;
+
+    /// Kill a process (`Process.exit(pid, :kill)`). False if already gone.
+    kill: func(target: pid) -> bool;
+
+    /// Register / look up / release a name in the node registry.
+    register: func(name: string) -> bool;
+    whereis: func(name: string) -> option<pid>;
+    unregister: func(name: string) -> bool;
+
+    /// Attach a human-readable label for observability (`Process.set_label/1`).
+    set-label: func(label: string);
+
+    /// A handle to one byte stream this process owns (an id local to the process).
+    /// (`stream` is a reserved WIT keyword, hence `stream-id`.)
+    type stream-id = u64;
+
+    /// Open a Tokio-backpressured byte stream to another process: the read end is
+    /// delivered to `to` (it arrives via `stream-accept`), the write end is kept
+    /// here under the returned handle. `none` if `to` is already gone.
+    stream-open: func(to: pid) -> option<stream-id>;
+
+    /// Write one chunk to a stream, suspending if the buffer is full (the reader
+    /// applies natural back-pressure). `false` once the reader is gone / unknown id.
+    stream-write: func(handle: stream-id, chunk: list<u8>) -> bool;
+
+    /// Close the write end — the reader then sees end-of-stream.
+    stream-close: func(handle: stream-id);
+
+    /// Accept the next incoming byte stream, suspending until one arrives; returns
+    /// a handle for reading it. (Like `receive`, plain messages are skipped here.)
+    stream-accept: func() -> stream-id;
+
+    /// Read the next chunk from an accepted stream, suspending until one arrives.
+    /// `none` at end-of-stream (the writer was closed/dropped).
+    stream-read: func(handle: stream-id) -> option<list<u8>>;
+}
+
+/// A RUSM actor component: imports the actor API and exports an entry point the
+/// runtime calls to start the process.
+world process {
+    import actor;
+    export run: func();
+}
