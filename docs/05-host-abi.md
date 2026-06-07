@@ -59,6 +59,26 @@ network), `Trusted` (+ stdio, large heap) — set defaults; a per-spawn
 `Capabilities` builder overrides them. See
 [permissions & sandboxing](./concepts/permissions-and-sandboxing.md).
 
+## Compatibility — standards-first, superpowers opt-in
+
+RUSM is a **standard WASI host** (p1/p2/p3). A standard component or core module —
+including one built with `cargo component` or [`wstd`](https://github.com/bytecodealliance/wstd)
+(the Bytecode Alliance's guest-side async std) — **runs unchanged**, to the extent
+it imports interfaces RUSM hosts. The `rusm:runtime` actor world is **purely
+additive and opt-in**: import it for the Erlang `Process` API, or ignore it and
+RUSM is just a fast, sandboxed WASI runtime. So there is no RUSM-specific
+convention to adopt, and nothing to make code non-portable.
+
+`wstd` itself is a *guest* library, not a host contract — "wstd compatibility"
+simply means hosting the standard WASI interfaces a wstd guest imports. Two items
+are on the roadmap (Phase 11) to make any standard component fully drop-in:
+
+- **Entrypoint:** RUSM currently invokes a bare exported `run` func; standard
+  *command* components export the `wasi:cli/run` interface. Supporting that export
+  as an entrypoint lets stock command components run as-is.
+- **`wasi:http`:** wstd's HTTP layer imports `wasi:http`, which RUSM will host
+  alongside the HTTP-serving work — then wstd HTTP guests just work.
+
 ## Wire protocol (node ↔ dashboard / REPL)
 
 Defined in `rusm-bench` `protocol.rs`, mirrored in the dashboard's `types.ts`

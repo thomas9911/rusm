@@ -29,6 +29,7 @@ data to real measurements.
 | 8 | **Guest ergonomics** — `rusm-rs` (Rust guest crate: spawn/Mailbox/AbstractProcess/Supervisor) **and `rusm-ts`** (TS/Bun package giving the same actor API to JS, via the rquickjs↔WIT shell — no jco) | — |
 | 9 | **Distributed clusters + live attach** — QUIC+TLS, remote spawn, global registry | **distributed-fanout** |
 | 10 | **Performance & hardening** — pooling alloc + CoW + epoch toward 300k/s, hot reload | — |
+| 11 | **Standard-WASI surface & wstd compatibility** — invoke the standard `wasi:cli/run` entrypoint (so stock command components run unchanged), host `wasi:http`, and support [`wstd`](https://github.com/bytecodealliance/wstd)-based guests. RUSM stays a standards-first host; the actor world stays opt-in. (Can be sequenced earlier — `wasi:http` pairs with the HTTP-serving goal.) | — |
 
 ## What's shipped so far (Phases 0–7)
 
