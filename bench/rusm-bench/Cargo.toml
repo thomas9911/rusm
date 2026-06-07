@@ -67,3 +67,7 @@ path = "../../examples/cluster_fanout/main.rs"
 [[example]]
 name = "http_bench"
 path = "../../examples/http_bench/main.rs"
+
+[[example]]
+name = "ws_bench"
+path = "../../examples/ws_bench/main.rs"
