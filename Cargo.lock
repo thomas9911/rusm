@@ -1868,6 +1868,7 @@ name = "rusm-wasm"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "hyper",
  "rusm-otp",
  "tokio",
  "wasmtime",

@@ -1,0 +1,18 @@
+# A minimal wasi:http component (via wstd): answers every request 200 "hello".
+# Built for wasm32-wasip2 and checked in (the rusm-wasm HTTP serve test loads it):
+#   cargo build --target wasm32-wasip2 --release
+#   cp target/wasm32-wasip2/release/http_hello.wasm ../http_hello.wasm
+[package]
+name = "http-hello"
+version = "0.0.0"
+edition = "2021"
+
+[dependencies]
+wstd = "0.6.6"
+anyhow = "1"
+
+[[bin]]
+name = "http_hello"
+path = "src/main.rs"
+
+[workspace]

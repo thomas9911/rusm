@@ -25,6 +25,7 @@ mod actor;
 mod bridges;
 mod caps;
 
+pub use bridges::http::{HttpServer, PreparedHttp};
 pub use bridges::wasip1::PreparedModule;
 pub use bridges::wasip2::PreparedComponent;
 pub use caps::{Capabilities, CapabilityProfile};
