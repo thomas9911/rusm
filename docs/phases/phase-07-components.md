@@ -14,11 +14,13 @@ killable, preemptible process — the BEAM model, for the component ecosystem.
 
 ## What we built (TDD throughout)
 
-1. **`bridges/` over a shared core** — `rusm-wasm` adds `wasmtime-wasi` (default
-   p1 + p2) and a per-version bridge layout: `wasip1` (core modules) and `wasip2`
-   (components) over one shared engine (epoch ticker, pooling allocator, CoW). The
-   wasip2 bridge is the baseline component host; a `wasip3` bridge (additive over
-   p2, with the `p3` feature enabled only when it lands) is a follow-on.
+1. **`bridges/` over a shared core** — `rusm-wasm` adds `wasmtime-wasi` and a
+   per-version bridge layout over one shared engine (epoch ticker, pooling
+   allocator, CoW): `wasip1` (core modules), `wasip2` (components, the `@0.2.0`
+   WASI interfaces), and `wasip3` (additive over p2 — the `@0.3.0` async/streams
+   interfaces on the same component linker, with the async component model enabled
+   in `Config`). A component importing p2 or p3 resolves against the one shared
+   `WasiHost`.
 2. **The `rusm:runtime` WIT actor world** (`wit/world.wit` + `bindgen!`) — a
    component imports `actor` and gets typed `self`/`send`/`receive`(async)/
    `list-processes`/`info`/`is-alive`/`kill`/`register`/`whereis`/`unregister`/

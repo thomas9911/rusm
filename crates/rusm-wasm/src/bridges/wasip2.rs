@@ -29,11 +29,13 @@ pub struct PreparedComponent {
     entry: ComponentExportIndex,
 }
 
-/// Builds the component linker once, with WASI p2 wired in. (p3 interfaces are
-/// added by the wasip3 bridge in a later step; both share [`WasiHost`].)
+/// Builds the component linker once, with WASI **p2 and p3** wired in plus the
+/// `rusm:runtime` actor ABI — all sharing one [`WasiHost`]. A component importing
+/// the `@0.2.0` or `@0.3.0` WASI interfaces resolves against the same host.
 pub(crate) fn build_linker(engine: &Engine) -> Result<ComponentLinker<WasiHost>> {
     let mut linker = ComponentLinker::new(engine);
     wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
+    super::wasip3::add_to_linker(&mut linker)?;
     crate::actor::add_to_linker(&mut linker)?;
     Ok(linker)
 }

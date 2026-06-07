@@ -11,9 +11,9 @@ distributed clusters you can hook into live. See `README.md` for the pitch and
 **Phase 7 of 10 — complete.** RUSM **hosts real WASM components** as isolated,
 supervised processes. The Wasmtime backend (`rusm-wasm`, the *only* crate that
 touches Wasmtime) runs each component instance-per-process via the **component
-model** (`wasmtime-wasi`; `bridges/{wasip1,wasip2}.rs` over a shared core — the
-component path wires **WASI p2**; a `wasip3` bridge — and the `p3` crate feature
-it would need — is a deliberate roadmap follow-on, not enabled until used). It exposes a `rusm:runtime` **WIT actor world** (`bindgen!`): a
+model** (`wasmtime-wasi`; `bridges/{wasip1,wasip2,wasip3}.rs` over a shared core).
+The component linker wires **WASI p2 and p3** — both `@0.2.0` and `@0.3.0`
+interfaces on one `WasiHost`, with the async component model enabled. It exposes a `rusm:runtime` **WIT actor world** (`bindgen!`): a
 component calls `self`/`send`/`receive`/`list`/`info`/`kill`/`register`/`whereis`/
 `set-label` — the Erlang `Process` API, callable from Rust or TS guests — backed
 by thin calls into `rusm-otp`. **Default-deny capability profiles** (`caps.rs`:

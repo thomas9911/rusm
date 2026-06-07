@@ -8,6 +8,7 @@
 
 pub(crate) mod wasip1;
 pub(crate) mod wasip2;
+pub(crate) mod wasip3;
 
 use rusm_otp::{Context, Runtime};
 use wasmtime::ResourceLimiter;

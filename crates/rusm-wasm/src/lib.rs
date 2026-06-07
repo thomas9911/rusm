@@ -77,6 +77,9 @@ impl WasmRuntime {
         // call stack and yields the Tokio worker) is always available in
         // Wasmtime; we drive guests with `call_async`.
         config.epoch_interruption(true);
+        // The async component model (WASI **p3**): required for the p3 interfaces
+        // wired by the wasip3 bridge to actually execute, not just link.
+        config.wasm_component_model_async(true);
         // Copy-on-write memory init (default, set explicit): a fresh instance
         // shares the module image until it writes — near-zero init cost.
         config.memory_init_cow(true);
