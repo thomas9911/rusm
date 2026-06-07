@@ -8,6 +8,7 @@
 //! `lib.rs`; this file is only the component-specific glue.
 
 use std::collections::HashMap;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -30,6 +31,10 @@ pub struct PreparedComponent {
     pre: ComponentInstancePre<WasiHost>,
     /// The `entry` export resolved once at prepare time (index, not a string).
     entry: ComponentExportIndex,
+    /// The same component prepared against the **overflow** engine (its own
+    /// `InstancePre` + entry index). `None` unless the runtime has an overflow tier
+    /// ([`WasmRuntime::with_overflow`]); used when the pooled tier is full.
+    overflow: Option<(ComponentInstancePre<WasiHost>, ComponentExportIndex)>,
 }
 
 /// Builds the component linker once, with WASI **p2 and p3** wired in plus the
@@ -59,10 +64,32 @@ impl WasmRuntime {
         entry: &str,
     ) -> Result<PreparedComponent> {
         let pre = self.component_linker.instantiate_pre(component)?;
-        let entry = component
+        let entry_index = component
             .get_export_index(None, entry)
             .ok_or_else(|| anyhow::anyhow!("component has no `{entry}` export"))?;
-        Ok(PreparedComponent { pre, entry })
+
+        // If an overflow tier exists, prepare the same component against it too —
+        // without recompiling: serialize the already-compiled component and load it
+        // into the overflow engine.
+        let overflow = match (&self.overflow_component_linker, &self.spawner.overflow) {
+            (Some(linker), Some(engine)) => {
+                let cwasm = component.serialize()?;
+                // Safety: `cwasm` was just produced by `serialize` on a trusted,
+                // in-process component — exactly the precondition `deserialize` wants.
+                let overflow_component = unsafe { Component::deserialize(engine, &cwasm)? };
+                let overflow_pre = linker.instantiate_pre(&overflow_component)?;
+                let overflow_entry = overflow_component
+                    .get_export_index(None, entry)
+                    .ok_or_else(|| anyhow::anyhow!("component has no `{entry}` export"))?;
+                Some((overflow_pre, overflow_entry))
+            }
+            _ => None,
+        };
+        Ok(PreparedComponent {
+            pre,
+            entry: entry_index,
+            overflow,
+        })
     }
 
     /// Spawns a prepared component as an isolated process under the **default-deny
@@ -98,10 +125,55 @@ impl Spawner {
         caps: Capabilities,
     ) -> ProcessHandle {
         let spawner = Arc::clone(self);
-        let pre = prepared.pre.clone();
-        let entry = prepared.entry;
-        self.rt
-            .spawn(move |ctx| run(spawner, pre, entry, caps, ctx))
+        let prepared = prepared.clone();
+        self.rt.spawn(move |ctx| run(spawner, prepared, caps, ctx))
+    }
+}
+
+/// Decrements the pooled-tier live count when a pooled instance's process ends —
+/// keeping `pooled_live` an exact mirror of occupied pool slots, on every exit path
+/// (completion, trap, or kill, since this drops as the process body unwinds).
+struct PoolSlot(Arc<Spawner>);
+impl Drop for PoolSlot {
+    fn drop(&mut self) {
+        self.0.pooled_live.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+/// Pick the engine + prepared instance for this spawn, **consuming** `prepared` so
+/// the chosen `InstancePre` is moved (not re-cloned) onto the hot path. With an
+/// overflow tier, a spawn **reserves a pooled slot** if one is free (returning a
+/// [`PoolSlot`] guard); once the pool is full it falls to the overflow engine.
+/// Without a tier (the default), it's always the pooled fast path and reserves
+/// nothing — byte-for-byte the pre-overflow behaviour.
+fn select_tier(
+    spawner: &Arc<Spawner>,
+    prepared: PreparedComponent,
+) -> (
+    Engine,
+    ComponentInstancePre<WasiHost>,
+    ComponentExportIndex,
+    Option<PoolSlot>,
+) {
+    match (&spawner.overflow, prepared.overflow) {
+        (Some(overflow_engine), Some((overflow_pre, overflow_entry))) => {
+            // Claim a pooled slot iff the prior count was below capacity. `cap`
+            // claims can be outstanding at once — exactly the pool's slot count —
+            // so a claimed pooled spawn never hits pool exhaustion.
+            if spawner.pooled_live.fetch_add(1, Ordering::AcqRel) < spawner.pooled_cap {
+                let slot = PoolSlot(Arc::clone(spawner));
+                (
+                    spawner.engine.clone(),
+                    prepared.pre,
+                    prepared.entry,
+                    Some(slot),
+                )
+            } else {
+                spawner.pooled_live.fetch_sub(1, Ordering::AcqRel);
+                (overflow_engine.clone(), overflow_pre, overflow_entry, None)
+            }
+        }
+        _ => (spawner.engine.clone(), prepared.pre, prepared.entry, None),
     }
 }
 
@@ -110,13 +182,7 @@ impl Spawner {
 /// on any failure. The runtime handle is cloned exactly once (into the host) and
 /// the crash-exit reads it back through the store; the engine is borrowed from the
 /// `Arc<Spawner>` the host carries. Yields to the scheduler on each epoch tick.
-async fn run(
-    spawner: Arc<Spawner>,
-    pre: ComponentInstancePre<WasiHost>,
-    entry: ComponentExportIndex,
-    caps: Capabilities,
-    ctx: Context,
-) {
+async fn run(spawner: Arc<Spawner>, prepared: PreparedComponent, caps: Capabilities, ctx: Context) {
     let pid = ctx.pid();
     let wasi = match caps.build_wasi() {
         Ok(wasi) => wasi,
@@ -125,7 +191,9 @@ async fn run(
             return;
         }
     };
-    let engine = spawner.engine.clone();
+    // Choose the pooled (fast) tier or the on-demand overflow tier. `_slot` holds a
+    // pooled reservation for this process's lifetime (dropped when `run` returns).
+    let (engine, pre, entry, _slot) = select_tier(&spawner, prepared);
     let rt = spawner.rt.clone();
     let host = WasiHost {
         wasi,
@@ -262,6 +330,35 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         }
         assert_eq!(rt.finished(), 1, "the spawned child ran and was reaped");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn overflow_tier_spawns_past_the_pooled_cap() {
+        let rt = Runtime::new();
+        // A pool of 2, with an on-demand overflow tier for the rest.
+        let wr = WasmRuntime::with_overflow(rt.clone(), 2, crate::DEFAULT_MAX_MEMORY).unwrap();
+        let pre = wr
+            .prepare_component(&wr.compile_component(COMP_SPIN).unwrap(), "run")
+            .unwrap();
+
+        // Five long-lived (epoch-preempted infinite-loop) instances — more than the
+        // pool holds. With overflow, all five come alive; the 3 past the pool ran on
+        // the on-demand engine.
+        let handles: Vec<_> = (0..5).map(|_| wr.spawn_component(&pre)).collect();
+        for _ in 0..400 {
+            if rt.process_count() == 5 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        assert_eq!(
+            rt.process_count(),
+            5,
+            "overflow caught the instances past the pool of 2"
+        );
+        for h in handles {
+            h.kill();
+        }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

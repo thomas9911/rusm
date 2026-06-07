@@ -10,7 +10,7 @@
 //! Wasm lives *only* here; `rusm-otp` never references Wasmtime.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -81,6 +81,17 @@ pub(crate) struct Spawner {
     /// (written when an app loads, read per guest-initiated spawn), so a plain
     /// `RwLock` — uncontended reads, no extra dependency.
     components: RwLock<HashMap<String, Registered>>,
+    /// The **on-demand overflow engine** (opt-in — `None` by default). When the
+    /// pooled tier is full, a spawn instantiates here instead, so the live count is
+    /// bounded by memory rather than the fixed pool size. See
+    /// [`WasmRuntime::with_overflow`].
+    pub(crate) overflow: Option<Engine>,
+    /// Live instances occupying the pooled tier (only tracked when `overflow` is
+    /// set; the default path adds no atomic). A spawn reserves a slot here; if the
+    /// pool is full it falls to the overflow engine.
+    pub(crate) pooled_live: AtomicU32,
+    /// The pooled-tier capacity (`pooled_live`'s ceiling).
+    pub(crate) pooled_cap: u32,
 }
 
 impl Spawner {
@@ -116,6 +127,10 @@ pub struct WasmRuntime {
     /// The component-model counterpart of `linker`, with WASI wired in. Used by
     /// the wasip2/p3 bridges to prepare and spawn components. Built once.
     component_linker: wasmtime::component::Linker<bridges::WasiHost>,
+    /// The component linker bound to the **overflow** engine (`None` unless built
+    /// with [`with_overflow`](Self::with_overflow)); used to prepare a component's
+    /// overflow `InstancePre` alongside its pooled one.
+    pub(crate) overflow_component_linker: Option<wasmtime::component::Linker<bridges::WasiHost>>,
     /// The prebuilt rquickjs **js-runner** component (for `spawn_js`), compiled +
     /// prepared lazily on first use so non-JS nodes pay nothing.
     js_runner: std::sync::OnceLock<PreparedComponent>,
@@ -137,46 +152,77 @@ impl WasmRuntime {
     /// reservation is lazy virtual memory; real RSS tracks live instances), and
     /// `max_memory` for components that need larger heaps.
     pub fn with_limits(rt: Runtime, max_instances: u32, max_memory: usize) -> Result<Self> {
+        let engine = Engine::new(&Self::pooled_config(max_instances, max_memory))?;
+        Self::assemble(rt, engine, None, max_instances)
+    }
+
+    /// Like [`with_limits`](Self::with_limits) but adds an **on-demand overflow
+    /// tier**: once the pooled `max_instances` are all live, further spawns
+    /// instantiate on a second (on-demand) engine instead of failing — so the live
+    /// Wasm-process count is bounded by available memory, not the fixed pool size.
+    /// The pooled tier stays the fast path; overflow only engages past capacity.
+    pub fn with_overflow(rt: Runtime, max_instances: u32, max_memory: usize) -> Result<Self> {
+        let engine = Engine::new(&Self::pooled_config(max_instances, max_memory))?;
+        // Same compile config, but the default (on-demand) allocator: no fixed cap.
+        let overflow = Engine::new(&Self::base_config())?;
+        Self::assemble(rt, engine, Some(overflow), max_instances)
+    }
+
+    /// The compile/runtime config shared by both engines: epoch interruption (the
+    /// preemption lever), the async component model (WASI p3), and copy-on-write
+    /// memory init.
+    fn base_config() -> Config {
         let mut config = Config::new();
-        // Epoch interruption: the preemption lever (see `EPOCH_TICK`). Async
-        // support (fibers — a guest's "blocking" host call suspends the whole
-        // call stack and yields the Tokio worker) is always available in
-        // Wasmtime; we drive guests with `call_async`.
         config.epoch_interruption(true);
-        // The async component model (WASI **p3**): required for the p3 interfaces
-        // wired by the wasip3 bridge to actually execute, not just link.
         config.wasm_component_model_async(true);
-        // Copy-on-write memory init (default, set explicit): a fresh instance
-        // shares the module image until it writes — near-zero init cost.
         config.memory_init_cow(true);
-        // Pooling allocator: reuse pre-reserved instance slabs instead of an mmap
-        // per spawn. This is the instance-per-process efficiency win over a
-        // naive on-demand allocator.
+        config
+    }
+
+    /// [`base_config`](Self::base_config) plus the pooling allocator — pre-reserved
+    /// instance slabs reused per spawn (the instance-per-process efficiency win).
+    fn pooled_config(max_instances: u32, max_memory: usize) -> Config {
+        let mut config = Self::base_config();
         let mut pool = PoolingAllocationConfig::default();
         pool.total_core_instances(max_instances);
         pool.total_memories(max_instances);
         pool.total_tables(max_instances);
         pool.max_memory_size(max_memory);
-        // Component guests also draw a *component-instance* slot from the pool (on
-        // top of the core-instance/memory slots above); without this a component
-        // spawn can't use the pooling allocator.
+        // Component guests also draw a *component-instance* slot from the pool.
         pool.total_component_instances(max_instances);
         config.allocation_strategy(InstanceAllocationStrategy::Pooling(pool));
-        let engine = Engine::new(&config)?;
+        config
+    }
+
+    fn assemble(
+        rt: Runtime,
+        engine: Engine,
+        overflow: Option<Engine>,
+        max_instances: u32,
+    ) -> Result<Self> {
         let linker = bridges::wasip1::build_linker(&engine)?;
         let component_linker = bridges::wasip2::build_linker(&engine)?;
+        let overflow_component_linker = overflow
+            .as_ref()
+            .map(bridges::wasip2::build_linker)
+            .transpose()?;
 
         // Bump the epoch on a cadence — on a **dedicated OS thread**, not a Tokio
         // task. The whole point is to preempt guests that are pinning the Tokio
         // workers; a ticker that needed a worker itself would starve exactly when
         // it's needed (and deadlock once every worker runs a tight-loop guest).
-        let ticker_engine = engine.clone();
+        // Every engine (pooled + overflow) is ticked, so overflow guests are
+        // preempted too.
+        let mut ticker_engines = vec![engine.clone()];
+        ticker_engines.extend(overflow.clone());
         let epoch_stop = Arc::new(AtomicBool::new(false));
         let stop = Arc::clone(&epoch_stop);
         let epoch_ticker = std::thread::spawn(move || {
             while !stop.load(Ordering::Relaxed) {
                 std::thread::sleep(EPOCH_TICK);
-                ticker_engine.increment_epoch();
+                for engine in &ticker_engines {
+                    engine.increment_epoch();
+                }
             }
         });
 
@@ -185,9 +231,13 @@ impl WasmRuntime {
                 engine,
                 rt,
                 components: RwLock::new(HashMap::new()),
+                overflow,
+                pooled_live: AtomicU32::new(0),
+                pooled_cap: max_instances,
             }),
             linker,
             component_linker,
+            overflow_component_linker,
             js_runner: std::sync::OnceLock::new(),
             shared: Arc::new(Counters::default()),
             epoch_stop,
