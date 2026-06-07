@@ -13,16 +13,16 @@ help: ## Show this help
 
 .PHONY: dashboard
 dashboard: ## Start a node + the dashboard, then open the printed URL — "the money"
-	@cargo build -p rusm-cli
+	@cargo build --release -p rusm-cli
 	@echo "→ starting node (log: /tmp/rusm-node.log) + dashboard…"
-	@./target/debug/rusm node start >/tmp/rusm-node.log 2>&1 & \
+	@./target/release/rusm node start >/tmp/rusm-node.log 2>&1 & \
 		NODE=$$!; \
 		trap 'kill $$NODE 2>/dev/null' EXIT INT TERM; \
 		cd $(DASHBOARD) && { test -d node_modules || bun install; } && bun run dev
 
 .PHONY: node
-node: ## Start a RUSM node on ws://127.0.0.1:4000
-	cargo run -p rusm-cli -- node start
+node: ## Start a RUSM node on ws://127.0.0.1:4000 (release — Wasm perf is ~3-4x debug)
+	cargo run --release -p rusm-cli -- node start
 
 .PHONY: ui
 ui: ## Start only the dashboard dev server (expects a node already running)
