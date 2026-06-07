@@ -28,7 +28,7 @@ data to real measurements.
 | **7 ✅** | **Component hosting** — the **component model** (WASI p2 + p3) via `bridges/`, a `rusm:runtime` WIT actor world (self/send/receive/list/info/kill/register), default-deny capability profiles + memory limits, process introspection, byte streams, and an app model (`rusm.toml [[components]]`, `rusm build`/`dev`). ~440k component spawns/s | **component-storm** (live) |
 | 8 🔨 | **Guest ergonomics** — **`rusm-ts`** (TS/Bun → the rquickjs **js-runner** component giving JS the actor `Process` API, no jco) — *runtime proven*; packaging (Bun in `rusm build`, app-model wiring, types, streams-from-JS) in progress. Plus **`rusm-rs`** (Rust guest crate: spawn/Mailbox/AbstractProcess/Supervisor) — not started. | — |
 | 9 | **Distributed clusters + live attach** — QUIC+TLS, remote spawn, global registry | **distributed-fanout** |
-| 10 | **Performance & hardening** — pooling alloc + CoW + epoch toward 300k/s, hot reload | — |
+| 10 | **Performance & hardening** — pooling alloc + CoW + epoch toward 300k/s, hot reload; an **on-demand instance tier** above the pool (the path to millions of *Wasm* processes) and **opt-in bounded mailboxes** (overload protection) — see the [design analysis](./design-analysis.md) | — |
 | 11 | **Standard-WASI surface & wstd compatibility** — invoke the standard `wasi:cli/run` entrypoint (so stock command components run unchanged), host `wasi:http`, and support [`wstd`](https://github.com/bytecodealliance/wstd)-based guests. RUSM stays a standards-first host; the actor world stays opt-in. (Can be sequenced earlier — `wasi:http` pairs with the HTTP-serving goal.) | — |
 
 ## What's shipped so far (Phases 0–7)

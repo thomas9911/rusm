@@ -47,6 +47,7 @@ export default defineConfig({
           { text: 'Distributed model', link: '/04-distributed-model' },
           { text: 'Glossary', link: '/07-glossary' },
           { text: 'RUSM vs Lunatic', link: '/lunatic-comparison' },
+          { text: 'Design analysis', link: '/design-analysis' },
         ],
       },
       {
@@ -118,6 +119,7 @@ export default defineConfig({
         items: [
           { text: 'Glossary', link: '/07-glossary' },
           { text: 'RUSM vs Lunatic', link: '/lunatic-comparison' },
+          { text: 'Design analysis', link: '/design-analysis' },
         ],
       },
       {
