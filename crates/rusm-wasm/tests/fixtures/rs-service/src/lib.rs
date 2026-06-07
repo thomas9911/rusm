@@ -16,6 +16,13 @@ pub mod calc {
     pub fn count_to(n: i64) -> impl Iterator<Item = i64> {
         1..=n
     }
+    // A callback handler: `progress` stays in the caller; our calls travel back.
+    pub fn work(progress: rusm_rs::Callback<i64>) -> String {
+        for pct in [25, 50, 100] {
+            progress.call(pct);
+        }
+        "done".to_string()
+    }
 }
 
 wit_bindgen::generate!({
@@ -39,9 +46,19 @@ impl Guest for Component {
         let sum = client.add(2, 3).unwrap();
         let hi = client.greet("RUSM".to_string()).unwrap();
         let nums: Vec<String> = client.count_to(3).map(|n| n.to_string()).collect();
+        // A callback: the closure stays here, filling `seen` as the service reports.
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::<i64>::new()));
+        let sink = seen.clone();
+        let status = client.work(move |pct| sink.borrow_mut().push(pct)).unwrap();
+        let progress: Vec<String> = seen.borrow().iter().map(|n| n.to_string()).collect();
         rusm_rs::send_bytes(
             collector,
-            format!("sum={sum} {hi} count={}", nums.join(",")).as_bytes(),
+            format!(
+                "sum={sum} {hi} count={} work={status} after {}",
+                nums.join(","),
+                progress.join("/"),
+            )
+            .as_bytes(),
         );
     }
 }

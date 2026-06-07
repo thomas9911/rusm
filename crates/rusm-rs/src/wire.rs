@@ -82,17 +82,37 @@ fn send_request<A: Serialize>(to: Pid, op: &str, args: &A, reference: Option<u64
 }
 
 /// A blocking **call**: send the request, then wait for the matching reply,
-/// stashing any unrelated mail so the app's own `receive` still sees it. `args`
-/// serializes as a JSON array (a tuple of the parameters).
+/// stashing any unrelated mail so the app's own `receive` still sees it, and
+/// dispatching any callback invocations. `args` serializes as a JSON array.
 pub fn call<A: Serialize, R: DeserializeOwned>(to: Pid, op: &str, args: &A) -> Result<R, String> {
+    call_json(
+        to,
+        op,
+        serde_json::to_value(args).map_err(|e| e.to_string())?,
+    )
+}
+
+/// Like [`call`] but with pre-built JSON `args` (an array) — used when some
+/// arguments are callbacks (`{ "__cb": id }` markers) rather than plain values.
+pub fn call_json<R: DeserializeOwned>(
+    to: Pid,
+    op: &str,
+    args: serde_json::Value,
+) -> Result<R, String> {
     let reference = next_ref();
-    send_request(to, op, args, Some(reference), false);
+    let req =
+        serde_json::json!({ "op": op, "args": args, "from": me().0.to_string(), "ref": reference });
+    send_bytes(to, &serde_json::to_vec(&req).expect("request serializes"));
     loop {
         let raw = receive_bytes();
         let Ok(v) = serde_json::from_slice::<serde_json::Value>(&raw) else {
             stash(raw);
             continue;
         };
+        if v.get("op").and_then(serde_json::Value::as_str) == Some("__cb") {
+            dispatch_callback(&v);
+            continue;
+        }
         if v.get("ref").and_then(serde_json::Value::as_u64) == Some(reference) {
             if let Some(err) = v.get("err").and_then(serde_json::Value::as_str) {
                 return Err(err.to_string());
@@ -107,6 +127,67 @@ pub fn call<A: Serialize, R: DeserializeOwned>(to: Pid, op: &str, args: &A) -> R
 /// A **cast**: fire-and-forget (no reply awaited).
 pub fn cast<A: Serialize>(to: Pid, op: &str, args: &A) {
     send_request(to, op, args, None, false);
+}
+
+// --- callbacks: a closure stays in the caller; the service's invocations come
+// back as `{op:"__cb", cbref, args}` messages routed to it during a call. ---
+
+thread_local! {
+    static CALLBACKS: std::cell::RefCell<
+        std::collections::HashMap<u64, Box<dyn FnMut(serde_json::Value)>>,
+    > = std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// Register a caller-side callback closure; returns its id (sent to the service as
+/// a `{ "__cb": id }` marker). The generated client registers/unregisters these.
+pub fn register_callback<F: FnMut(serde_json::Value) + 'static>(f: F) -> u64 {
+    let id = next_ref();
+    CALLBACKS.with(|c| c.borrow_mut().insert(id, Box::new(f)));
+    id
+}
+
+/// Drop a registered callback (after the call returns).
+pub fn unregister_callback(id: u64) {
+    CALLBACKS.with(|c| c.borrow_mut().remove(&id));
+}
+
+fn dispatch_callback(v: &serde_json::Value) {
+    let Some(id) = v.get("cbref").and_then(serde_json::Value::as_u64) else {
+        return;
+    };
+    let arg = v
+        .get("args")
+        .and_then(|a| a.as_array())
+        .and_then(|a| a.first().cloned())
+        .unwrap_or(serde_json::Value::Null);
+    // Take the closure out while invoking it, so a re-entrant call can't double-borrow.
+    let cb = CALLBACKS.with(|c| c.borrow_mut().remove(&id));
+    if let Some(mut f) = cb {
+        f(arg);
+        CALLBACKS.with(|c| c.borrow_mut().insert(id, f));
+    }
+}
+
+/// Service side: reconstruct a [`Callback`](crate::Callback) from the `{ "__cb": id }`
+/// marker at `index` in the request args, targeting the caller.
+pub fn callback<A: Serialize>(req: &Request, index: usize) -> crate::Callback<A> {
+    let cbref = req
+        .args
+        .get(index)
+        .and_then(|m| m.get("__cb"))
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+    crate::Callback::__new(req.caller().unwrap_or(Pid(0)), cbref)
+}
+
+/// Service side: deserialize a single positional argument at `index`.
+pub fn arg<T: DeserializeOwned>(req: &Request, index: usize) -> Result<T, String> {
+    let value = req
+        .args
+        .get(index)
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    serde_json::from_value(value).map_err(|e| e.to_string())
 }
 
 /// Service side of a **streaming** call: open a stream back to the caller and

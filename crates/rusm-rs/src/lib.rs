@@ -1,10 +1,11 @@
 //! **rusm-rs** — the ergonomic Rust *guest* crate for RUSM: write a component (or
 //! a service) in Rust over the `rusm:runtime` actor world, the Rust twin of
 //! rusm-ts. It wraps the raw `wit-bindgen` actor bindings into a small, idiomatic
-//! API — `Pid`, `send`/`receive` (serde-typed), `spawn`, the registry, `Stream` —
-//! and re-exports the `Guest` trait + `export!` macro so a guest crate depends on
-//! this and `rusm_rs::export!`s its component (the wit-bindgen library/binary
-//! split, via `default_bindings_module`).
+//! API — `Pid`, `send`/`receive` (serde-typed), `spawn`, the registry, `Stream`,
+//! and the `#[service]` macro. A guest depends on this and generates the `process`
+//! world mapping the actor import to `rusm_rs::rusm::runtime::actor`, then
+//! `export!`s its own `run` — the wit-bindgen library/binary split, so the actor
+//! interface is imported exactly once (see the README / the `rs-guest` fixture).
 //!
 //! Blocking "just works": `receive`/`Stream::read` suspend the instance's fiber
 //! (freeing the scheduler thread) until data arrives — like a Rust host process,
@@ -37,6 +38,36 @@ pub struct Pid(pub u64);
 impl std::fmt::Display for Pid {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)
+    }
+}
+
+/// A handle to a **callback** the caller passed into a service call: invoking it
+/// sends the argument back to the caller as a message (the function stays in the
+/// caller; only the invocation travels). Service handlers take a `Callback<A>`
+/// parameter; on the caller side the typed client takes a closure `FnMut(A)`.
+pub struct Callback<A> {
+    to: Pid,
+    cbref: u64,
+    _marker: std::marker::PhantomData<fn(A)>,
+}
+
+impl<A: Serialize> Callback<A> {
+    #[doc(hidden)]
+    pub fn __new(to: Pid, cbref: u64) -> Self {
+        Self {
+            to,
+            cbref,
+            _marker: std::marker::PhantomData,
+        }
+    }
+
+    /// Invoke the caller's callback with `arg`.
+    pub fn call(&self, arg: A) {
+        let msg = serde_json::json!({ "op": "__cb", "cbref": self.cbref, "args": [arg] });
+        send_bytes(
+            self.to,
+            &serde_json::to_vec(&msg).expect("callback serializes"),
+        );
     }
 }
 

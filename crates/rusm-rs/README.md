@@ -33,14 +33,43 @@ export!(Component);
 
 (The `rs-guest` test fixture under `rusm-wasm/tests/fixtures/` is exactly this.)
 
+## Services & the typed client
+
+`#[rusm_rs::service]` on a module of free functions (mirrors a TS service's
+`export function`s — no `impl`, no `self`) generates a `serve()` dispatch loop and
+a typed, blocking `Client`:
+
+```rust
+#[rusm_rs::service]
+pub mod calc {
+    pub fn add(a: i64, b: i64) -> i64 { a + b }
+    pub fn count_to(n: i64) -> impl Iterator<Item = i64> { 1..=n }   // streaming
+    pub fn work(progress: rusm_rs::Callback<i64>) -> String {        // callback
+        for pct in [25, 50, 100] { progress.call(pct); }
+        "done".into()
+    }
+}
+```
+
+```rust
+let calc = calc::Client::spawn("calc")?;          // spawn-from-guest by name
+let sum = calc.add(2, 3)?;                         // a call
+for n in calc.count_to(3) { /* 1, 2, 3 */ }       // a stream
+let status = calc.work(|pct| println!("{pct}"))?; // a callback (closure stays here)
+```
+
+A guest component wires it with the usual `generate!`/`export!`, running
+`calc::serve()` from `run`. The same JSON wire as rusm-ts, so a Rust client and a
+TS service interoperate.
+
 ## Status (Phase 8)
 
 - ✅ **Foundation** — `Pid`, `send`/`receive`(_bytes), serde-typed `send`/`receive`,
   `spawn`, `register`/`whereis`/`unregister`, `set_label`, `is_alive`, `kill`,
   `list`, `Stream`; the library/binary split.
-- 🔨 **`#[rusm::service]`** — a proc-macro over a `mod` of free functions that
-  generates the dispatch loop + a typed client (`spawn::<calc::Client>("calc")`),
-  with streaming + callbacks over the same JSON wire as rusm-ts. *(Not yet built.)*
+- ✅ **`#[rusm_rs::service]`** — dispatch loop + typed `Client`: **call**, **cast**,
+  **streaming** (`impl Iterator` → a client iterator), and **callbacks**
+  (`Callback<T>` → a client closure). Over the rusm-ts JSON wire.
 
 ## Regenerating the fixture wasm
 
