@@ -12,6 +12,10 @@ pub mod calc {
     pub fn greet(name: String) -> String {
         format!("hi {name}")
     }
+    // A streaming handler: its chunks ride a stream to the caller, who iterates.
+    pub fn count_to(n: i64) -> impl Iterator<Item = i64> {
+        1..=n
+    }
 }
 
 wit_bindgen::generate!({
@@ -34,7 +38,11 @@ impl Guest for Component {
         rusm_rs::send_bytes(client.pid, b"serve"); // put the sibling into serve mode
         let sum = client.add(2, 3).unwrap();
         let hi = client.greet("RUSM".to_string()).unwrap();
-        rusm_rs::send_bytes(collector, format!("sum={sum} {hi}").as_bytes());
+        let nums: Vec<String> = client.count_to(3).map(|n| n.to_string()).collect();
+        rusm_rs::send_bytes(
+            collector,
+            format!("sum={sum} {hi} count={}", nums.join(",")).as_bytes(),
+        );
     }
 }
 

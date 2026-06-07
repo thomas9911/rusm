@@ -743,8 +743,8 @@ mod tests {
 
         assert_eq!(
             String::from_utf8(rx.await.unwrap()).unwrap(),
-            "sum=5 hi RUSM",
-            "the typed client called the macro-generated service"
+            "sum=5 hi RUSM count=1,2,3",
+            "the typed client called the macro service (call + streaming)"
         );
     }
 

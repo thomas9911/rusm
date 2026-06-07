@@ -7,7 +7,7 @@
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
-use crate::{me, receive_bytes, send_bytes, stash, Pid};
+use crate::{me, receive_bytes, send_bytes, stash, Pid, Stream};
 
 /// A decoded service request.
 #[derive(serde::Deserialize)]
@@ -107,4 +107,39 @@ pub fn call<A: Serialize, R: DeserializeOwned>(to: Pid, op: &str, args: &A) -> R
 /// A **cast**: fire-and-forget (no reply awaited).
 pub fn cast<A: Serialize>(to: Pid, op: &str, args: &A) {
     send_request(to, op, args, None, false);
+}
+
+/// Service side of a **streaming** call: open a stream back to the caller and
+/// write each item (one JSON value per chunk), then close.
+pub fn reply_stream<T, I>(req: &Request, items: I)
+where
+    T: Serialize,
+    I: IntoIterator<Item = T>,
+{
+    let Some(to) = req.caller() else { return };
+    let Some(stream) = Stream::open(to) else {
+        return;
+    };
+    for item in items {
+        if !stream.write(&serde_json::to_vec(&item).expect("chunk serializes")) {
+            break; // reader gone
+        }
+    }
+    stream.close();
+}
+
+/// Client side of a **streaming** call: send a stream request, accept the stream
+/// the service opens, and yield each decoded chunk (blocking on each, EOF ends it).
+pub fn call_stream<R: DeserializeOwned>(
+    to: Pid,
+    op: &str,
+    args: &impl Serialize,
+) -> impl Iterator<Item = R> {
+    send_request(to, op, args, None, true);
+    let stream = Stream::accept();
+    std::iter::from_fn(move || {
+        stream
+            .read()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+    })
 }

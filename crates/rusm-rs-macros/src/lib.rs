@@ -6,7 +6,10 @@
 
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::{FnArg, Ident, ItemFn, ItemMod, Pat, ReturnType, Type};
+use syn::{
+    FnArg, GenericArgument, Ident, ItemFn, ItemMod, Pat, PathArguments, ReturnType, Type,
+    TypeParamBound,
+};
 
 /// `#[rusm_rs::service]` on an inline `mod` of `pub fn`s.
 #[proc_macro_attribute]
@@ -23,13 +26,15 @@ struct Handler {
     op: String,
     params: Vec<(Ident, Type)>,
     ret: proc_macro2::TokenStream,
+    /// `Some(item)` when the handler returns `impl Iterator<Item = item>` — a
+    /// streaming handler (its chunks ride a stream instead of a single reply).
+    stream_item: Option<Type>,
 }
 
 fn expand(module: ItemMod) -> syn::Result<proc_macro2::TokenStream> {
-    let content = module
-        .content
-        .as_ref()
-        .ok_or_else(|| syn::Error::new_spanned(&module, "#[service] needs an inline module body"))?;
+    let content = module.content.as_ref().ok_or_else(|| {
+        syn::Error::new_spanned(&module, "#[service] needs an inline module body")
+    })?;
     let items = &content.1;
 
     let handlers: Vec<Handler> = items
@@ -111,16 +116,43 @@ fn parse_handler(f: &ItemFn) -> syn::Result<Handler> {
             }
         }
     }
-    let ret = match &f.sig.output {
-        ReturnType::Default => quote!(()),
-        ReturnType::Type(_, ty) => quote!(#ty),
+    let (ret, stream_item) = match &f.sig.output {
+        ReturnType::Default => (quote!(()), None),
+        ReturnType::Type(_, ty) => (quote!(#ty), impl_iterator_item(ty)),
     };
     Ok(Handler {
         name,
         op,
         params,
         ret,
+        stream_item,
     })
+}
+
+/// The `T` of a `-> impl Iterator<Item = T>` return type, if that's its shape.
+fn impl_iterator_item(ty: &Type) -> Option<Type> {
+    let Type::ImplTrait(it) = ty else { return None };
+    for bound in &it.bounds {
+        let TypeParamBound::Trait(tb) = bound else {
+            continue;
+        };
+        let Some(seg) = tb.path.segments.last() else {
+            continue;
+        };
+        if seg.ident != "Iterator" {
+            continue;
+        }
+        if let PathArguments::AngleBracketed(args) = &seg.arguments {
+            for arg in &args.args {
+                if let GenericArgument::AssocType(assoc) = arg {
+                    if assoc.ident == "Item" {
+                        return Some(assoc.ty.clone());
+                    }
+                }
+            }
+        }
+    }
+    None
 }
 
 /// `&(a, b)` (args as a JSON array on the wire). `&[(); 0]` for no args, so it
@@ -140,8 +172,14 @@ fn serve_arm(h: &Handler) -> proc_macro2::TokenStream {
     let name = &h.name;
     let op = &h.op;
     let idents: Vec<&Ident> = h.params.iter().map(|(i, _)| i).collect();
+    // A streaming handler replies over a stream; a regular one with a value.
+    let reply = if h.stream_item.is_some() {
+        quote!(rusm_rs::wire::reply_stream(&req, #name(#(#idents),*)))
+    } else {
+        quote!(rusm_rs::wire::reply_ok(&req, &#name(#(#idents),*)))
+    };
     if h.params.is_empty() {
-        return quote! { #op => rusm_rs::wire::reply_ok(&req, &#name()), };
+        return quote! { #op => #reply, };
     }
     let types = h.params.iter().map(|(_, t)| t);
     // A 1-tuple needs the trailing comma: `(T,)` / `(a,)`.
@@ -154,8 +192,7 @@ fn serve_arm(h: &Handler) -> proc_macro2::TokenStream {
     };
     quote! {
         #op => match req.args::<#tuple_ty>() {
-            ::core::result::Result::Ok(#binding) =>
-                rusm_rs::wire::reply_ok(&req, &#name(#(#idents),*)),
+            ::core::result::Result::Ok(#binding) => #reply,
             ::core::result::Result::Err(e) => rusm_rs::wire::reply_err(&req, &e),
         },
     }
@@ -164,14 +201,25 @@ fn serve_arm(h: &Handler) -> proc_macro2::TokenStream {
 fn client_method(h: &Handler) -> proc_macro2::TokenStream {
     let name = &h.name;
     let op = &h.op;
-    let ret = &h.ret;
-    let idents: Vec<&Ident> = h.params.iter().map(|(i, _)| i).collect();
+    let idents: Vec<Ident> = h.params.iter().map(|(i, _)| i.clone()).collect();
     let types = h.params.iter().map(|(_, t)| t);
-    let args = args_tuple(&idents.iter().map(|i| (*i).clone()).collect::<Vec<_>>());
-    quote! {
-        pub fn #name(&self #(, #idents: #types)*)
-            -> ::core::result::Result<#ret, ::std::string::String> {
-            rusm_rs::wire::call(self.pid, #op, #args)
+    let args = args_tuple(&idents);
+    // A streaming handler → a method returning an iterator of its item type;
+    // a regular one → a blocking call returning the value or an error.
+    if let Some(item) = &h.stream_item {
+        quote! {
+            pub fn #name(&self #(, #idents: #types)*)
+                -> impl ::core::iter::Iterator<Item = #item> {
+                rusm_rs::wire::call_stream(self.pid, #op, #args)
+            }
+        }
+    } else {
+        let ret = &h.ret;
+        quote! {
+            pub fn #name(&self #(, #idents: #types)*)
+                -> ::core::result::Result<#ret, ::std::string::String> {
+                rusm_rs::wire::call(self.pid, #op, #args)
+            }
         }
     }
 }
