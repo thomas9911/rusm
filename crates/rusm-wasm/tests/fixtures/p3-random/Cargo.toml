@@ -1,0 +1,20 @@
+# Guest fixture: a component that imports a **WASI preview3** interface
+# (wasi:random@0.3.0) and calls it on `run` — proof the wasip3 bridge resolves and
+# executes p3 imports. Built for wasm32-wasip2 (the component target) and checked
+# in; regenerate with:
+#   cargo build --target wasm32-wasip2 --release
+#   cp target/wasm32-wasip2/release/p3_random.wasm ../p3_random.wasm
+[workspace]
+
+[package]
+name = "p3-random"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+name = "p3_random"
+
+[dependencies]
+wit-bindgen = "0.46"

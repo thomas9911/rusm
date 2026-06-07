@@ -1,0 +1,8 @@
+package rusm:p3test;
+
+// A guest that uses a **WASI preview3** interface (`wasi:random@0.3.0`), proving
+// the wasip3 bridge resolves and executes p3 imports end to end.
+world p3-random {
+  import wasi:random/random@0.3.0-rc-2026-03-15;
+  export run: func();
+}
