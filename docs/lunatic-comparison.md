@@ -71,7 +71,7 @@ phase, same themes, same order.
 | 4 ✅ | Process management (registry, timers, lifecycle) | ✅ done (sharded registry, Tokio timers) | ✅ | ⚡ ahead |
 | 5 ✅ | Connectivity — TCP | ✅ done (TCP, process-per-conn; TLS → P9) | ✅ TCP/UDP/DNS/TLS | ✅ on par |
 | 6 ✅ | Wasmtime backend (instance-per-process, preemption) | ✅ done (pooling+CoW+epoch; fairness live) | ✅ (fuel) | ⚡ ahead by design |
-| 7 ✅ | **Component hosting** (component model, WASI p2/p3, capabilities, actor WIT ABI, app model) | ✅ done (~440k component spawns/s; default-deny caps + memory limits; component-storm live) | ❌ **no component-model host** (core modules only) | ⚡ **ahead — an axis Lunatic lacks** |
+| 7 ✅ | **Component hosting** (component model, WASI p2 — p3 a follow-on, capabilities, actor WIT ABI, app model) | ✅ done (~440k component spawns/s; default-deny caps + memory limits; component-storm live) | ❌ **no component-model host** (core modules only) | ⚡ **ahead — an axis Lunatic lacks** |
 | 7b | wasip1 bridge full WASI + raw actor ABI; p3 cross-component streams | ⏳ deferred follow-on | ✅ wasip1 | — partial |
 | 8 | Guest crate | ❌ → `rusm-rs` | 🅛 `lunatic-rs` (separate repo) | — n/a (DX, not perf) |
 | 9 | Distributed clusters + live attach | ❌ | ✅ (Axum + Submillisecond) | — not built |

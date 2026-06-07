@@ -79,5 +79,5 @@ invariant holds (no `wasmtime` anywhere under `rusm-otp`).
 ## Next
 
 [Phase 7](./phase-07-components.md): **component hosting** — run real WASM
-*components* (the component model + WASI p2/p3) as RUSM processes, with a
+*components* (the component model + WASI p2) as RUSM processes, with a
 `rusm:runtime` actor ABI and default-deny per-process capabilities.
