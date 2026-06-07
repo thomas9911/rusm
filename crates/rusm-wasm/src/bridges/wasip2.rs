@@ -266,7 +266,7 @@ mod tests {
         // guest is a first-class, sandboxed RUSM process.
         const JS_RUNNER: &[u8] = include_bytes!("../../tests/fixtures/js_runner.wasm");
         const BUNDLE: &str = r#"
-            const replyTo = Process.receive();           // msg: who to answer
+            const replyTo = Process.receiveText();       // msg: who to answer
             Process.setLabel("ts-worker");
             Process.send(replyTo, "pong from " + Process.self());
         "#;
@@ -292,6 +292,68 @@ mod tests {
             format!("pong from {}", guest.pid().raw()),
             "JS ran inside the component and drove the actor API"
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_javascript_bundle_handles_binary_messages() {
+        // JS receives a reply-to (text) and a binary message (Uint8Array), then
+        // echoes the bytes back — proving binary marshalling both ways.
+        const JS_RUNNER: &[u8] = include_bytes!("../../tests/fixtures/js_runner.wasm");
+        const BUNDLE: &str = r#"
+            const replyTo = Process.receiveText();
+            const bytes = Process.receive();      // Uint8Array
+            Process.send(replyTo, bytes);         // send it back (binary path)
+        "#;
+        let rt = Runtime::new();
+        let wr = WasmRuntime::new(rt.clone()).unwrap();
+        let pre = wr
+            .prepare_component(&wr.compile_component(JS_RUNNER).unwrap(), "run")
+            .unwrap();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let collector = rt.spawn(move |mut ctx| async move {
+            let _ = tx.send(ctx.recv().await.message().unwrap());
+        });
+        let guest = wr.spawn_component(&pre);
+        rt.send(guest.pid(), BUNDLE.as_bytes().to_vec());
+        rt.send(guest.pid(), collector.pid().raw().to_string().into_bytes());
+        rt.send(guest.pid(), vec![7, 8, 9]);
+        assert_eq!(rx.await.unwrap(), vec![7, 8, 9]);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_javascript_bundle_consumes_a_byte_stream() {
+        // JS accepts a stream, reads Uint8Array chunks to EOF, reports the total.
+        const JS_RUNNER: &[u8] = include_bytes!("../../tests/fixtures/js_runner.wasm");
+        const BUNDLE: &str = r#"
+            const collector = Process.receiveText();
+            const s = Process.acceptStream();
+            let total = 0, chunk;
+            while ((chunk = s.read()) !== null) { total += chunk.length; }
+            Process.send(collector, "total:" + total);
+        "#;
+        let rt = Runtime::new();
+        let wr = WasmRuntime::new(rt.clone()).unwrap();
+        let pre = wr
+            .prepare_component(&wr.compile_component(JS_RUNNER).unwrap(), "run")
+            .unwrap();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let collector = rt.spawn(move |mut ctx| async move {
+            let _ = tx.send(ctx.recv().await.message().unwrap());
+        });
+        let guest = wr.spawn_component(&pre);
+        rt.send(guest.pid(), BUNDLE.as_bytes().to_vec());
+        rt.send(guest.pid(), collector.pid().raw().to_string().into_bytes());
+
+        // Stream 3x "hello!" (18 bytes) into the JS consumer, then EOF.
+        let (writer, reader) = rusm_otp::stream();
+        rt.send_stream(guest.pid(), reader);
+        for _ in 0..3 {
+            writer.write(b"hello!".to_vec()).await.unwrap();
+        }
+        drop(writer); // end of stream
+
+        let reply = String::from_utf8(rx.await.unwrap()).unwrap();
+        assert_eq!(reply, "total:18", "JS read all streamed bytes to EOF");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
