@@ -153,8 +153,11 @@ by construction** — Wasm lives only in the `rusm-wasm` backend.
 | `rusm-observer` | lib | Low-overhead live-observer snapshots — aggregate counters plus a sampled per-instance table, with a detail on/off toggle. |
 | `rusm-bench` | lib + bin | Scenarios, the synthetic data source, the eight real engines (spawn-storm, ping-pong, fault-recovery, connection-storm, fairness, module-storm, component-storm, stream-pipe), the run aggregator, the wire protocol, and the WebSocket server. Binary: `rusm-bench serve` / `run`. |
 | `rusm-cli` | bin (`rusm`) | The `rusm` command: `node start`, `attach <url>` (live REPL), and the app model — `build` / `run` / `dev` over `rusm.toml [[components]]`. |
+| `rusm-rs` | lib (guest) | **The Rust guest crate** — write a component/service in Rust over the actor world: `Pid`/`send`/`receive` (serde)/`spawn`/registry/`Stream`, plus the `#[rusm_rs::service]` macro (dispatch loop + typed `Client`: call/cast/streaming/callbacks). Wasm-only (built for `wasm32-wasip2`), excluded from the host workspace. |
+| `rusm-rs-macros` | proc-macro | The `#[rusm_rs::service]` macro behind `rusm-rs`. |
 
-Not crates: the dashboard at `bench/dashboard` (Bun/React); docs under `docs/`.
+Not crates: the dashboard at `bench/dashboard` (Bun/React); docs under `docs/`. The
+**rusm-ts** guest (TS/Bun) ships as the embedded js-runner in `rusm-wasm/js-runner`.
 
 ## Examples
 

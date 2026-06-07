@@ -323,8 +323,25 @@ commander, with streaming + a callback) and `host_ts_component`.
 > **`fetch` is deferred.** It rejects with a clear error until RUSM hosts
 > `wasi:http` (roadmap) — it's not silently missing.
 
-> **Next:** the **`rusm-rs`** Rust guest crate (ergonomic spawn/Mailbox/
-> AbstractProcess/Supervisor over the same ABI) — the other half of Phase 8.
+**The Rust twin — `rusm-rs`.** A Rust guest gets the same story without raw
+wit-bindgen: `Pid`/`send`/`receive` (serde)/`spawn`/registry/`Stream`, plus a
+`#[rusm_rs::service]` macro over a module of free functions (mirroring TS's
+`export function`s) that generates a `serve()` dispatch loop and a typed `Client`:
+
+```rust
+#[rusm_rs::service]
+pub mod calc {
+    pub fn add(a: i64, b: i64) -> i64 { a + b }
+    pub fn count_to(n: i64) -> impl Iterator<Item = i64> { 1..=n }   // streaming
+    pub fn work(progress: rusm_rs::Callback<i64>) -> String {        // callback
+        for pct in [25, 50, 100] { progress.call(pct); } "done".into()
+    }
+}
+// caller:  let calc = calc::Client::spawn("calc")?;  calc.add(2, 3)?;
+```
+
+Same JSON wire as rusm-ts, so a Rust client and a TS service interoperate. See the
+`rusm-rs` crate README and the `rs-service` fixture.
 
 ## Process management from inside a component (Rust)
 

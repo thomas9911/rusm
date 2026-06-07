@@ -36,7 +36,8 @@ as lackings are closed.
 1. **HTTP(S)/WS(S)/SSE serving via `wasi:http`** — pairs with the GB/s streaming;
    also unlocks `fetch` in TS guests (Tokio HTTP client + fiber suspension).
 2. **Distributed cluster (Phase 9, QUIC+TLS)** — single-node → horizontal.
-3. **Finish rusm-ts packaging + `rusm-rs`** (Phase 8).
+3. **In-guest `Supervisor` strategies** for `rusm-rs`/`rusm-ts` (the guest crates,
+   service macros, and typed clients shipped in Phase 8).
 4. **A true head-to-head benchmark vs Lunatic.**
 5. **On-demand instance tier** above the pool (see #1).
 

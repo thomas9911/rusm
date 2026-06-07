@@ -17,7 +17,8 @@ receiving suspends the process until a message arrives.
 
 Sharing memory between instances would break isolation — the whole point of the
 model. Copying keeps each crash and each permission boundary local. Messages are
-ordinary serialized data (the `rusm-rs` guest crate will use serde + bincode).
+ordinary serialized data (the `rusm-rs` and `rusm-ts` guest crates send serde
+JSON — one wire shared across Rust and TS guests).
 
 ## Receive suspends, it doesn't spin
 

@@ -74,7 +74,7 @@ phase, same themes, same order.
 | 6 ✅ | Wasmtime backend (instance-per-process, preemption) | ✅ done (pooling+CoW+epoch; fairness live) | ✅ (fuel) | ⚡ ahead by design |
 | 7 ✅ | **Component hosting** (component model, WASI p2 + p3, capabilities, actor WIT ABI, app model) | ✅ done (~440k component spawns/s; default-deny caps + memory limits; component-storm live) | ❌ **no component-model host** (core modules only) | ⚡ **ahead — an axis Lunatic lacks** |
 | 7b | wasip1 bridge (full WASI + raw actor ABI + byte streams), wasip3 interfaces on the component linker | ✅ done | ✅ wasip1 | ⚡ ahead (p3 + components) |
-| 8 | Guest crate | ❌ → `rusm-rs` | 🅛 `lunatic-rs` (separate repo) | — n/a (DX, not perf) |
+| 8 | Guest crate | ✅ `rusm-rs` + `rusm-ts` (service macro / typed client, call/cast/stream/callbacks) | 🅛 `lunatic-rs` (Rust only) | ⚡ ahead — TS *and* Rust guests, one wire |
 | 9 | Distributed clusters + live attach | ❌ | ✅ (Axum + Submillisecond) | — not built |
 | 10 | Performance (pooling + CoW + epoch) | ❌ | ⚠️ OnDemand + fuel | — TBD |
 | — | SQLite host API | ❌ | 🅛 | — n/a |
@@ -198,7 +198,7 @@ a true head-to-head benchmark to put numbers on the delta.
 
 | Borrow from Lunatic | Why it helps | RUSM plan |
 | --- | --- | --- |
-| `lunatic-rs` API shape — spawn / `Mailbox` / `AbstractProcess` / `Supervisor` (separate repo) | a familiar, ergonomic guest API | Mirror the shape in `rusm-rs` |
+| `lunatic-rs` API shape — spawn / `Mailbox` / `AbstractProcess` / `Supervisor` (separate repo) | a familiar, ergonomic guest API | ✅ `rusm-rs` ships `Pid`/`send`/`receive`/`spawn`/`Stream` + a `#[service]` macro (typed `Client`); in-guest `Supervisor` strategies remain |
 
 ## Phase 9 — Distributed clusters + live attach
 
