@@ -396,12 +396,13 @@ impl WasmRuntime {
     /// process; a trap (or a denied capability the guest turns into a trap) exits the
     /// process [`Crashed`](ExitReason::Crashed).
     pub fn spawn_with(&self, prepared: &PreparedModule, caps: Capabilities) -> ProcessHandle {
-        let engine = self.engine.clone();
-        let rt = self.rt.clone();
+        let engine = self.spawner.engine.clone();
+        let rt = self.spawner.rt.clone();
         let pre = prepared.pre.clone();
         let entry = prepared.entry;
         let shared = Arc::clone(&self.shared);
-        self.rt
+        self.spawner
+            .rt
             .spawn(move |ctx| run(engine, pre, entry, caps, rt, shared, ctx))
     }
 }

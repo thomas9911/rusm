@@ -32,6 +32,24 @@ impl actor::Host for WasiHost {
         self.pid
     }
 
+    /// Spawn a registered component by name as a new process — the actor model's
+    /// `spawn`, the unlock for per-request workers and concealed typed clients.
+    /// Capability-gated (`allow-spawn`, default-deny) and **non-escalating**: the
+    /// child inherits *this* process's capabilities, so it is never more privileged
+    /// than its parent. Errors (rather than trapping) on a denied or unknown spawn.
+    async fn spawn(&mut self, component: String) -> Result<u64, String> {
+        if !self.caps.can_spawn() {
+            return Err("spawn denied: missing the spawn capability".to_string());
+        }
+        let spawner = self.spawner.as_ref().ok_or("spawn unavailable here")?;
+        let prepared = spawner
+            .lookup(&component)
+            .ok_or_else(|| format!("unknown component `{component}`"))?;
+        // No escalation: the child gets exactly this process's capabilities.
+        let child = spawner.spawn_component(&prepared, self.caps.clone());
+        Ok(child.pid().raw())
+    }
+
     async fn send(&mut self, to: u64, message: Vec<u8>) {
         self.rt.send(Pid::from_raw(to), message);
     }
@@ -52,14 +70,14 @@ impl actor::Host for WasiHost {
 
     async fn list_processes(&mut self) -> Vec<u64> {
         // Default-deny: without process-control a guest sees only itself.
-        if !self.process_control {
+        if !self.caps.process_control() {
             return vec![self.pid];
         }
         self.rt.list().into_iter().map(|p| p.raw()).collect()
     }
 
     async fn info(&mut self, target: u64) -> Option<actor::ProcessInfo> {
-        if !self.process_control && target != self.pid {
+        if !self.caps.process_control() && target != self.pid {
             return None; // may inspect only itself
         }
         self.rt
@@ -76,14 +94,14 @@ impl actor::Host for WasiHost {
     }
 
     async fn is_alive(&mut self, target: u64) -> bool {
-        if !self.process_control && target != self.pid {
+        if !self.caps.process_control() && target != self.pid {
             return false; // may probe only itself
         }
         self.rt.is_alive(Pid::from_raw(target))
     }
 
     async fn kill(&mut self, target: u64) -> bool {
-        if !self.process_control && target != self.pid {
+        if !self.caps.process_control() && target != self.pid {
             return false; // may terminate only itself
         }
         self.rt.kill(Pid::from_raw(target))

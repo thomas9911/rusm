@@ -9,8 +9,9 @@
 //!
 //! Wasm lives *only* here; `rusm-otp` never references Wasmtime.
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -57,10 +58,48 @@ pub(crate) struct Counters {
     pub(crate) notifications: AtomicU64,
 }
 
+/// The spawn core shared between the [`WasmRuntime`] and every **running guest** —
+/// held behind an `Arc` so a component's host context can spawn siblings without a
+/// back-reference to the whole runtime. It carries exactly what a spawn needs (the
+/// engine, the process runtime, and a name → prepared-component registry) and
+/// nothing the prepare-time linkers own, keeping the per-spawn path lean.
+pub(crate) struct Spawner {
+    pub(crate) engine: Engine,
+    pub(crate) rt: Runtime,
+    /// Components registered by name so a guest may `spawn` them. Read-mostly
+    /// (written when an app loads, read per guest-initiated spawn), so a plain
+    /// `RwLock` — uncontended reads, no extra dependency.
+    components: RwLock<HashMap<String, PreparedComponent>>,
+}
+
+impl Spawner {
+    /// Registers a prepared component under `name` so guests may [`spawn`] it.
+    ///
+    /// [`spawn`]: crate::WasmRuntime::register_component
+    pub(crate) fn register(&self, name: impl Into<String>, prepared: PreparedComponent) {
+        self.components
+            .write()
+            .expect("component registry is never poisoned")
+            .insert(name.into(), prepared);
+    }
+
+    /// Looks up a registered component by name (cloned out so no lock is held
+    /// across the spawn — `PreparedComponent` is `Arc`-backed, so this is cheap).
+    pub(crate) fn lookup(&self, name: &str) -> Option<PreparedComponent> {
+        self.components
+            .read()
+            .expect("component registry is never poisoned")
+            .get(name)
+            .cloned()
+    }
+}
+
 /// Runs Wasm guests as RUSM processes.
 pub struct WasmRuntime {
-    engine: Engine,
-    rt: Runtime,
+    /// The spawn core (engine + process runtime + component registry), shared with
+    /// running guests so they can spawn by name. The runtime reads the engine and
+    /// process runtime through it rather than duplicating those handles.
+    spawner: Arc<Spawner>,
     /// The core-module linker (preview1 WASI + the raw `rusm::*` actor ABI). Built
     /// once; a module's imports resolve into a `PreparedModule` at `prepare`, never
     /// per spawn. The component counterpart is `component_linker`.
@@ -133,8 +172,11 @@ impl WasmRuntime {
         });
 
         Ok(Self {
-            engine,
-            rt,
+            spawner: Arc::new(Spawner {
+                engine,
+                rt,
+                components: RwLock::new(HashMap::new()),
+            }),
             linker,
             component_linker,
             js_runner: std::sync::OnceLock::new(),
@@ -142,6 +184,13 @@ impl WasmRuntime {
             epoch_stop,
             epoch_ticker: Some(epoch_ticker),
         })
+    }
+
+    /// Registers a prepared component under `name` so a **running guest** may
+    /// `spawn` it by that name through the actor ABI (capability-gated). The app
+    /// loader registers each manifest component so siblings can spawn one another.
+    pub fn register_component(&self, name: impl Into<String>, prepared: PreparedComponent) {
+        self.spawner.register(name, prepared);
     }
 
     /// Spawns a **JavaScript/TypeScript** bundle as a sandboxed process via the
@@ -169,13 +218,13 @@ impl WasmRuntime {
         });
         let handle = self.spawn_component_with(runner, caps);
         // The runner's protocol: its first message is the JS bundle to execute.
-        self.rt.send(handle.pid(), bundle.into());
+        self.spawner.rt.send(handle.pid(), bundle.into());
         handle
     }
 
     /// Compiles a module from Wasm bytes or `.wat` text.
     pub fn compile(&self, wasm: impl AsRef<[u8]>) -> Result<Module> {
-        Ok(Module::new(&self.engine, wasm)?)
+        Ok(Module::new(&self.spawner.engine, wasm)?)
     }
 
     /// Total `notify` calls made by all guests so far — guest-reported progress.

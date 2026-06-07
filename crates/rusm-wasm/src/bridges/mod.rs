@@ -11,10 +11,14 @@ pub(crate) mod wasip2;
 pub(crate) mod wasip3;
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use rusm_otp::{Context, Runtime, StreamHandle, StreamWriter};
 use wasmtime::ResourceLimiter;
 use wasmtime_wasi::{ResourceTable, WasiCtx, WasiCtxView, WasiView};
+
+use crate::caps::Capabilities;
+use crate::Spawner;
 
 /// Store data for **component** guests (wasip2 today, wasip3 later): the WASI
 /// context + resource table the component model needs, a per-process memory
@@ -24,19 +28,21 @@ use wasmtime_wasi::{ResourceTable, WasiCtx, WasiCtxView, WasiView};
 pub(crate) struct WasiHost {
     pub(crate) wasi: WasiCtx,
     pub(crate) table: ResourceTable,
-    /// Logical linear-memory cap (bytes) from the process's capabilities.
-    pub(crate) max_memory: usize,
     /// The owning process's pid (for `own-pid`, `register`, `set-label`).
     pub(crate) pid: u64,
-    /// Whether this process may control *other* processes (kill/list/info/is-alive
-    /// over foreign pids). Default-deny: a sandboxed guest manages only itself.
-    pub(crate) process_control: bool,
+    /// This process's capabilities: the source of truth for its memory ceiling,
+    /// whether it may control other processes, whether it may spawn, and the
+    /// ceiling any child it spawns inherits (a child is never broader).
+    pub(crate) caps: Capabilities,
     /// Handle to the actor runtime, backing the actor host functions.
     pub(crate) rt: Runtime,
     /// The process's mailbox, for `receive`. `None` only for a bare host built
     /// outside a spawned process (e.g. direct inspection in a test); a running
     /// guest always has one.
     pub(crate) ctx: Option<Context>,
+    /// The shared spawn core, so this process may `spawn` registered components.
+    /// `None` only for a bare host built outside the runtime (a test).
+    pub(crate) spawner: Option<Arc<Spawner>>,
     /// Byte streams this process is **writing** to others, keyed by the handle
     /// returned to the guest by `stream-open`.
     pub(crate) out_streams: HashMap<u64, StreamWriter>,
@@ -65,7 +71,7 @@ impl ResourceLimiter for WasiHost {
         desired: usize,
         _maximum: Option<usize>,
     ) -> wasmtime::Result<bool> {
-        Ok(desired <= self.max_memory)
+        Ok(desired <= self.caps.memory_limit())
     }
 
     fn table_growing(
@@ -89,11 +95,11 @@ mod tests {
         let mut host = WasiHost {
             wasi: WasiCtxBuilder::new().build(),
             table: ResourceTable::new(),
-            max_memory: 1 << 20,
             pid: 0,
-            process_control: false,
+            caps: Capabilities::nothing(),
             rt: Runtime::new(),
             ctx: None,
+            spawner: None,
             out_streams: HashMap::new(),
             in_streams: HashMap::new(),
             next_stream: 0,

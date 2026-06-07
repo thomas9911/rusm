@@ -53,6 +53,8 @@ pub fn spawn_components(
                 .compile_component(&bytes)
                 .with_context(|| format!("compiling component `{}`", spec.name))?;
             let prepared = wasm.prepare_component(&component, "run")?;
+            // Register by name so a running sibling may `spawn` it (capability-gated).
+            wasm.register_component(spec.name.clone(), prepared.clone());
             wasm.spawn_component_with(&prepared, caps)
         };
         handles.push((spec.name.clone(), handle));

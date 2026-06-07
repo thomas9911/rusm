@@ -295,11 +295,13 @@ actor::set_label("worker#1");              // a human label for the observer
 The runnable proof is the `actor-echo` test fixture, which drives **every** op
 from inside a real component.
 
-> **Composition is message passing, not spawn-from-guest.** A component doesn't
-> spawn other processes from within — by design, the way Erlang components compose
-> is: the host (or `rusm.toml`) spawns instances, and they find each other with
-> `register`/`whereis` and talk with `send`/`receive`. A request/reply "callback"
-> between two components is just a message and a reply. See
+> **Spawn-from-guest is supported — capability-gated.** A component declared in
+> `rusm.toml` can be `spawn`ed **by name** from inside another component (`spawn`
+> in the actor ABI), so you get per-request workers and concealed typed clients —
+> the Erlang model. It's default-deny (the `spawn` capability) and **non-escalating**:
+> a child inherits the spawner's capabilities, never more. Components still find
+> long-lived peers with `register`/`whereis` and talk with `send`/`receive`; a
+> request/reply "callback" is just a message and a reply. See
 > [components & the actor world](./concepts/components-and-the-actor-world.md).
 
 > **From TS/JS.** The same operations are bridged to the `Process` global in the

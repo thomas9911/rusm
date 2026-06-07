@@ -7,8 +7,11 @@
 //! process [`Crashed`](ExitReason::Crashed). The shared efficiency levers live in
 //! `lib.rs`; this file is only the component-specific glue.
 
+use std::collections::HashMap;
+use std::sync::Arc;
+
 use anyhow::Result;
-use rusm_otp::{Context, ExitReason, ProcessHandle, Runtime};
+use rusm_otp::{Context, ExitReason, ProcessHandle};
 use wasmtime::component::{
     Component, ComponentExportIndex, InstancePre as ComponentInstancePre, Linker as ComponentLinker,
 };
@@ -17,7 +20,7 @@ use wasmtime_wasi::ResourceTable;
 
 use super::WasiHost;
 use crate::caps::{Capabilities, CapabilityProfile};
-use crate::WasmRuntime;
+use crate::{Spawner, WasmRuntime};
 
 /// A component whose imports are resolved **and** whose entry-export index is
 /// precomputed — so a spawn skips both per-spawn import resolution *and* the
@@ -43,7 +46,7 @@ pub(crate) fn build_linker(engine: &Engine) -> Result<ComponentLinker<WasiHost>>
 impl WasmRuntime {
     /// Compiles a component from Wasm bytes or component-model `.wat` text.
     pub fn compile_component(&self, wasm: impl AsRef<[u8]>) -> Result<Component> {
-        Ok(Component::new(&self.engine, wasm)?)
+        Ok(Component::new(&self.spawner.engine, wasm)?)
     }
 
     /// Resolves a component's imports **once** against the WASI linker and
@@ -78,46 +81,62 @@ impl WasmRuntime {
         prepared: &PreparedComponent,
         caps: Capabilities,
     ) -> ProcessHandle {
-        let engine = self.engine.clone();
-        let rt = self.rt.clone();
+        self.spawner.spawn_component(prepared, caps)
+    }
+}
+
+impl Spawner {
+    /// Spawns a prepared component as an isolated process under `caps` — the single
+    /// spawn path shared by the public [`spawn_component_with`] and a guest's
+    /// capability-gated `spawn`. The child carries an `Arc` to this spawner, so it
+    /// too can spawn siblings by name.
+    ///
+    /// [`spawn_component_with`]: WasmRuntime::spawn_component_with
+    pub(crate) fn spawn_component(
+        self: &Arc<Self>,
+        prepared: &PreparedComponent,
+        caps: Capabilities,
+    ) -> ProcessHandle {
+        let spawner = Arc::clone(self);
         let pre = prepared.pre.clone();
         let entry = prepared.entry;
         self.rt
-            .spawn(move |ctx| run(engine, pre, entry, caps, rt, ctx))
+            .spawn(move |ctx| run(spawner, pre, entry, caps, ctx))
     }
 }
 
 /// The process body for a component: build its WASI context, instantiate it in a
 /// fresh store, and run its entry export — exiting [`Crashed`](ExitReason::Crashed)
-/// on any failure. `rt` is moved into the host (one clone per spawn), and the
-/// crash-exit reads it back through the store, so the runtime handle is cloned
-/// exactly once. Yields to the scheduler on each epoch tick.
+/// on any failure. The runtime handle is cloned exactly once (into the host) and
+/// the crash-exit reads it back through the store; the engine is borrowed from the
+/// `Arc<Spawner>` the host carries. Yields to the scheduler on each epoch tick.
 async fn run(
-    engine: Engine,
+    spawner: Arc<Spawner>,
     pre: ComponentInstancePre<WasiHost>,
     entry: ComponentExportIndex,
     caps: Capabilities,
-    rt: Runtime,
     ctx: Context,
 ) {
     let pid = ctx.pid();
     let wasi = match caps.build_wasi() {
         Ok(wasi) => wasi,
         Err(_) => {
-            rt.exit(pid, ExitReason::Crashed);
+            spawner.rt.exit(pid, ExitReason::Crashed);
             return;
         }
     };
+    let engine = spawner.engine.clone();
+    let rt = spawner.rt.clone();
     let host = WasiHost {
         wasi,
         table: ResourceTable::new(),
-        max_memory: caps.memory_limit(),
         pid: pid.raw(),
-        process_control: caps.process_control(),
+        caps,
         rt,
         ctx: Some(ctx),
-        out_streams: std::collections::HashMap::new(),
-        in_streams: std::collections::HashMap::new(),
+        spawner: Some(spawner),
+        out_streams: HashMap::new(),
+        in_streams: HashMap::new(),
         next_stream: 0,
     };
     let mut store = Store::new(&engine, host);
@@ -142,6 +161,7 @@ async fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rusm_otp::Runtime;
 
     // A minimal component exporting `run: func()` — no imports, no WASI use.
     const COMP_RUN: &str = r#"(component
@@ -184,6 +204,131 @@ mod tests {
             rusm_otp::Received::Down { reason, .. } => reason,
             other => panic!("expected a Down, got {other:?}"),
         }
+    }
+
+    /// Monitors a process *by pid* (a guest-spawned child returns only its pid).
+    async fn exit_reason_of_pid(rt: &Runtime, pid: rusm_otp::Pid) -> ExitReason {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let watcher = rt
+            .spawn(move |mut ctx| async move {
+                let _ = tx.send(ctx.recv().await);
+            })
+            .pid();
+        rt.monitor(watcher, pid);
+        match rx.await.unwrap() {
+            rusm_otp::Received::Down { reason, .. } => reason,
+            other => panic!("expected a Down, got {other:?}"),
+        }
+    }
+
+    /// A bare [`WasiHost`] wired to the runtime's spawner — stands in for a running
+    /// guest so the capability-gated `spawn` host fn can be driven directly.
+    fn test_host(wr: &WasmRuntime, rt: &Runtime, caps: Capabilities) -> WasiHost {
+        WasiHost {
+            wasi: caps.build_wasi().unwrap(),
+            table: ResourceTable::new(),
+            pid: 0,
+            caps,
+            rt: rt.clone(),
+            ctx: None,
+            spawner: Some(Arc::clone(&wr.spawner)),
+            out_streams: HashMap::new(),
+            in_streams: HashMap::new(),
+            next_stream: 0,
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_guest_can_spawn_a_registered_component() {
+        use crate::actor::rusm::runtime::actor::Host;
+        let rt = Runtime::new();
+        let wr = WasmRuntime::new(rt.clone()).unwrap();
+        let child = wr
+            .prepare_component(&wr.compile_component(COMP_RUN).unwrap(), "run")
+            .unwrap();
+        wr.register_component("child", child);
+
+        // Trusted grants the spawn capability.
+        let mut host = test_host(&wr, &rt, CapabilityProfile::Trusted.capabilities());
+        host.spawn("child".to_string())
+            .await
+            .expect("spawn of a registered component succeeds");
+
+        // The child runs to completion as a real, reaped process.
+        for _ in 0..200 {
+            if rt.finished() == 1 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        assert_eq!(rt.finished(), 1, "the spawned child ran and was reaped");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn spawn_is_denied_without_the_capability() {
+        use crate::actor::rusm::runtime::actor::Host;
+        let rt = Runtime::new();
+        let wr = WasmRuntime::new(rt.clone()).unwrap();
+        let child = wr
+            .prepare_component(&wr.compile_component(COMP_RUN).unwrap(), "run")
+            .unwrap();
+        wr.register_component("child", child);
+
+        // Sandboxed (default-deny): no spawn capability.
+        let mut host = test_host(&wr, &rt, CapabilityProfile::Sandboxed.capabilities());
+        let err = host.spawn("child".to_string()).await.unwrap_err();
+        assert!(
+            err.contains("denied"),
+            "sandboxed spawn must be denied: {err}"
+        );
+        assert_eq!(rt.process_count(), 0, "no child was created");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn spawn_of_an_unknown_component_errors() {
+        use crate::actor::rusm::runtime::actor::Host;
+        let rt = Runtime::new();
+        let wr = WasmRuntime::new(rt.clone()).unwrap();
+        let mut host = test_host(&wr, &rt, CapabilityProfile::Trusted.capabilities());
+        let err = host.spawn("ghost".to_string()).await.unwrap_err();
+        assert!(err.contains("unknown component"), "{err}");
+        assert_eq!(rt.process_count(), 0, "nothing spawned");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_spawned_child_inherits_the_parents_capabilities() {
+        use crate::actor::rusm::runtime::actor::Host;
+        // The child is non-escalating: it gets the spawner's caps. A parent with a
+        // tight memory cap yields a child that crashes growing; a roomy parent's
+        // child finishes — same component, capability inherited from the spawner.
+        let rt = Runtime::new();
+        let wr = WasmRuntime::new(rt.clone()).unwrap();
+        let grow = wr
+            .prepare_component(&wr.compile_component(COMP_GROW).unwrap(), "run")
+            .unwrap();
+        wr.register_component("grow", grow);
+
+        let tight = Capabilities::nothing()
+            .allow_spawn(true)
+            .max_memory(64 << 10);
+        let mut parent = test_host(&wr, &rt, tight);
+        let crashed = parent.spawn("grow".to_string()).await.unwrap();
+        assert_eq!(
+            exit_reason_of_pid(&rt, rusm_otp::Pid::from_raw(crashed)).await,
+            ExitReason::Crashed,
+            "child inherited the tight cap and crashed growing"
+        );
+
+        let roomy = Capabilities::nothing()
+            .allow_spawn(true)
+            .max_memory(8 << 20);
+        let mut parent = test_host(&wr, &rt, roomy);
+        let finished = parent.spawn("grow".to_string()).await.unwrap();
+        assert_eq!(
+            exit_reason_of_pid(&rt, rusm_otp::Pid::from_raw(finished)).await,
+            ExitReason::Normal,
+            "child inherited the roomy cap and finished"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

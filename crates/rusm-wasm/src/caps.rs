@@ -61,6 +61,7 @@ impl CapabilityProfile {
                 allow_network: true,
                 inherit_stdio: true,
                 allow_process_control: true,
+                allow_spawn: true,
                 ..Capabilities::nothing()
             },
         }
@@ -86,6 +87,7 @@ pub struct Capabilities {
     allow_network: bool,
     inherit_stdio: bool,
     allow_process_control: bool,
+    allow_spawn: bool,
 }
 
 impl Capabilities {
@@ -98,6 +100,7 @@ impl Capabilities {
             allow_network: false,
             inherit_stdio: false,
             allow_process_control: false,
+            allow_spawn: false,
         }
     }
 
@@ -156,9 +159,22 @@ impl Capabilities {
         self
     }
 
+    /// Allows this process to **spawn other components** by name via the actor ABI
+    /// (`spawn`). Default-deny: a sandboxed process cannot create new processes. A
+    /// spawned child's capabilities never exceed the spawner's (no escalation).
+    pub fn allow_spawn(mut self, allow: bool) -> Self {
+        self.allow_spawn = allow;
+        self
+    }
+
     /// Whether this process may control others via the actor ABI.
     pub(crate) fn process_control(&self) -> bool {
         self.allow_process_control
+    }
+
+    /// Whether this process may spawn other components via the actor ABI.
+    pub(crate) fn can_spawn(&self) -> bool {
+        self.allow_spawn
     }
 
     /// The memory ceiling, for the runtime's `StoreLimiter`.
@@ -225,16 +241,20 @@ mod tests {
             !sandbox.process_control(),
             "sandboxed: no control of others"
         );
+        assert!(!sandbox.can_spawn(), "sandboxed: cannot spawn components");
         let client = CapabilityProfile::NetworkClient.capabilities();
         assert!(client.allow_network && !client.inherit_stdio && !client.process_control());
+        assert!(!client.can_spawn(), "network-client: cannot spawn");
         let trusted = CapabilityProfile::Trusted.capabilities();
         assert!(trusted.allow_network && trusted.inherit_stdio);
         assert!(trusted.process_control(), "trusted: may control others");
+        assert!(trusted.can_spawn(), "trusted: may spawn components");
         assert!(trusted.memory_limit() > sandbox.memory_limit());
-        // The builder grants it explicitly too.
+        // The builder grants each explicitly too.
         assert!(Capabilities::nothing()
             .allow_process_control(true)
             .process_control());
+        assert!(Capabilities::nothing().allow_spawn(true).can_spawn());
     }
 
     #[test]
