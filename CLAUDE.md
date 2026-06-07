@@ -54,9 +54,15 @@ streaming** (`stream_open`/`write`/`close`/`accept`/`read` over the Wasm-free
 `StreamHandle`, real Tokio back-pressure) — RUSM on Lunatic's home turf
 (module-storm bench). Cross-process **byte streaming** works from both core
 modules (raw ABI) and **components** (the `rusm:runtime` WIT world:
-`stream-open`/`write`/`close`/`accept`/`read`, handle-based). Deferred follow-ons:
-a native p3-typed `stream<u8>` WIT signature, and `rusm dev` filesystem
-watch/reload. TLS folds into the Phase 9 secure cluster transport. See
+`stream-open`/`write`/`close`/`accept`/`read`, handle-based). **TS/JS guests**
+(Phase 8, rusm-ts core): the **js-runner** component embeds rquickjs (QuickJS →
+`wasm32-wasip2`, ~658 KB, built with wasi-sdk) and runs a Bun-bundled JS file,
+bridging a `Process` global to the actor world — a JS guest is a first-class
+sandboxed process (proven by test). Deferred follow-ons: rusm-ts packaging (Bun
+integration in `rusm build`, app-model wiring, TS types, binary msg marshalling,
+streams from JS), the `rusm-rs` Rust guest crate, a native p3-typed `stream<u8>`
+WIT signature, and `rusm dev` filesystem watch/reload. TLS folds into the Phase 9
+secure cluster transport. See
 `docs/02-roadmap.md`.
 
 ## Tech stack

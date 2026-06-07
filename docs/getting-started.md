@@ -221,14 +221,34 @@ componentizes directly.
 > file change** (true watch mode) is a follow-on. For now, re-run `rusm dev` after
 > editing a component.
 
-## 5. A TS WASM component (source only) — Roadmap (Phase 8)
+## 5. A TS / JS WASM component (source only)
 
-> **Not built yet.** TypeScript guests are [Phase 8](./02-roadmap.md) (the
-> `rusm-ts` package). The planned approach mirrors the production `genius-wasmcloud`
-> path and uses **no jco**: a TS component is a Rust `cdylib` whose `build.rs`
-> bundles the TS with **Bun** and embeds it via **rquickjs**, exposing the same
-> `rusm:runtime` actor API to JS. Until then, write components in Rust (above);
-> the actor ABI is identical.
+TypeScript guests are **first-class, sandboxed RUSM processes** — the
+`genius-wasmcloud` model, **no jco**. RUSM ships one **js-runner** component: it
+embeds [rquickjs](https://github.com/DelSkayn/rquickjs) (QuickJS, compiled to
+`wasm32-wasip2`, ~658 KB) and runs your JS, exposing a `Process` global bridged to
+the actor world. You write TS, **Bun** bundles it to one `.js`, and the runner
+executes it inside the same sandbox (capabilities, memory cap, epoch preemption)
+as a Rust component:
+
+```js
+// worker.ts → bundled by Bun → run by the js-runner
+const replyTo = Process.receive();          // block for a message
+Process.setLabel("ts-worker");
+Process.send(replyTo, "pong from " + Process.self());
+```
+
+Blocking JS "just works": `Process.receive()` suspends the whole instance's fiber
+until a message arrives — no async/await needed, exactly like a Rust guest. The
+full `Process` API (`self`/`list`/`send`/`receive`/`register`/`whereis`/`isAlive`/
+`kill`/`setLabel`) is bridged and proven by a test that drives it entirely from JS.
+
+> **Being formalised (Phase 8 polish).** The runtime is real; the ergonomic
+> packaging is in progress: `rusm build` auto-running **Bun** on TS components,
+> the `rusm.toml` app-model wiring a TS source to the runner, TS type
+> definitions, binary (non-string) message marshalling, and exposing the
+> [stream ops](#streaming-from-a-component) to JS. Also the **`rusm-rs`** Rust
+> guest crate (ergonomic spawn/Mailbox/Supervisor) — the other half of Phase 8.
 
 ## Process management from inside a component (Rust)
 
@@ -261,8 +281,10 @@ from inside a real component.
 > between two components is just a message and a reply. See
 > [components & the actor world](./concepts/components-and-the-actor-world.md).
 
-> **TS toggle — Roadmap (Phase 8).** The same calls will be available to TS guests
-> via `rusm-ts` (e.g. `Process.self()`, `Process.list()`, `send`, `receive`).
+> **From TS/JS.** The same operations are bridged to the `Process` global in the
+> [js-runner](#_5-a-ts-js-wasm-component-source-only): `Process.self()`,
+> `Process.list()`, `Process.send(to, msg)`, `Process.receive()`,
+> `Process.register/whereis/isAlive/kill/setLabel`.
 
 ## Streaming (from a component)
 
