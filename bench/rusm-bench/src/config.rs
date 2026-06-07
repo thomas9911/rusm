@@ -17,6 +17,28 @@ pub struct NodeConfig {
     pub profile: ResourceProfile,
     /// Snapshot/sampling rate in Hz.
     pub ticks_per_second: u32,
+    /// Components to run as an app, declared as `[[components]]` tables. Each is
+    /// loaded from `./wasm/<name>.wasm` and spawned under its capability profile.
+    pub components: Vec<ComponentSpec>,
+}
+
+/// One `[[components]]` entry: a component to load from `./wasm/<name>.wasm` and
+/// run as a supervised process under a capability profile.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ComponentSpec {
+    /// Component name; resolves to the artifact `./wasm/<name>.wasm`.
+    pub name: String,
+    /// Capability profile id (`sandboxed` / `network-client` / `trusted`).
+    #[serde(default = "default_capability")]
+    pub capability: String,
+    /// Restart the component if it exits (supervision). Off by default.
+    #[serde(default)]
+    pub restart: bool,
+}
+
+fn default_capability() -> String {
+    "sandboxed".to_string()
 }
 
 impl Default for NodeConfig {
@@ -25,6 +47,7 @@ impl Default for NodeConfig {
             listen: "127.0.0.1:4000".to_string(),
             profile: ResourceProfile::default(),
             ticks_per_second: 20,
+            components: Vec::new(),
         }
     }
 }
@@ -90,5 +113,39 @@ mod tests {
     fn runner_config_carries_the_tick_rate() {
         let cfg = NodeConfig::from_toml("ticks_per_second = 30").unwrap();
         assert_eq!(cfg.runner_config().ticks_per_second, 30);
+    }
+
+    #[test]
+    fn parses_component_manifest_with_defaults() {
+        let cfg = NodeConfig::from_toml(
+            r#"
+            [[components]]
+            name = "source"
+            capability = "network-client"
+
+            [[components]]
+            name = "sink"
+            restart = true
+            "#,
+        )
+        .unwrap();
+        assert_eq!(cfg.components.len(), 2);
+        assert_eq!(cfg.components[0].name, "source");
+        assert_eq!(cfg.components[0].capability, "network-client");
+        assert!(!cfg.components[0].restart);
+        // capability defaults to sandboxed; restart parsed.
+        assert_eq!(cfg.components[1].capability, "sandboxed");
+        assert!(cfg.components[1].restart);
+    }
+
+    #[test]
+    fn no_components_by_default() {
+        assert!(NodeConfig::from_toml("").unwrap().components.is_empty());
+    }
+
+    #[test]
+    fn unknown_component_field_is_an_error() {
+        let toml = "[[components]]\nname = \"x\"\nnope = 1\n";
+        assert!(NodeConfig::from_toml(toml).is_err());
     }
 }

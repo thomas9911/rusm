@@ -14,6 +14,13 @@ path = "src/main.rs"
 
 [dependencies]
 rusm-bench = { path = "../bench/rusm-bench" }
-tokio = { version = "1.52.3", features = ["rt-multi-thread", "macros", "io-std", "io-util"] }
+rusm-otp = { path = "../crates/rusm-otp" }
+rusm-wasm = { path = "../crates/rusm-wasm" }
+anyhow = { workspace = true }
+dotenvy = "0.15"
+tokio = { version = "1.52.3", features = ["rt-multi-thread", "macros", "io-std", "io-util", "signal"] }
 tokio-tungstenite = "0.29.0"
 futures-util = "0.3.32"
+
+[dev-dependencies]
+tempfile = "3"

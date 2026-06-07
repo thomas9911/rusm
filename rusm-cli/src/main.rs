@@ -1,6 +1,14 @@
+use std::path::Path;
+use std::process::Command;
+
+use anyhow::{anyhow, Context};
 use futures_util::{SinkExt, StreamExt};
 use rusm_bench::{serve, ClientCommand, Node, NodeConfig, ResourceProfile};
-use rusm_cli::{normalize_target, parse, render_message, ReplInput, DEFAULT_HOST, HELP};
+use rusm_cli::{
+    normalize_target, parse, render_message, spawn_components, ReplInput, DEFAULT_HOST, HELP,
+};
+use rusm_otp::Runtime;
+use rusm_wasm::WasmRuntime;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio_tungstenite::tungstenite::Message;
 
@@ -34,14 +42,119 @@ async fn main() {
             eprintln!("attach failed: {error}");
             std::process::exit(1);
         }
+    } else if command == Some("build") {
+        // Compile components/<name>/ -> wasm/<name>.wasm (one toolchain, no jco).
+        match build_components(Path::new(".")) {
+            Ok(built) if built.is_empty() => {
+                println!("no component crates found under ./components");
+            }
+            Ok(built) => println!(
+                "built {} component(s) -> ./wasm: {}",
+                built.len(),
+                built.join(", ")
+            ),
+            Err(error) => {
+                eprintln!("build failed: {error}");
+                std::process::exit(1);
+            }
+        }
+    } else if command == Some("run") || command == Some("dev") {
+        // `dev` auto-builds first (write source, RUSM compiles); both then run the
+        // app's components from ./wasm per the rusm.toml manifest.
+        if command == Some("dev") {
+            match build_components(Path::new(".")) {
+                Ok(built) => println!("built: {}", built.join(", ")),
+                Err(error) => {
+                    eprintln!("build failed: {error}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        if let Err(error) = run_app(&args).await {
+            eprintln!("run failed: {error}");
+            std::process::exit(1);
+        }
     } else {
         eprintln!("usage:");
         eprintln!(
             "  rusm node start [--config <file>] [--listen <addr>] [--profile light|balanced|max]"
         );
+        eprintln!("  rusm build                 compile ./components/* -> ./wasm/*.wasm");
+        eprintln!(
+            "  rusm run                   run ./wasm components per rusm.toml [[components]]"
+        );
+        eprintln!("  rusm dev                   build, then run (write source, RUSM compiles)");
         eprintln!("  rusm attach [<host | host:port | ws-url>]   (defaults to 127.0.0.1:4000)");
         std::process::exit(2);
     }
+}
+
+/// Runs the app's components: load `.env` (process env wins), then spawn each
+/// `[[components]]` entry from `./wasm` under its capability profile, and wait
+/// for Ctrl-C. Held handles + runtime keep the processes alive.
+async fn run_app(args: &[String]) -> anyhow::Result<()> {
+    // Environment variables the Rust way: process env first, then ./.env.
+    dotenvy::dotenv().ok();
+
+    let cfg = load_node_config(args);
+    let rt = Runtime::new();
+    let wasm = WasmRuntime::new(rt.clone())?;
+    let handles = spawn_components(Path::new("."), &wasm, &cfg.components)?;
+    if handles.is_empty() {
+        println!("no [[components]] in rusm.toml — nothing to run");
+        return Ok(());
+    }
+    let names: Vec<&str> = handles.iter().map(|(n, _)| n.as_str()).collect();
+    println!(
+        "running {} component(s): {}",
+        handles.len(),
+        names.join(", ")
+    );
+    println!("press Ctrl-C to stop");
+    tokio::signal::ctrl_c().await?;
+    println!("\nstopping {} component(s)…", rt.shutdown());
+    Ok(())
+}
+
+/// Builds every component crate under `<dir>/components/<name>/` to a
+/// `wasm32-wasip2` component and copies it to `<dir>/wasm/<name>.wasm`. One
+/// toolchain — `cargo build --target wasm32-wasip2 --release` — so a TS component
+/// is just a Rust crate whose `build.rs` bundles TS via Bun (no jco). Returns the
+/// built component names. (Shell-orchestration glue, hence it lives in `main`.)
+fn build_components(dir: &Path) -> anyhow::Result<Vec<String>> {
+    let components_dir = dir.join("components");
+    let wasm_dir = dir.join("wasm");
+    std::fs::create_dir_all(&wasm_dir)?;
+
+    let mut entries: Vec<_> = std::fs::read_dir(&components_dir)
+        .with_context(|| format!("reading {}", components_dir.display()))?
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().join("Cargo.toml").is_file())
+        .collect();
+    entries.sort_by_key(|e| e.file_name());
+
+    let mut built = Vec::new();
+    for entry in entries {
+        let crate_dir = entry.path();
+        let name = entry.file_name().to_string_lossy().to_string();
+        let status = Command::new("cargo")
+            .args(["build", "--target", "wasm32-wasip2", "--release"])
+            .current_dir(&crate_dir)
+            .status()
+            .with_context(|| "running cargo (is the wasm32-wasip2 target installed?)")?;
+        if !status.success() {
+            return Err(anyhow!("`cargo build` failed for component `{name}`"));
+        }
+        // Cargo names the artifact after the crate (dashes become underscores).
+        let artifact = crate_dir
+            .join("target/wasm32-wasip2/release")
+            .join(format!("{}.wasm", name.replace('-', "_")));
+        let dest = wasm_dir.join(format!("{name}.wasm"));
+        std::fs::copy(&artifact, &dest)
+            .with_context(|| format!("copying {} -> {}", artifact.display(), dest.display()))?;
+        built.push(name);
+    }
+    Ok(built)
 }
 
 fn flag(args: &[String], name: &str) -> Option<String> {
