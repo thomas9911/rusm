@@ -19,6 +19,7 @@ pub enum Scenario {
     ComponentStorm,
     DistributedFanout,
     ModuleStorm,
+    StreamPipe,
 }
 
 /// Display metadata for a [`Scenario`], sent to the dashboard menu and the
@@ -42,7 +43,7 @@ impl Scenario {
     // Ordered by the phase each scenario goes live (the dashboard menu shows them
     // in this order). The enum discriminants are unchanged, so the synthetic
     // source stays deterministic.
-    pub const ALL: [Scenario; 8] = [
+    pub const ALL: [Scenario; 9] = [
         Scenario::SpawnStorm,        // phase 1
         Scenario::PingPong,          // phase 2
         Scenario::FaultRecovery,     // phase 3
@@ -50,6 +51,7 @@ impl Scenario {
         Scenario::Fairness,          // phase 6
         Scenario::ModuleStorm,       // phase 6 — wasip1 core modules (Lunatic head-to-head)
         Scenario::ComponentStorm,    // phase 7
+        Scenario::StreamPipe,        // phase 7 — cross-process byte-stream throughput
         Scenario::DistributedFanout, // phase 9
     ];
 
@@ -63,6 +65,7 @@ impl Scenario {
             Scenario::ComponentStorm => "component-storm",
             Scenario::DistributedFanout => "distributed-fanout",
             Scenario::ModuleStorm => "module-storm",
+            Scenario::StreamPipe => "stream-pipe",
         }
     }
 
@@ -151,6 +154,17 @@ impl Scenario {
                     "The direct Lunatic head-to-head: Lunatic spawns wasip1 core-module processes via on-demand allocation + per-instruction fuel; RUSM recycles pooled instances and preempts with epochs — and hosts components too.",
                 ],
                 6,
+            ),
+            Scenario::StreamPipe => (
+                "Stream pipe",
+                "How fast can one process PIPE a byte stream to another (with back-pressure)?",
+                vec![
+                    "What's unique here: every other storm measures *creating* processes or *sending one message*; this measures *moving a continuous byte stream* between two processes — one opens a stream to another and floods it with data as fast as the reader will take it.",
+                    "Headline: streaming throughput in bytes/sec (so 800,000,000 means ~800 MB/s; this scenario reaches multiple GB/s aggregate across pairs). A producer process streams 4 KiB chunks to a consumer through the runtime; the rate is how many bytes per second make it end to end.",
+                    "Back-pressure (the important bit): the stream is a *bounded* channel, so a slow reader automatically slows the writer — the writer's fiber simply parks until there's room, with no unbounded memory growth and no busy-polling. That safety is exactly what lets a component serve HTTP/SSE/WS bodies without falling over.",
+                    "Phase 7: REAL streams. Built on the Wasm-free StreamHandle (a Tokio bounded channel) bridged to WASM guests via the actor ABI (stream_open / stream_write / stream_read) — the same byte-stream primitive a native process gets, handed to a sandboxed Wasm process.",
+                ],
+                7,
             ),
             Scenario::DistributedFanout => (
                 "Distributed fan-out",
@@ -243,7 +257,8 @@ mod tests {
                 "connection-storm",
                 "fairness",
                 "module-storm",
-                "component-storm"
+                "component-storm",
+                "stream-pipe"
             ]
         );
     }

@@ -12,6 +12,7 @@ use crate::profile::ResourceProfile;
 use crate::protocol::Frame;
 use crate::sample::Sample;
 use crate::scenario::Scenario;
+use crate::streampipe::StreamPipeEngine;
 use crate::synthetic::SyntheticSource;
 
 fn available_cores() -> usize {
@@ -60,6 +61,7 @@ enum Engine {
     Fairness(FairnessEngine),
     ModuleStorm(ModuleStormEngine),
     ComponentStorm(ComponentStormEngine),
+    StreamPipe(StreamPipeEngine),
 }
 
 impl Engine {
@@ -96,6 +98,10 @@ impl Engine {
                 config.spawn_workers,
                 config.scheduler_count,
             )),
+            Scenario::StreamPipe => Engine::StreamPipe(StreamPipeEngine::new(
+                config.spawn_workers,
+                config.scheduler_count,
+            )),
             _ => Engine::Synthetic(SyntheticSource::new(scenario)),
         }
     }
@@ -115,6 +121,7 @@ impl Engine {
             Engine::Fairness(engine) => engine.tick(),
             Engine::ModuleStorm(engine) => engine.tick(),
             Engine::ComponentStorm(engine) => engine.tick(),
+            Engine::StreamPipe(engine) => engine.tick(),
         }
     }
 }
@@ -173,7 +180,8 @@ impl Runner {
             | Scenario::ConnectionStorm
             | Scenario::Fairness
             | Scenario::ModuleStorm
-            | Scenario::ComponentStorm),
+            | Scenario::ComponentStorm
+            | Scenario::StreamPipe),
         ) = self.scenario()
         {
             self.start(scenario);

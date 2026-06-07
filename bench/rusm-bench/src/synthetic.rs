@@ -168,6 +168,13 @@ impl SyntheticSource {
                 latency_ns: (200_000, 2_000_000),
                 processes: (100, 1_000),
             },
+            // Real from Phase 7; placeholder shaped like a fast byte pipe
+            // (bytes/sec, so the magnitude is large).
+            Scenario::StreamPipe => Ranges {
+                ops: (200_000_000, 900_000_000),
+                latency_ns: (1_000, 20_000),
+                processes: (2, 16),
+            },
         }
     }
 }

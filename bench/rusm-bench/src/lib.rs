@@ -17,6 +17,7 @@ mod runner;
 mod sample;
 mod scenario;
 mod server;
+mod streampipe;
 mod synthetic;
 
 pub use config::{ComponentSpec, NodeConfig};
