@@ -183,6 +183,7 @@ mod tests {
     const HELLO: &[u8] = include_bytes!("../../tests/fixtures/http_hello.wasm");
     const SSE: &[u8] = include_bytes!("../../tests/fixtures/sse_ticker.wasm");
     const TS_HELLO: &str = include_str!("../../tests/fixtures/ts_http_hello.js");
+    const TS_SSE: &str = include_str!("../../tests/fixtures/ts_sse_ticker.js");
 
     /// One raw HTTP/1.1 GET (Connection: close) → the full response text.
     async fn get(addr: std::net::SocketAddr) -> String {
@@ -292,6 +293,39 @@ mod tests {
             response.contains("hello from TS"),
             "the TS fetch handler produced the body: {response}"
         );
+
+        handle.abort();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_typescript_component_streams_server_sent_events() {
+        // A TS handler returns a Response whose body is a ReadableStream; the raw
+        // wasi:http runner pulls + flushes each event, so the response is chunked
+        // (written incrementally) rather than a single Content-Length body.
+        let wr = WasmRuntime::new(Runtime::new()).unwrap();
+        let server = wr.http_server_js(TS_SSE, CapabilityProfile::Trusted.capabilities());
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = tokio::spawn(server.serve(listener));
+
+        let response = get(addr).await;
+        let lower = response.to_lowercase();
+        assert!(response.starts_with("HTTP/1.1 200"), "got: {response}");
+        assert!(
+            lower.contains("text/event-stream"),
+            "SSE content-type from the TS guest: {response}"
+        );
+        assert!(
+            lower.contains("transfer-encoding: chunked"),
+            "streamed incrementally (chunked), not buffered: {response}"
+        );
+        for n in 0..5 {
+            assert!(
+                response.contains(&format!("data: tick {n}")),
+                "missing event {n}"
+            );
+        }
 
         handle.abort();
     }
