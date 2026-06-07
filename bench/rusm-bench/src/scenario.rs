@@ -145,8 +145,8 @@ impl Scenario {
                 "Module storm",
                 "How fast can RUSM spawn raw wasip1 core modules — Lunatic's exact domain?",
                 vec![
-                    "What's unique here: like the spawn storm and component storm, but each process is a raw **wasip1 core module** — the exact artifact Lunatic hosts. It's the isolation tier *between* a bare task and a full component.",
-                    "Headline: core-module spawns/sec — measured ~475k/sec (instantiate from the pooling allocator + copy-on-write image + precomputed export index, then schedule + reap). Faster than a component (~440k, no component-model wiring), slower than a bare task (~2.4M, real Wasm isolation).",
+                    "What's unique here: like the spawn storm and component storm, but each process is a raw **wasip1 core module** — the *exact artifact Lunatic hosts*, so it's the apples-to-apples number for a head-to-head.",
+                    "Headline: core-module spawns/sec — measured ~475k/sec (instantiate from the pooling allocator + copy-on-write image + precomputed export index, then schedule + reap). Notably this is ~the same as a wasip2 component (~440k): the component model costs almost nothing over a raw core module on RUSM's pooled path. The real gap is to a bare task (~2.4M) — that ~5x is the price of real Wasm memory isolation.",
                     "Phase 6: REAL wasip1. The same lever set as the component path runs live — pooling allocator, CoW, per-module InstancePre, precomputed ModuleExport index, single runtime-handle clone, park-based backpressure.",
                     "The direct Lunatic head-to-head: Lunatic spawns wasip1 core-module processes via on-demand allocation + per-instruction fuel; RUSM recycles pooled instances and preempts with epochs — and hosts components too.",
                 ],

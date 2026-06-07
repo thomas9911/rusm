@@ -55,9 +55,11 @@ lookup) + **opt-in mailbox depth** (default off → zero hot-path atomics) + a s
 runtime-handle clone + park-based backpressure. The live **component-storm**
 scenario sustains **~440k component spawns/sec** (p50 ~1 µs); the **module-storm**
 scenario spawns the *same artifact Lunatic hosts* — wasip1 core modules — at
-**~475k spawns/sec**. The cost ladder across isolation tiers: a bare task
-~2.4M/sec → a wasip1 core module ~475k/sec → a wasip2 component ~440k/sec. Lunatic
-hosts only core modules with its own ABI — it has no component-model host at all.
+**~475k spawns/sec**. The two being so close is the point: **the component model
+costs almost nothing over a raw core module** on RUSM's pooled path. The only big
+step is to a bare task (~2.4M/sec) — that ~5x is the price of real Wasm memory
+isolation, paid once whether you host a core module or a component. Lunatic hosts
+only core modules with its own ABI — it has no component-model host at all.
 
 ## Concepts introduced
 

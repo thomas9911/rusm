@@ -33,8 +33,11 @@ sandbox, guest crate, clustering) are still *planned*. The value is in the
 > **The direct head-to-head** is the **module-storm** scenario: RUSM spawns the
 > *same artifact Lunatic hosts* — wasip1 core modules — at **~475k spawns/sec**
 > live, recycling pooled instances and preempting with epochs (vs Lunatic's
-> on-demand allocation + per-instruction fuel). The cost ladder it reveals: a bare
-> task ~2.4M/sec → a wasip1 core module ~475k/sec → a wasip2 component ~440k/sec.
+> on-demand allocation + per-instruction fuel). Telling detail: that's ~the same
+> as a wasip2 component (~440k/sec) — **the component model is nearly free over a
+> raw core module** on RUSM's pooled path. The only big step is to a bare task
+> (~2.4M/sec); that ~5x is the price of real Wasm memory isolation, paid once
+> whether you run a core module or a component.
 >
 > The **fairness** scenario runs on real Wasm — spinners saturate every core, yet
 > bystanders progress at ~50M+ ops/sec (past 400M on free cores), proving epoch
