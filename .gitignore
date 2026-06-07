@@ -1,9 +1,13 @@
 # Rust
 /target
-# Guest fixture crates build into their own nested target/ dirs (we check in only
-# the prebuilt .wasm, not the build output).
+# Nested standalone crates (guest fixtures, the rquickjs runners, the guest libs)
+# each build into their OWN target/ — never check in build output, only the
+# prebuilt .wasm. The catch-all stops a new nested crate leaking its target/ again
+# (e.g. rquickjs-sys downloads a ~100MB wasi-sdk into its build dir).
+**/target/
 crates/rusm-wasm/tests/fixtures/*/target/
 crates/rusm-wasm/js-runner/target/
+crates/rusm-wasm/js-http-runner/target/
 crates/rusm-rs/target/
 crates/rusm-rs-macros/target/
 # Example apps build their components into a local wasm/ dir (checked-in source only).
