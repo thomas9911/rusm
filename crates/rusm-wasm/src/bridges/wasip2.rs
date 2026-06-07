@@ -181,6 +181,41 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn components_call_each_other_via_the_actor_abi() {
+        // Two instances of one component: the first registers "responder" and
+        // serves request/reply; the second finds it via whereis and calls it,
+        // forwarding the reply to a native collector — component-to-component
+        // "callbacks" with no new runtime API, just the actor ABI.
+        const CALLBACK: &[u8] = include_bytes!("../../tests/fixtures/callback.wasm");
+        let rt = Runtime::new();
+        let wr = WasmRuntime::new(rt.clone()).unwrap();
+        let pre = wr
+            .prepare_component(&wr.compile_component(CALLBACK).unwrap(), "run")
+            .unwrap();
+
+        // Native collector receives the caller's final result.
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let collector = rt.spawn(move |mut ctx| async move {
+            let _ = tx.send(ctx.recv().await.message().unwrap());
+        });
+        assert!(rt.register("collector", collector.pid()));
+
+        // Instance 1 → responder; wait until it has registered the name.
+        let _responder = wr.spawn_component(&pre);
+        for _ in 0..200 {
+            if rt.whereis("responder").is_some() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        assert!(rt.whereis("responder").is_some(), "responder must register");
+
+        // Instance 2 → caller: calls the responder (21 -> doubled -> 42).
+        let _caller = wr.spawn_component(&pre);
+        assert_eq!(rx.await.unwrap(), vec![42]);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_memory_cap_crashes_a_component_that_grows_past_it() {
         let rt = Runtime::new();
         let wr = WasmRuntime::new(rt.clone()).unwrap();
