@@ -1,0 +1,16 @@
+# Proc-macros for rusm-rs: `#[service]` (a module of functions → a dispatch loop)
+# and `#[client]` (a module of signatures → a typed client). Host-compiled (a
+# proc-macro), pulled in by rusm-rs; excluded from the host workspace.
+[package]
+name = "rusm-rs-macros"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+proc-macro = true
+
+[dependencies]
+syn = { version = "2", features = ["full"] }
+quote = "1"
+proc-macro2 = "1"

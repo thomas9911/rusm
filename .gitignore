@@ -5,6 +5,7 @@
 crates/rusm-wasm/tests/fixtures/*/target/
 crates/rusm-wasm/js-runner/target/
 crates/rusm-rs/target/
+crates/rusm-rs-macros/target/
 # Example apps build their components into a local wasm/ dir (checked-in source only).
 examples/*/wasm/
 **/*.rs.bk

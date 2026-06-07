@@ -1,0 +1,25 @@
+# Exercises the `#[rusm_rs::service]` macro: a `calc` service (functions →
+# dispatch loop + typed Client). One component plays both roles for the test —
+# "serve" → run the service; otherwise spawn a sibling `calc` and call it via the
+# generated Client. Built for wasm32-wasip2, checked in as rs_service.wasm.
+#   cargo build --target wasm32-wasip2 --release
+#   cp target/wasm32-wasip2/release/rs_service.wasm ../rs_service.wasm
+[workspace]
+
+[package]
+name = "rs-service"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+name = "rs_service"
+
+[profile.release]
+opt-level = "z"
+strip = true
+
+[dependencies]
+rusm-rs = { path = "../../../../rusm-rs" }
+wit-bindgen = "0.46"

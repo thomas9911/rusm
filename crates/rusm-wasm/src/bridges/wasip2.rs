@@ -717,6 +717,38 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_rust_service_macro_dispatches_and_a_typed_client_calls_it() {
+        // `#[rusm_rs::service] mod calc` → a serve() dispatch loop + a typed Client.
+        // One component plays both roles: the commander spawns a sibling `calc` by
+        // name and calls `add`/`greet` through the generated client.
+        const RS_SERVICE: &[u8] = include_bytes!("../../tests/fixtures/rs_service.wasm");
+        let rt = Runtime::new();
+        let wr = WasmRuntime::new(rt.clone()).unwrap();
+        let pre = wr
+            .prepare_component(&wr.compile_component(RS_SERVICE).unwrap(), "run")
+            .unwrap();
+        // Register it by name so the commander's Client::spawn("calc") resolves.
+        wr.register_component("calc", pre.clone());
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let collector = rt.spawn(move |mut ctx| async move {
+            let _ = tx.send(ctx.recv().await.message().unwrap());
+        });
+        // The commander needs the spawn capability (Trusted grants it).
+        let commander = wr.spawn_component_with(&pre, CapabilityProfile::Trusted.capabilities());
+        rt.send(
+            commander.pid(),
+            collector.pid().raw().to_string().into_bytes(),
+        );
+
+        assert_eq!(
+            String::from_utf8(rx.await.unwrap()).unwrap(),
+            "sum=5 hi RUSM",
+            "the typed client called the macro-generated service"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn component_stream_errors_are_reported_not_fatal() {
         // role 2: open to a dead pid, write/read bogus handles — each must return
         // none/false cleanly (flags 0b111), never trap.

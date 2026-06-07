@@ -24,8 +24,11 @@ use rusm::runtime::actor;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
+pub use rusm_rs_macros::service;
 pub use serde;
 pub use serde_json;
+
+pub mod wire;
 
 /// A process identifier (Erlang's pid).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -87,8 +90,24 @@ pub fn send_bytes(to: Pid, msg: &[u8]) {
     actor::send(to.0, msg);
 }
 
-/// Block until the next message arrives; returns its raw bytes.
+thread_local! {
+    /// Messages the RPC client set aside while awaiting a reply, so the app's own
+    /// `receive` still sees them (the guest is single-threaded — one mailbox).
+    static INBOX: std::cell::RefCell<std::collections::VecDeque<Vec<u8>>> =
+        std::cell::RefCell::new(std::collections::VecDeque::new());
+}
+
+/// Set a message aside for the app's own `receive` (used by the RPC client).
+pub(crate) fn stash(raw: Vec<u8>) {
+    INBOX.with(|q| q.borrow_mut().push_back(raw));
+}
+
+/// Block until the next message arrives; returns its raw bytes. Drains any mail
+/// the RPC client set aside first (FIFO preserved).
 pub fn receive_bytes() -> Vec<u8> {
+    if let Some(raw) = INBOX.with(|q| q.borrow_mut().pop_front()) {
+        return raw;
+    }
     actor::receive()
 }
 
