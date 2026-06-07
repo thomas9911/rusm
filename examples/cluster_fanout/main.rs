@@ -103,7 +103,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let stop = stop.clone();
         handles.push(tokio::spawn(async move {
             while !stop.load(Ordering::Relaxed) {
-                if hub.send(&worker, "echo", &message(base, "collector")).await.is_err() {
+                if hub
+                    .send(&worker, "echo", &message(base, "collector"))
+                    .await
+                    .is_err()
+                {
                     break;
                 }
             }
@@ -121,9 +125,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let rate = round_trips as f64 / elapsed;
 
     println!("cluster fan-out: {workers} worker nodes, {senders} senders (QUIC+TLS loopback)\n");
-    println!("unloaded round-trip latency: p50 {:.1}µs  p99 {:.1}µs", pct(0.50), pct(0.99));
+    println!(
+        "unloaded round-trip latency: p50 {:.1}µs  p99 {:.1}µs",
+        pct(0.50),
+        pct(0.99)
+    );
     println!("saturation round-trips:      {round_trips}  ({rate:.0}/sec)");
-    println!("saturation cross-node msgs:  {}  ({:.0}/sec)", round_trips * 2, rate * 2.0);
+    println!(
+        "saturation cross-node msgs:  {}  ({:.0}/sec)",
+        round_trips * 2,
+        rate * 2.0
+    );
     let _ = nodes; // held alive for the run
     Ok(())
 }

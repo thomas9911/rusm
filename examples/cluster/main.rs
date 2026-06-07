@@ -35,7 +35,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let london = ClusterNode::bind("london", Runtime::new(), local, &id)?;
     let greeter = london.runtime().spawn(|mut ctx| async move {
         while let Some(msg) = ctx.recv().await.message() {
-            println!("   [london] greeter received: {}", String::from_utf8_lossy(&msg));
+            println!(
+                "   [london] greeter received: {}",
+                String::from_utf8_lossy(&msg)
+            );
         }
     });
     london.register_global("greeter", greeter.pid());
@@ -50,7 +53,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     while tokyo.whereis_global("greeter").is_none() {
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
-    println!("[tokyo] 'greeter' lives on node: {:?}", tokyo.whereis_global("greeter").unwrap());
+    println!(
+        "[tokyo] 'greeter' lives on node: {:?}",
+        tokyo.whereis_global("greeter").unwrap()
+    );
     tokyo.send_global("greeter", b"hello from tokyo!").await?;
 
     // 6. Live attach: see what london is running, from tokyo.
