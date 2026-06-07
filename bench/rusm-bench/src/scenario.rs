@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 /// The roadmap phase RUSM has reached. A scenario runs on **real** runtime data
 /// once its `real_after_phase` is at or below this — bump it as each phase lands.
-pub const CURRENT_PHASE: u8 = 6;
+pub const CURRENT_PHASE: u8 = 7;
 
 /// A benchmark scenario the dashboard can run.
 ///
@@ -16,6 +16,7 @@ pub enum Scenario {
     Fairness,
     FaultRecovery,
     ConnectionStorm,
+    ComponentStorm,
     DistributedFanout,
 }
 
@@ -40,12 +41,13 @@ impl Scenario {
     // Ordered by the phase each scenario goes live (the dashboard menu shows them
     // in this order). The enum discriminants are unchanged, so the synthetic
     // source stays deterministic.
-    pub const ALL: [Scenario; 6] = [
+    pub const ALL: [Scenario; 7] = [
         Scenario::SpawnStorm,        // phase 1
         Scenario::PingPong,          // phase 2
         Scenario::FaultRecovery,     // phase 3
         Scenario::ConnectionStorm,   // phase 5
         Scenario::Fairness,          // phase 6
+        Scenario::ComponentStorm,    // phase 7
         Scenario::DistributedFanout, // phase 9
     ];
 
@@ -56,6 +58,7 @@ impl Scenario {
             Scenario::Fairness => "fairness",
             Scenario::FaultRecovery => "fault-recovery",
             Scenario::ConnectionStorm => "connection-storm",
+            Scenario::ComponentStorm => "component-storm",
             Scenario::DistributedFanout => "distributed-fanout",
         }
     }
@@ -125,6 +128,18 @@ impl Scenario {
                     "Tip: compare observer-on vs observer-off to confirm live introspection is nearly free.",
                 ],
                 5,
+            ),
+            Scenario::ComponentStorm => (
+                "Component storm",
+                "Instantiate real WASM components as fast as possible; measures component spawns/sec.",
+                vec![
+                    "Spawns real WASI **components** instance-per-process — each its own sandboxed Wasm instance and Tokio task — as fast as the runtime allows.",
+                    "Headline: component spawns/sec. This is the real cost of hosting components: instantiate (from the pooling allocator + copy-on-write image) + schedule + reap.",
+                    "Phase 7: REAL components. The optimized lever set runs live — pooling allocator, CoW, per-module InstancePre, precomputed export index, single runtime-handle clone, zero-overhead default mailbox.",
+                    "Lunatic hosts only core modules with its own ABI — it has no component-model host at all; matching core-module spawn economics while hosting components is the bar we clear here.",
+                    "Backpressure holds the live population bounded (below the pool's slot count), so this is sustainable instantiate-and-reap throughput, not an unbounded pile-up.",
+                ],
+                7,
             ),
             Scenario::DistributedFanout => (
                 "Distributed fan-out",
@@ -206,7 +221,7 @@ mod tests {
             .filter(|m| m.real)
             .map(|m| m.id)
             .collect();
-        // Exactly the scenarios with a real engine (real_after_phase <= 6); only
+        // Exactly the scenarios with a real engine (real_after_phase <= 7); only
         // distributed-fanout (phase 9) is still synthetic.
         assert_eq!(
             real,
@@ -215,7 +230,8 @@ mod tests {
                 "ping-pong",
                 "fault-recovery",
                 "connection-storm",
-                "fairness"
+                "fairness",
+                "component-storm"
             ]
         );
     }

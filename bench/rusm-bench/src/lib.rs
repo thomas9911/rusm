@@ -2,6 +2,7 @@
 //! a runner that aggregates ticks into transportable frames, and the WebSocket
 //! server feeding the dashboard and the `rusm attach` REPL.
 
+mod componentstorm;
 mod config;
 mod connectionstorm;
 mod engine;

@@ -1,6 +1,7 @@
 use rusm_metrics::{LatencyHistogram, TimeSeries};
 use rusm_observer::{NodeSample, Observer};
 
+use crate::componentstorm::ComponentStormEngine;
 use crate::connectionstorm::ConnectionStormEngine;
 use crate::engine::SpawnStormEngine;
 use crate::fairness::FairnessEngine;
@@ -56,6 +57,7 @@ enum Engine {
     FaultRecovery(FaultRecoveryEngine),
     ConnectionStorm(ConnectionStormEngine),
     Fairness(FairnessEngine),
+    ComponentStorm(ComponentStormEngine),
 }
 
 impl Engine {
@@ -84,6 +86,10 @@ impl Engine {
                 config.spawn_workers,
                 config.scheduler_count,
             )),
+            Scenario::ComponentStorm => Engine::ComponentStorm(ComponentStormEngine::new(
+                config.spawn_workers,
+                config.scheduler_count,
+            )),
             _ => Engine::Synthetic(SyntheticSource::new(scenario)),
         }
     }
@@ -101,6 +107,7 @@ impl Engine {
             Engine::FaultRecovery(engine) => engine.tick(),
             Engine::ConnectionStorm(engine) => engine.tick(),
             Engine::Fairness(engine) => engine.tick(),
+            Engine::ComponentStorm(engine) => engine.tick(),
         }
     }
 }
@@ -157,7 +164,8 @@ impl Runner {
             | Scenario::PingPong
             | Scenario::FaultRecovery
             | Scenario::ConnectionStorm
-            | Scenario::Fairness),
+            | Scenario::Fairness
+            | Scenario::ComponentStorm),
         ) = self.scenario()
         {
             self.start(scenario);
