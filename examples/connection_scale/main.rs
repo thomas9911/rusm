@@ -3,15 +3,19 @@
 //! ceiling and reports the measured peak.
 //!
 //! Unlike `connection-storm` (which recycles connections to measure connect/sec
-//! throughput against **one** port), this **holds every connection open**, so it must
-//! spread across many listener ports — a single loopback port tops out at the
-//! ephemeral-port range (~16k here). It ramps until connects start failing (EMFILE:
-//! the fd ceiling) and reports the peak held.
+//! throughput against **one** port), this **holds every connection open**, so the
+//! question is pure concurrency. It ramps to a target (default: 80% of the system fd
+//! ceiling) and reports the peak held, stopping when held plateaus.
 //!
-//! The ceiling is the **OS** (file descriptors — 2 per held loopback connection — and
-//! the per-port ephemeral range), never RUSM: minting a process per connection is
-//! near-free. We raise the fd limit, shrink socket buffers to fit RAM, and shard
-//! across ports so the only wall left is the kernel's.
+//! The ceiling is the **OS**, never RUSM: minting a process per connection is near-free.
+//! Two kernel walls, both lifted to expose the real one:
+//! - **File descriptors** — loopback puts both ends in this process, so a connection
+//!   costs 2 fds. We raise the limit to the per-process cap; that's the ceiling.
+//! - **Ephemeral source ports** — a naive loopback client exhausts its ~16k ephemeral
+//!   ports first. We dodge that with the *4-tuple trick*: each client task owns a
+//!   disjoint stripe of explicit source ports (`SO_REUSEADDR`), each paired with all
+//!   `PORTS` destinations, so every `(src, dst)` 4-tuple is unique and no task races
+//!   another to bind a port. Socket buffers are shrunk so RAM isn't the wall.
 //!
 //! ```sh
 //! cargo run --release -p rusm-bench --example connection_scale -- [target] [client_tasks]
@@ -154,13 +158,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("\nreached target.");
             break;
         }
-        // Ramp stalled (the fd/port wall): held isn't growing but failures are.
-        if now == last && fails > 0 {
+        // A plateau is the ceiling, whatever the cause — fd EMFILE (failures climb) or
+        // the source-port space running out (tasks stop cleanly, no failures). Exit on
+        // no-growth either way, so a too-high target can never hang the reporter.
+        if now == last && now > 0 {
             stalls += 1;
             if stalls >= 3 {
-                println!(
-                    "\nramp hit the wall (connects failing, held flat) — this is the ceiling."
-                );
+                println!("\nramp plateaued — this is the ceiling ({fails} connect failures).");
                 break;
             }
         } else {
