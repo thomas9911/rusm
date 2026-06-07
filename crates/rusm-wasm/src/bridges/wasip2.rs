@@ -614,6 +614,85 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_typed_client_streams_a_generator_handler() {
+        // A service exports an async generator; the commander `for await`s the typed
+        // call — chunks ride a RUSM byte stream under the hood, surfaced as values.
+        const COUNTER: &str = r#"
+            module.exports.count = async function* (n) { for (let i = 0; i < n; i++) yield i; };
+        "#;
+        const COMMANDER: &str = r#"
+            module.exports.default = async function () {
+                const collector = await Process.receiveText();
+                const c = spawn("counter");
+                const acc = [];
+                for await (const x of c.count(3)) acc.push(x);   // streaming typed call
+                Process.send(collector, "got:" + acc.join(","));
+            };
+        "#;
+        let rt = Runtime::new();
+        let wr = WasmRuntime::new(rt.clone()).unwrap();
+        wr.register_js_component("counter", COUNTER.as_bytes());
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let collector = rt.spawn(move |mut ctx| async move {
+            let _ = tx.send(ctx.recv().await.message().unwrap());
+        });
+        let commander = wr.spawn_js_with(
+            COMMANDER.as_bytes(),
+            CapabilityProfile::Trusted.capabilities(),
+        );
+        rt.send(
+            commander.pid(),
+            collector.pid().raw().to_string().into_bytes(),
+        );
+        assert_eq!(
+            String::from_utf8(rx.await.unwrap()).unwrap(),
+            "got:0,1,2",
+            "the generator's yielded chunks streamed through the typed client"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_typed_client_passes_a_callback() {
+        // A function argument becomes a callback: it stays in the caller, and the
+        // service's invocations travel back as messages the client routes to it.
+        const WORKER: &str = r#"
+            module.exports.work = async function (onProgress) {
+                onProgress(1); onProgress(2);
+                return "ok";
+            };
+        "#;
+        const COMMANDER: &str = r#"
+            module.exports.default = async function () {
+                const collector = await Process.receiveText();
+                const w = spawn("worker");
+                const log = [];
+                const r = await w.work((n) => log.push(n));   // callback stays home
+                Process.send(collector, r + ":" + log.join(","));
+            };
+        "#;
+        let rt = Runtime::new();
+        let wr = WasmRuntime::new(rt.clone()).unwrap();
+        wr.register_js_component("worker", WORKER.as_bytes());
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let collector = rt.spawn(move |mut ctx| async move {
+            let _ = tx.send(ctx.recv().await.message().unwrap());
+        });
+        let commander = wr.spawn_js_with(
+            COMMANDER.as_bytes(),
+            CapabilityProfile::Trusted.capabilities(),
+        );
+        rt.send(
+            commander.pid(),
+            collector.pid().raw().to_string().into_bytes(),
+        );
+        assert_eq!(
+            String::from_utf8(rx.await.unwrap()).unwrap(),
+            "ok:1,2",
+            "the callback ran in the caller as the service invoked it"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn component_stream_errors_are_reported_not_fatal() {
         // role 2: open to a dead pid, write/read bogus handles — each must return
         // none/false cleanly (flags 0b111), never trap.

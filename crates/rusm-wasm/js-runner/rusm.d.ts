@@ -21,6 +21,10 @@
 // and `Stream.read` are async (`await`) — the host call suspends the instance's
 // fiber, so it's cheap, and they compose with other Promises.
 
+// The runner polyfills a subset of Web APIs (console, URL, TextEncoder/Decoder,
+// Headers, ReadableStream); add `"DOM"` to your tsconfig `lib` to type them.
+// (`fetch` is typed but rejects at runtime until RUSM hosts wasi:http — roadmap.)
+
 /** A back-pressured byte stream to or from another process. */
 declare interface Stream {
   /** Write a chunk; a string is sent as UTF-8. Returns false if the peer is gone. */
@@ -61,11 +65,22 @@ declare const Process: {
   acceptStream(): Stream;
 };
 
-/** A typed client over a spawned service: each exported function becomes an async
- *  call (awaits the reply); `cast` is fire-and-forget; `pid`/`stop` manage it. */
+/** The result of a typed call. A regular handler → a `Promise` you `await`; a
+ *  generator handler → an `AsyncIterable` you `for await`. Function arguments
+ *  become callbacks that stay in the caller — the service's invocations travel
+ *  back as messages. */
+type RusmCall<R> = R extends AsyncIterable<infer T>
+  ? AsyncIterable<T> & PromiseLike<void>
+  : R extends Iterable<infer T>
+    ? AsyncIterable<T> & PromiseLike<void>
+    : Promise<Awaited<R>>;
+
+/** A typed client over a spawned service: each exported function becomes a call
+ *  (`await`) — or a stream (`for await`); `cast` is fire-and-forget; `pid`/`stop`
+ *  manage it. */
 type ServiceClient<T> = {
   [K in keyof T]: T[K] extends (...args: infer A) => infer R
-    ? (...args: A) => Promise<Awaited<R>>
+    ? (...args: A) => RusmCall<R>
     : never;
 } & {
   /** Fire-and-forget variants (no reply awaited). */

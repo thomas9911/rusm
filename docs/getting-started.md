@@ -271,8 +271,14 @@ import type * as Calc from "../calc/index";
 
 export default async function () {
   const calc = spawn<typeof Calc>("calc");     // spawn-from-guest, capability-gated
-  console.log("2 + 3 =", await calc.add(2, 3)); // concealed call: spawn + send + receive
-  console.log(await calc.greet({ name: "RUSM" }));
+  console.log("2 + 3 =", await calc.add(2, 3)); // call: spawn + send + receive, hidden
+
+  // A generator handler streams: `for await` its chunks.
+  for await (const n of calc.countTo(3)) console.log(n);
+
+  // A function argument is a callback — it stays here; the service's calls come
+  // back as messages routed to it.
+  await calc.work((pct) => console.log(`progress ${pct}`));
 }
 ```
 
@@ -306,11 +312,13 @@ hi RUSM
 still suspends the whole instance's fiber (freeing the worker), so it's cheap and
 composes with Promises. The full `Process` API (`self`/`list`/`spawn`/`send`/
 `receive`/`receiveText`/`register`/`whereis`/`isAlive`/`kill`/`setLabel`/
-`openStream`/`acceptStream`), the `spawn<T>()` typed client, binary (`Uint8Array`)
-messages, and [byte streams](#streaming-from-a-component) are all typed by
-`rusm.d.ts`; the Web APIs the runner polyfills (`URL`, `TextEncoder`, `Headers`,
-`ReadableStream`, `console`) are simply present. See the runnable `ts-app` example
-(Bun-built service + commander) and `host_ts_component`.
+`openStream`/`acceptStream`), the `spawn<T>()` typed client (call / `for await`
+stream / callback args / `.cast` / `.stop()`), binary (`Uint8Array`) messages, and
+[byte streams](#streaming-from-a-component) are all typed by `rusm.d.ts`. The Web
+APIs the runner polyfills (`URL`, `TextEncoder`, `Headers`, `ReadableStream`,
+`console`) are typed by the standard `DOM` lib — add it to your `tsconfig.json`
+(`"lib": ["ES2022", "DOM"]`). See the runnable `ts-app` example (Bun-built service +
+commander, with streaming + a callback) and `host_ts_component`.
 
 > **`fetch` is deferred.** It rejects with a clear error until RUSM hosts
 > `wasi:http` (roadmap) — it's not silently missing.
