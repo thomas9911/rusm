@@ -195,6 +195,12 @@ impl ProcessEntry {
             depth.fetch_add(1, Ordering::Relaxed);
         }
     }
+
+    /// Current mailbox depth (0 unless depth is tracked — which it always is when a
+    /// capacity is set, since capacity is enforced against this count).
+    fn depth_value(&self) -> usize {
+        self.depth.as_ref().map_or(0, |d| d.load(Ordering::Relaxed))
+    }
 }
 
 #[derive(Default)]
@@ -203,6 +209,13 @@ struct Inner {
     /// spawn allocates no counter and send/recv do no atomics — see
     /// [`Runtime::with_mailbox_depth`].
     track_depth: bool,
+    /// Opt-in per-process mailbox capacity (off by default → unbounded). When set,
+    /// `enqueue` sheds *user* messages once a mailbox holds this many — overload
+    /// protection. System signals are never shed. See
+    /// [`Runtime::with_mailbox_capacity`].
+    mailbox_capacity: Option<usize>,
+    /// User messages shed because a bounded mailbox was at capacity.
+    dropped: AtomicU64,
     next_id: AtomicU64,
     next_ref: AtomicU64,
     spawned: AtomicU64,
@@ -224,6 +237,16 @@ impl Inner {
     fn enqueue(&self, to: Pid, item: Received) -> bool {
         match self.table.get(&to.0) {
             Some(entry) => {
+                // Opt-in overload protection: once a bounded mailbox is at
+                // capacity, shed further *user* messages. System signals (exits,
+                // monitor downs — delivered via `propagate_exit`/`deliver`) are
+                // never shed, so back-pressure never breaks supervision.
+                if let Some(cap) = self.mailbox_capacity {
+                    if matches!(item, Received::Message(_)) && entry.depth_value() >= cap {
+                        self.dropped.fetch_add(1, Ordering::Relaxed);
+                        return false;
+                    }
+                }
                 if entry.mailbox.send(item).is_ok() {
                     entry.note_enqueued();
                     true
@@ -308,6 +331,27 @@ impl Runtime {
         Self {
             inner: Arc::new(Inner {
                 track_depth: true,
+                ..Default::default()
+            }),
+        }
+    }
+
+    /// Like [`new`](Runtime::new) but **bounds each process mailbox** at `capacity`
+    /// user messages. Once a mailbox holds that many, further *user* messages are
+    /// **shed** — dropped and counted in
+    /// [`dropped_messages`](Runtime::dropped_messages) — rather than growing memory
+    /// without bound under a producer faster than its consumer (Erlang's
+    /// `max_heap_size` / a bounded `GenStage`, in spirit).
+    ///
+    /// **System signals are never shed:** exit and monitor-down messages always
+    /// land (they ride the same mailbox but bypass the capacity check), so overload
+    /// back-pressure can never break links, monitors, or supervision. Enabling this
+    /// also tracks mailbox depth — that count is how capacity is enforced.
+    pub fn with_mailbox_capacity(capacity: usize) -> Self {
+        Self {
+            inner: Arc::new(Inner {
+                track_depth: true,
+                mailbox_capacity: Some(capacity),
                 ..Default::default()
             }),
         }
@@ -419,6 +463,13 @@ impl Runtime {
     /// Total processes that have terminated (for any reason).
     pub fn finished(&self) -> u64 {
         self.inner.finished.load(Ordering::Relaxed)
+    }
+
+    /// Total user messages shed because a bounded mailbox was at capacity — always
+    /// 0 unless built with [`with_mailbox_capacity`](Runtime::with_mailbox_capacity).
+    /// A rising count is the signal that producers are outrunning a consumer.
+    pub fn dropped_messages(&self) -> u64 {
+        self.inner.dropped.load(Ordering::Relaxed)
     }
 
     pub fn is_alive(&self, pid: Pid) -> bool {
@@ -1381,6 +1432,86 @@ mod tests {
         let _ = done_rx.await; // all three consumed by now
         assert_eq!(rt.info(p.pid()).unwrap().mailbox_depth, 0);
         p.kill();
+    }
+
+    #[tokio::test]
+    async fn a_bounded_mailbox_sheds_user_messages_past_capacity() {
+        let rt = Runtime::with_mailbox_capacity(3);
+        // A process that holds its mailbox open but never consumes it.
+        let p = rt.spawn(|ctx| async move {
+            let _hold = ctx; // keep the receiver alive (don't drain it)
+            std::future::pending::<()>().await;
+        });
+        // `send` is synchronous, so this is race-free: the first three land, the
+        // rest are shed once depth hits the capacity.
+        for i in 0..10u8 {
+            rt.send(p.pid(), vec![i]);
+        }
+        assert_eq!(rt.info(p.pid()).unwrap().mailbox_depth, 3);
+        assert_eq!(rt.dropped_messages(), 7);
+        p.kill();
+    }
+
+    #[tokio::test]
+    async fn a_full_mailbox_still_accepts_system_signals() {
+        let rt = Runtime::with_mailbox_capacity(2);
+        let (go_tx, go_rx) = tokio::sync::oneshot::channel::<()>();
+        let (report_tx, report_rx) = tokio::sync::oneshot::channel();
+        let watcher = rt.spawn(move |mut ctx| async move {
+            let _ = go_rx.await; // stay parked until the test has filled the box
+            let mut got = Vec::new();
+            for _ in 0..3 {
+                got.push(ctx.recv().await);
+            }
+            let _ = report_tx.send(got);
+        });
+        let wpid = watcher.pid();
+
+        // A target the watcher monitors; killing it produces a Down for the watcher.
+        let target = rt.spawn(|ctx| async move {
+            let _hold = ctx;
+            std::future::pending::<()>().await;
+        });
+        let tpid = target.pid();
+        rt.monitor(wpid, tpid);
+
+        // Fill the mailbox to capacity, then over it — the third is shed.
+        assert!(rt.send(wpid, b"a".to_vec()));
+        assert!(rt.send(wpid, b"b".to_vec()));
+        assert!(!rt.send(wpid, b"c".to_vec()));
+        assert_eq!(rt.dropped_messages(), 1);
+
+        // Killing the target delivers a Down — a *system* signal, so it must land
+        // even though the mailbox is at capacity. Depth rising to 3 proves it.
+        rt.kill(tpid);
+        for _ in 0..500 {
+            if rt.info(wpid).map(|i| i.mailbox_depth) == Some(3) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        }
+        assert_eq!(
+            rt.info(wpid).unwrap().mailbox_depth,
+            3,
+            "the Down landed despite the full mailbox"
+        );
+
+        // Released, the watcher sees both user messages and the Down (never "c").
+        let _ = go_tx.send(());
+        let got = tokio::time::timeout(std::time::Duration::from_secs(5), report_rx)
+            .await
+            .expect("watcher never reported")
+            .unwrap();
+        let users = got
+            .iter()
+            .filter(|r| matches!(r, Received::Message(_)))
+            .count();
+        let downs = got
+            .iter()
+            .filter(|r| matches!(r, Received::Down { .. }))
+            .count();
+        assert_eq!(users, 2, "both queued user messages survive");
+        assert_eq!(downs, 1, "the system Down was delivered, not shed");
     }
 
     #[tokio::test]
