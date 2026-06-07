@@ -3,6 +3,7 @@
 # Guest fixture crates build into their own nested target/ dirs (we check in only
 # the prebuilt .wasm, not the build output).
 crates/rusm-wasm/tests/fixtures/*/target/
+crates/rusm-wasm/js-runner/target/
 **/*.rs.bk
 *.profraw
 

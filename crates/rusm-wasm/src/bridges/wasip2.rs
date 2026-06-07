@@ -265,7 +265,6 @@ mod tests {
         // bundle bridged to the actor world. The bundle uses `Process.receive`,
         // `Process.setLabel`, `Process.self`, and `Process.send` — proving a TS/JS
         // guest is a first-class, sandboxed RUSM process.
-        const JS_RUNNER: &[u8] = include_bytes!("../../tests/fixtures/js_runner.wasm");
         const BUNDLE: &str = r#"
             const replyTo = Process.receiveText();       // msg: who to answer
             Process.setLabel("ts-worker");
@@ -273,18 +272,14 @@ mod tests {
         "#;
         let rt = Runtime::new();
         let wr = WasmRuntime::new(rt.clone()).unwrap();
-        let pre = wr
-            .prepare_component(&wr.compile_component(JS_RUNNER).unwrap(), "run")
-            .unwrap();
 
         let (tx, rx) = tokio::sync::oneshot::channel();
         let collector = rt.spawn(move |mut ctx| async move {
             let _ = tx.send(ctx.recv().await.message().unwrap());
         });
 
-        let guest = wr.spawn_component(&pre);
-        // msg 1: the JS bundle; msg 2: the reply-to pid (decimal string).
-        rt.send(guest.pid(), BUNDLE.as_bytes().to_vec());
+        // spawn_js feeds the bundle as the first message; then the reply-to pid.
+        let guest = wr.spawn_js(BUNDLE.as_bytes());
         rt.send(guest.pid(), collector.pid().raw().to_string().into_bytes());
 
         let reply = String::from_utf8(rx.await.unwrap()).unwrap();
@@ -299,7 +294,6 @@ mod tests {
     async fn a_javascript_bundle_has_web_api_polyfills() {
         // The runner installs Web API polyfills (webapi.js) before the bundle, so a
         // TS guest gets URL/TextEncoder/etc. transparently — no host support needed.
-        const JS_RUNNER: &[u8] = include_bytes!("../../tests/fixtures/js_runner.wasm");
         const BUNDLE: &str = r#"
             const replyTo = Process.receiveText();
             const u = new URL("https://example.io:8080/a?x=1");
@@ -308,15 +302,11 @@ mod tests {
         "#;
         let rt = Runtime::new();
         let wr = WasmRuntime::new(rt.clone()).unwrap();
-        let pre = wr
-            .prepare_component(&wr.compile_component(JS_RUNNER).unwrap(), "run")
-            .unwrap();
         let (tx, rx) = tokio::sync::oneshot::channel();
         let collector = rt.spawn(move |mut ctx| async move {
             let _ = tx.send(ctx.recv().await.message().unwrap());
         });
-        let guest = wr.spawn_component(&pre);
-        rt.send(guest.pid(), BUNDLE.as_bytes().to_vec());
+        let guest = wr.spawn_js(BUNDLE.as_bytes());
         rt.send(guest.pid(), collector.pid().raw().to_string().into_bytes());
         assert_eq!(
             String::from_utf8(rx.await.unwrap()).unwrap(),
@@ -329,7 +319,6 @@ mod tests {
     async fn a_javascript_bundle_handles_binary_messages() {
         // JS receives a reply-to (text) and a binary message (Uint8Array), then
         // echoes the bytes back — proving binary marshalling both ways.
-        const JS_RUNNER: &[u8] = include_bytes!("../../tests/fixtures/js_runner.wasm");
         const BUNDLE: &str = r#"
             const replyTo = Process.receiveText();
             const bytes = Process.receive();      // Uint8Array
@@ -337,15 +326,11 @@ mod tests {
         "#;
         let rt = Runtime::new();
         let wr = WasmRuntime::new(rt.clone()).unwrap();
-        let pre = wr
-            .prepare_component(&wr.compile_component(JS_RUNNER).unwrap(), "run")
-            .unwrap();
         let (tx, rx) = tokio::sync::oneshot::channel();
         let collector = rt.spawn(move |mut ctx| async move {
             let _ = tx.send(ctx.recv().await.message().unwrap());
         });
-        let guest = wr.spawn_component(&pre);
-        rt.send(guest.pid(), BUNDLE.as_bytes().to_vec());
+        let guest = wr.spawn_js(BUNDLE.as_bytes());
         rt.send(guest.pid(), collector.pid().raw().to_string().into_bytes());
         rt.send(guest.pid(), vec![7, 8, 9]);
         assert_eq!(rx.await.unwrap(), vec![7, 8, 9]);
@@ -354,7 +339,6 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_javascript_bundle_consumes_a_byte_stream() {
         // JS accepts a stream, reads Uint8Array chunks to EOF, reports the total.
-        const JS_RUNNER: &[u8] = include_bytes!("../../tests/fixtures/js_runner.wasm");
         const BUNDLE: &str = r#"
             const collector = Process.receiveText();
             const s = Process.acceptStream();
@@ -364,15 +348,11 @@ mod tests {
         "#;
         let rt = Runtime::new();
         let wr = WasmRuntime::new(rt.clone()).unwrap();
-        let pre = wr
-            .prepare_component(&wr.compile_component(JS_RUNNER).unwrap(), "run")
-            .unwrap();
         let (tx, rx) = tokio::sync::oneshot::channel();
         let collector = rt.spawn(move |mut ctx| async move {
             let _ = tx.send(ctx.recv().await.message().unwrap());
         });
-        let guest = wr.spawn_component(&pre);
-        rt.send(guest.pid(), BUNDLE.as_bytes().to_vec());
+        let guest = wr.spawn_js(BUNDLE.as_bytes());
         rt.send(guest.pid(), collector.pid().raw().to_string().into_bytes());
 
         // Stream 3x "hello!" (18 bytes) into the JS consumer, then EOF.

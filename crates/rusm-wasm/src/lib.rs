@@ -15,7 +15,7 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use anyhow::Result;
-use rusm_otp::Runtime;
+use rusm_otp::{ProcessHandle, Runtime};
 use wasmtime::{
     Config, Engine, InstanceAllocationStrategy, Linker, Module, PoolingAllocationConfig,
 };
@@ -44,6 +44,10 @@ pub const DEFAULT_MAX_INSTANCES: u32 = 1024;
 /// real components (a minimal Rust component needs ~1 MiB; the rquickjs js-runner
 /// a few); a per-process capability `StoreLimiter` caps usage *below* this.
 pub const DEFAULT_MAX_MEMORY: usize = 16 << 20;
+/// The prebuilt rquickjs **js-runner** component (rusm-ts), embedded so a TS/JS
+/// bundle can be spawned with no extra artifacts. Built from `js-runner/` with
+/// wasi-sdk (QuickJS is C); see that crate's README to regenerate.
+const JS_RUNNER_WASM: &[u8] = include_bytes!("../js-runner/js_runner.wasm");
 
 /// Counters shared by every instance of one [`WasmRuntime`], so host functions
 /// can report aggregate activity (e.g. guest progress for the fairness scenario).
@@ -64,6 +68,9 @@ pub struct WasmRuntime {
     /// The component-model counterpart of `linker`, with WASI wired in. Used by
     /// the wasip2/p3 bridges to prepare and spawn components. Built once.
     component_linker: wasmtime::component::Linker<bridges::WasiHost>,
+    /// The prebuilt rquickjs **js-runner** component (for `spawn_js`), compiled +
+    /// prepared lazily on first use so non-JS nodes pay nothing.
+    js_runner: std::sync::OnceLock<PreparedComponent>,
     shared: Arc<Counters>,
     epoch_stop: Arc<AtomicBool>,
     epoch_ticker: Option<JoinHandle<()>>,
@@ -130,10 +137,40 @@ impl WasmRuntime {
             rt,
             linker,
             component_linker,
+            js_runner: std::sync::OnceLock::new(),
             shared: Arc::new(Counters::default()),
             epoch_stop,
             epoch_ticker: Some(epoch_ticker),
         })
+    }
+
+    /// Spawns a **JavaScript/TypeScript** bundle as a sandboxed process via the
+    /// embedded rquickjs js-runner (default-deny `Sandboxed`). The bundle is the
+    /// Bun-built JS source; it runs with the `Process` actor API + Web API
+    /// polyfills. Use [`spawn_js_with`](Self::spawn_js_with) to grant capabilities.
+    pub fn spawn_js(&self, bundle: impl Into<Vec<u8>>) -> ProcessHandle {
+        self.spawn_js_with(bundle, CapabilityProfile::Sandboxed.capabilities())
+    }
+
+    /// Like [`spawn_js`](Self::spawn_js) but under explicit [`Capabilities`]. The
+    /// js-runner component is compiled + prepared once (lazily) and shared across
+    /// all JS processes; each spawn is a fresh, isolated instance fed the bundle.
+    pub fn spawn_js_with(&self, bundle: impl Into<Vec<u8>>, caps: Capabilities) -> ProcessHandle {
+        let runner = self.js_runner.get_or_init(|| {
+            // The runner is a known-good embedded artifact; a failure here is a
+            // build bug, not a runtime condition.
+            self.prepare_component(
+                &self
+                    .compile_component(JS_RUNNER_WASM)
+                    .expect("embedded js-runner compiles"),
+                "run",
+            )
+            .expect("embedded js-runner prepares")
+        });
+        let handle = self.spawn_component_with(runner, caps);
+        // The runner's protocol: its first message is the JS bundle to execute.
+        self.rt.send(handle.pid(), bundle.into());
+        handle
     }
 
     /// Compiles a module from Wasm bytes or `.wat` text.
