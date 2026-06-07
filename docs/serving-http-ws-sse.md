@@ -160,7 +160,7 @@ sandbox overhead is explicit — the honest number.
 
 | Scenario | Drives | Headline metrics |
 | --- | --- | --- |
-| **http-throughput** ✅ *(built — [`http_bench`](../examples/http_bench/))* | many keep-alive clients hitting a 200-OK component, instance-per-request | **measured: ~50k req/s, p50 ~1.25ms** vs ~198k bare hyper (~3.9× overhead) — the gap is per-request instantiation, which justifies a warm-instance pool |
+| **http-throughput** ✅ *(live dashboard scenario + [`http_bench`](../examples/http_bench/))* | many keep-alive clients hitting a 200-OK component, instance-per-request | **measured: ~52k req/s, p50 ~160µs** (moderate load). Breakdown: instantiation is only **~30µs** — per-request isolation is cheap; the rest is the wstd guest + `wasi:http` marshaling. So a warm-instance pool is **not** worth it (it would trade isolation for ~30µs); instance-per-request is optimal. |
 | **sse-fanout** | N concurrent SSE subscribers, each fed M events/sec from long-lived instances | sustained events/sec, concurrent streams held, per-event p50/p99 — stresses the long-lived-instance + overflow tier + stream backpressure |
 | **ws-echo** | N concurrent WS connections, echo round-trip | messages/sec, round-trip p50/p99, concurrent sockets |
 
@@ -200,6 +200,10 @@ the WASI host bindings it already hand-wires via `bindgen!`), so each is a
 - **WebSocket** — fully host-side (hyper upgrade + `tokio-tungstenite` + the stream
   primitive); it doesn't go through `wasi:http` at all. A RUSM convention, not a
   missing capability.
-- **Instance-per-request vs keep-warm** — the one genuine *measure-first* call: start
-  instance-per-request (simplest, total isolation), and add an opt-in warm pool only
-  if the benchmark shows instantiate cost dominating.
+- **Instance-per-request vs keep-warm — resolved by measurement.** We measured it:
+  instantiation is **~30µs** (pooling + CoW), a small slice of a ~160µs request. A
+  warm pool's only payoff is avoiding that 30µs, at the cost of leaking state between
+  requests — trading isolation for ~30µs. Not worth it. **Instance-per-request is
+  optimal**, not just simplest. The remaining cost is the guest handler + marshaling;
+  the no-compromise lever there is a leaner guest (raw `wasi:http` vs wstd), which is
+  the developer's choice.
