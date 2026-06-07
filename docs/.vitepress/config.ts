@@ -15,6 +15,8 @@ const sections = [
     text: 'About RUSM',
     items: [
       { text: 'Why RUSM?', link: '/00-vision' },
+      { text: 'RUSM vs Lunatic', link: '/lunatic-comparison' },
+      { text: 'Design analysis', link: '/design-analysis' },
       { text: 'Architecture', link: '/01-architecture' },
       { text: 'Roadmap', link: '/02-roadmap' },
       { text: 'Development', link: '/06-development' },
@@ -44,8 +46,6 @@ const sections = [
       { text: 'Host ABI', link: '/05-host-abi' },
       { text: 'Distributed model', link: '/04-distributed-model' },
       { text: 'Glossary', link: '/07-glossary' },
-      { text: 'RUSM vs Lunatic', link: '/lunatic-comparison' },
-      { text: 'Design analysis', link: '/design-analysis' },
     ],
   },
   {
