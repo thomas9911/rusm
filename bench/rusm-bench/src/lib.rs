@@ -5,7 +5,6 @@
 mod componentstorm;
 mod config;
 mod connectionstorm;
-mod engine;
 mod fairness;
 mod faultrecovery;
 mod modulestorm;
@@ -17,6 +16,7 @@ mod runner;
 mod sample;
 mod scenario;
 mod server;
+mod spawnstorm;
 mod streampipe;
 mod synthetic;
 

@@ -1,4 +1,8 @@
+import hljs from 'highlight.js/lib/core';
+import rust from 'highlight.js/lib/languages/rust';
 import type { ScenarioMeta } from '../types';
+
+hljs.registerLanguage('rust', rust);
 
 interface ScenarioInfoProps {
   scenario: ScenarioMeta | undefined;
@@ -31,9 +35,17 @@ export function ScenarioInfo({ scenario }: ScenarioInfoProps) {
       </ul>
       {scenario.source && (
         <details className="scenario-code">
-          <summary>How it's built — the engine code</summary>
+          <summary>
+            How it's built — the engine code
+            {scenario.source_file && <span className="code-file">{scenario.source_file}</span>}
+          </summary>
           <pre>
-            <code>{scenario.source}</code>
+            <code
+              className="hljs language-rust"
+              dangerouslySetInnerHTML={{
+                __html: hljs.highlight(scenario.source, { language: 'rust' }).value,
+              }}
+            />
           </pre>
         </details>
       )}

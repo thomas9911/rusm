@@ -63,6 +63,8 @@ export interface ScenarioMeta {
   unit: 'count' | 'bytes';
   /** The engine's implementation source (Rust), for the "how it's built" panel. */
   source?: string | null;
+  /** The engine source's filename (e.g. `streampipe.rs`), shown as the panel header. */
+  source_file?: string | null;
 }
 
 export interface ResourceProfileMeta {

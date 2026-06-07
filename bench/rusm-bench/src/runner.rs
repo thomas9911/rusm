@@ -3,7 +3,6 @@ use rusm_observer::{NodeSample, Observer};
 
 use crate::componentstorm::ComponentStormEngine;
 use crate::connectionstorm::ConnectionStormEngine;
-use crate::engine::SpawnStormEngine;
 use crate::fairness::FairnessEngine;
 use crate::faultrecovery::FaultRecoveryEngine;
 use crate::modulestorm::ModuleStormEngine;
@@ -12,6 +11,7 @@ use crate::profile::ResourceProfile;
 use crate::protocol::Frame;
 use crate::sample::Sample;
 use crate::scenario::Scenario;
+use crate::spawnstorm::SpawnStormEngine;
 use crate::streampipe::StreamPipeEngine;
 use crate::synthetic::SyntheticSource;
 

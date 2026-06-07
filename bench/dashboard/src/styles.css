@@ -233,6 +233,48 @@ body {
   font-size: 13px;
   user-select: none;
 }
+.scenario-code .code-file {
+  margin-left: 8px;
+  padding: 1px 7px;
+  border-radius: 5px;
+  background: var(--panel);
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+/* Minimal highlight.js theme, matched to the dashboard palette. */
+.hljs-comment,
+.hljs-quote {
+  color: var(--muted);
+  font-style: italic;
+}
+.hljs-keyword,
+.hljs-meta .hljs-keyword,
+.hljs-operator {
+  color: #c792ea;
+}
+.hljs-string,
+.hljs-char.escape_ {
+  color: #c3e88d;
+}
+.hljs-number,
+.hljs-literal {
+  color: #f78c6c;
+}
+.hljs-title.function_,
+.hljs-built_in {
+  color: #82aaff;
+}
+.hljs-type,
+.hljs-title.class_,
+.hljs-symbol {
+  color: #ffcb6b;
+}
+.hljs-attr,
+.hljs-attribute,
+.hljs-meta {
+  color: #7d8aa0;
+}
 .scenario-code pre {
   margin: 10px 0 0;
   padding: 12px 14px;
@@ -370,6 +412,32 @@ body {
   color: var(--muted);
 }
 .observer-note strong {
+  color: var(--text);
+}
+.observer-aggregates {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 18px;
+  margin: 12px 0 4px;
+  font-size: 13px;
+  color: var(--muted);
+}
+.observer-aggregates strong {
+  color: var(--accent);
+  font-family: var(--mono);
+  font-size: 15px;
+}
+.observer-empty {
+  margin: 12px 0 0;
+  padding: 12px 14px;
+  background: var(--bg);
+  border: 1px solid var(--panel);
+  border-radius: 8px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--muted);
+}
+.observer-empty strong {
   color: var(--text);
 }
 .schedulers {

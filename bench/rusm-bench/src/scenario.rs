@@ -54,6 +54,9 @@ pub struct ScenarioMeta {
     /// scenario is built. `None` for synthetic scenarios. Single source of truth:
     /// this is the actual compiled file via `include_str!`.
     pub source: Option<String>,
+    /// The engine source's filename (e.g. `streampipe.rs`), shown as the code
+    /// panel's header. `None` for synthetic scenarios.
+    pub source_file: Option<String>,
 }
 
 impl Scenario {
@@ -103,16 +106,16 @@ impl Scenario {
     /// (`include_str!`) so the dashboard can show the *real* code that produced the
     /// numbers — single source of truth, never a hand-copied snippet. `None` for
     /// scenarios still on synthetic data (no engine yet).
-    fn engine_source(self) -> Option<&'static str> {
+    fn engine_source(self) -> Option<(&'static str, &'static str)> {
         Some(match self {
-            Scenario::SpawnStorm => include_str!("engine.rs"),
-            Scenario::PingPong => include_str!("pingpong.rs"),
-            Scenario::FaultRecovery => include_str!("faultrecovery.rs"),
-            Scenario::ConnectionStorm => include_str!("connectionstorm.rs"),
-            Scenario::Fairness => include_str!("fairness.rs"),
-            Scenario::ModuleStorm => include_str!("modulestorm.rs"),
-            Scenario::ComponentStorm => include_str!("componentstorm.rs"),
-            Scenario::StreamPipe => include_str!("streampipe.rs"),
+            Scenario::SpawnStorm => ("spawnstorm.rs", include_str!("spawnstorm.rs")),
+            Scenario::PingPong => ("pingpong.rs", include_str!("pingpong.rs")),
+            Scenario::FaultRecovery => ("faultrecovery.rs", include_str!("faultrecovery.rs")),
+            Scenario::ConnectionStorm => ("connectionstorm.rs", include_str!("connectionstorm.rs")),
+            Scenario::Fairness => ("fairness.rs", include_str!("fairness.rs")),
+            Scenario::ModuleStorm => ("modulestorm.rs", include_str!("modulestorm.rs")),
+            Scenario::ComponentStorm => ("componentstorm.rs", include_str!("componentstorm.rs")),
+            Scenario::StreamPipe => ("streampipe.rs", include_str!("streampipe.rs")),
             Scenario::DistributedFanout => return None,
         })
     }
@@ -120,7 +123,7 @@ impl Scenario {
     /// The engine's implementation source (the file above its `#[cfg(test)]`
     /// module), trimmed — the "essential benchmark code" for the dashboard panel.
     fn engine_impl_source(self) -> Option<String> {
-        self.engine_source().map(|src| {
+        self.engine_source().map(|(_, src)| {
             src.split("\n#[cfg(test)]")
                 .next()
                 .unwrap_or(src)
@@ -245,6 +248,7 @@ impl Scenario {
             real: real_after_phase <= CURRENT_PHASE,
             unit: self.metric_unit(),
             source: self.engine_impl_source(),
+            source_file: self.engine_source().map(|(name, _)| name.to_string()),
         }
     }
 
