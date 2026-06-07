@@ -58,6 +58,23 @@ The hardening phase was the groundwork for serving at scale.
 profile, TLS cert), and `rusm serve` / `rusm dev` bind it — the same app model and
 supervision as any other component.
 
+## Which Rust API? (`wasi:http` vs `wstd` — not a real choice)
+
+These are **layers, not competitors**:
+
+- **`wasi:http`** is the **standard interface** — the contract a component exports.
+  RUSM hosts it; it's what makes a component portable.
+- **`wstd`** is an ergonomic **framework** over it (`Request`/`Response`, async
+  Rust). It *produces* a standard `wasi:http` component — it's built on the raw
+  bindings, not an alternative to them.
+
+**Advice: default to `wstd`** (Rust) or the **`fetch` shape** (TS) — readable,
+familiar, standard. The raw `wasi:http` bindings are ~26% faster *only* for a
+trivial handler; a real handler (DB / LLM / render) takes milliseconds, so the
+framework's ~50µs overhead is noise. Drop to raw `wasi:http` only if a profiler
+proves the HTTP layer itself is your bottleneck — rare. Either way the artifact is
+the same standard component; the choice is reversible and the developer's alone.
+
 ## RS source (`wasm32-wasip2`)
 
 **HTTP** — a standard `wasi:http` server via `wstd` (the Bytecode Alliance's
