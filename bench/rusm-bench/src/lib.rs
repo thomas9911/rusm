@@ -8,6 +8,7 @@ mod connectionstorm;
 mod distributedfanout;
 mod fairness;
 mod faultrecovery;
+mod httpthroughput;
 mod modulestorm;
 mod pingpong;
 mod profile;

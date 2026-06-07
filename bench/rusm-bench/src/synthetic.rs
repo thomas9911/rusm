@@ -175,6 +175,13 @@ impl SyntheticSource {
                 latency_ns: (1_000, 20_000),
                 processes: (2, 16),
             },
+            // Real from Phase 11 (the live engine serves actual HTTP); this range is
+            // only the runtime-free preview shape (req/sec, sub-ms latency).
+            Scenario::HttpThroughput => Ranges {
+                ops: (30_000, 200_000),
+                latency_ns: (200_000, 3_000_000),
+                processes: (8, 256),
+            },
         }
     }
 }

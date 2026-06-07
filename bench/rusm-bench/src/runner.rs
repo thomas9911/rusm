@@ -6,6 +6,7 @@ use crate::connectionstorm::ConnectionStormEngine;
 use crate::distributedfanout::DistributedFanoutEngine;
 use crate::fairness::FairnessEngine;
 use crate::faultrecovery::FaultRecoveryEngine;
+use crate::httpthroughput::HttpThroughputEngine;
 use crate::modulestorm::ModuleStormEngine;
 use crate::pingpong::PingPongEngine;
 use crate::profile::ResourceProfile;
@@ -64,6 +65,7 @@ enum Engine {
     ComponentStorm(ComponentStormEngine),
     StreamPipe(StreamPipeEngine),
     DistributedFanout(DistributedFanoutEngine),
+    HttpThroughput(HttpThroughputEngine),
 }
 
 impl Engine {
@@ -108,6 +110,10 @@ impl Engine {
                 config.spawn_workers,
                 config.scheduler_count,
             )),
+            Scenario::HttpThroughput => Engine::HttpThroughput(HttpThroughputEngine::new(
+                config.spawn_workers,
+                config.scheduler_count,
+            )),
         }
     }
 
@@ -128,6 +134,7 @@ impl Engine {
             Engine::ComponentStorm(engine) => engine.tick(),
             Engine::StreamPipe(engine) => engine.tick(),
             Engine::DistributedFanout(engine) => engine.tick(),
+            Engine::HttpThroughput(engine) => engine.tick(),
         }
     }
 }
@@ -188,7 +195,8 @@ impl Runner {
             | Scenario::ModuleStorm
             | Scenario::ComponentStorm
             | Scenario::StreamPipe
-            | Scenario::DistributedFanout),
+            | Scenario::DistributedFanout
+            | Scenario::HttpThroughput),
         ) = self.scenario()
         {
             self.start(scenario);

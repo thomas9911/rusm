@@ -41,6 +41,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let wasm = stress(wasm_addr, clients, secs).await;
     wasm_task.abort();
 
+    // Breakdown: how much of a request is just standing up the instance? (1 thread.)
+    let inst = wr.http_server(&prepared, CapabilityProfile::Trusted.capabilities());
+    let mut instantiations = 0u64;
+    let inst_start = Instant::now();
+    while inst_start.elapsed() < Duration::from_secs(2) {
+        inst.instantiate_once().await.unwrap();
+        instantiations += 1;
+    }
+    let inst_rate = instantiations as f64 / inst_start.elapsed().as_secs_f64();
+
     // Bare-hyper baseline: identical loop, a static response, no Wasm at all.
     let base_listener = TcpListener::bind("127.0.0.1:0").await?;
     let base_addr = base_listener.local_addr()?;
@@ -56,6 +66,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "\nsandbox overhead: {:.1}x fewer req/s, +{:.1}µs p50",
         base.rps / wasm.rps.max(1.0),
         wasm.p50 - base.p50,
+    );
+    println!(
+        "\ninstantiate-only (1 thread): {inst_rate:.0}/sec = {:.1}µs each — the per-request cost",
+        1e6 / inst_rate,
     );
     Ok(())
 }

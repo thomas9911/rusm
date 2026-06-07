@@ -79,11 +79,9 @@ impl HttpServer {
         }
     }
 
-    /// Run one request through a fresh component instance and return its response.
-    async fn handle(
-        &self,
-        req: hyper::Request<hyper::body::Incoming>,
-    ) -> Result<hyper::Response<HyperOutgoingBody>> {
+    /// A fresh per-request store: a new sandboxed `WasiHost` under this server's
+    /// capability profile, with the memory limiter and epoch deadline set.
+    fn fresh_store(&self) -> Result<Store<WasiHost>> {
         let host = WasiHost {
             wasi: self.caps.build_wasi()?,
             table: ResourceTable::new(),
@@ -102,6 +100,24 @@ impl HttpServer {
         // Epoch preemption applies to request handlers too — a runaway guest yields.
         store.set_epoch_deadline(1);
         store.epoch_deadline_async_yield_and_update(1);
+        Ok(store)
+    }
+
+    /// Build a store and instantiate the component **without serving a request** —
+    /// a measurement hook to separate per-request instantiation cost from the
+    /// handler's own work (see the `http_bench` example).
+    pub async fn instantiate_once(&self) -> Result<()> {
+        let mut store = self.fresh_store()?;
+        self.pre.instantiate_async(&mut store).await?;
+        Ok(())
+    }
+
+    /// Run one request through a fresh component instance and return its response.
+    async fn handle(
+        &self,
+        req: hyper::Request<hyper::body::Incoming>,
+    ) -> Result<hyper::Response<HyperOutgoingBody>> {
+        let mut store = self.fresh_store()?;
 
         let (tx, rx) = tokio::sync::oneshot::channel();
         let request = store

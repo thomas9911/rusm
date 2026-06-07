@@ -1,9 +1,10 @@
-# Serving HTTP, WS & SSE from a component — design preview (Phase 11)
+# Serving HTTP, WS & SSE from a component (Phase 11)
 
-> **Status: design preview, not yet implemented.** This documents *how serving will
-> look* — the host model, the RS/TS guest code, and the benchmarks — so the
-> developer experience can be reviewed before it's built. Code blocks are
-> illustrative (the APIs may shift slightly during implementation).
+> **Status: HTTP is built and measured; WS & SSE are design.** An RS (`wstd`) WASM
+> component is **served over real HTTP today** (`WasmRuntime::http_server`, the
+> [`http_bench`](../examples/http_bench/) benchmark — ~50k req/s instance-per-request
+> vs ~198k bare-hyper). The WS/SSE sections below are still design previews; their
+> code blocks are illustrative until those paths land.
 
 RUSM's end goal is to run a component as a high-throughput **HTTP(S) / WS(S) / SSE
 server** — a sandboxed, supervised process answering requests. Phase 11 delivers
@@ -159,7 +160,7 @@ sandbox overhead is explicit — the honest number.
 
 | Scenario | Drives | Headline metrics |
 | --- | --- | --- |
-| **http-throughput** | many keep-alive clients hitting a trivial 200-OK component, instance-per-request | requests/sec, connect + p50/p99 request latency, concurrent connections, vs bare-hyper overhead |
+| **http-throughput** ✅ *(built — [`http_bench`](../examples/http_bench/))* | many keep-alive clients hitting a 200-OK component, instance-per-request | **measured: ~50k req/s, p50 ~1.25ms** vs ~198k bare hyper (~3.9× overhead) — the gap is per-request instantiation, which justifies a warm-instance pool |
 | **sse-fanout** | N concurrent SSE subscribers, each fed M events/sec from long-lived instances | sustained events/sec, concurrent streams held, per-event p50/p99 — stresses the long-lived-instance + overflow tier + stream backpressure |
 | **ws-echo** | N concurrent WS connections, echo round-trip | messages/sec, round-trip p50/p99, concurrent sockets |
 

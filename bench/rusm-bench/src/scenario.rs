@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 /// The roadmap phase RUSM has reached. A scenario runs on **real** runtime data
 /// once its `real_after_phase` is at or below this — bump it as each phase lands.
-pub const CURRENT_PHASE: u8 = 9;
+pub const CURRENT_PHASE: u8 = 11;
 
 /// A benchmark scenario the dashboard can run.
 ///
@@ -20,6 +20,7 @@ pub enum Scenario {
     DistributedFanout,
     ModuleStorm,
     StreamPipe,
+    HttpThroughput,
 }
 
 /// What a scenario's headline throughput number *counts*, so the dashboard can
@@ -63,7 +64,7 @@ impl Scenario {
     // Ordered by the phase each scenario goes live (the dashboard menu shows them
     // in this order). The enum discriminants are unchanged, so the synthetic
     // source stays deterministic.
-    pub const ALL: [Scenario; 9] = [
+    pub const ALL: [Scenario; 10] = [
         Scenario::SpawnStorm,        // phase 1
         Scenario::PingPong,          // phase 2
         Scenario::FaultRecovery,     // phase 3
@@ -73,6 +74,7 @@ impl Scenario {
         Scenario::ComponentStorm,    // phase 7
         Scenario::StreamPipe,        // phase 7 — cross-process byte-stream throughput
         Scenario::DistributedFanout, // phase 9
+        Scenario::HttpThroughput,    // phase 11 — serve a WASM component over HTTP
     ];
 
     pub fn id(self) -> &'static str {
@@ -84,6 +86,7 @@ impl Scenario {
             Scenario::ConnectionStorm => "connection-storm",
             Scenario::ComponentStorm => "component-storm",
             Scenario::DistributedFanout => "distributed-fanout",
+            Scenario::HttpThroughput => "http-throughput",
             Scenario::ModuleStorm => "module-storm",
             Scenario::StreamPipe => "stream-pipe",
         }
@@ -119,6 +122,7 @@ impl Scenario {
             Scenario::DistributedFanout => {
                 ("distributedfanout.rs", include_str!("distributedfanout.rs"))
             }
+            Scenario::HttpThroughput => ("httpthroughput.rs", include_str!("httpthroughput.rs")),
         })
     }
 
@@ -240,6 +244,18 @@ impl Scenario {
                 ],
                 9,
             ),
+            Scenario::HttpThroughput => (
+                "HTTP throughput",
+                "How fast can a sandboxed WASM component serve HTTP? Requests/sec.",
+                vec![
+                    "What's unique here: the others measure the actor model; this serves real HTTP — a WASM component (wstd `wasi:http`) hosted by hyper + wasmtime-wasi-http, one fresh sandboxed instance per request.",
+                    "Real (Phase 11): keep-alive clients hammer the server; the response is produced BY THE GUEST, the host only moves bytes. Total isolation between requests — a trap fails just that request.",
+                    "Headline: requests/sec and per-request p50/p99 latency. The cost over a bare-hyper baseline is per-request instantiation — the lever a warm-instance pool would amortize.",
+                    "Standards-first: the guest exports the standard `wasi:http` handler (RS via wstd, TS via the js-runner's fetch shape), so stock components run unchanged.",
+                    "Why it matters: this is the headline goal — run your low-code/LLM/web component as a high-throughput, sandboxed, supervised HTTP server.",
+                ],
+                11,
+            ),
         };
         ScenarioMeta {
             id: self.id().to_string(),
@@ -328,7 +344,7 @@ mod tests {
             assert!(!meta.description.is_empty());
             assert!(meta.details.len() >= 3, "{} needs real detail", meta.id);
             assert!(meta.details.iter().all(|d| !d.is_empty()));
-            assert!((1..=10).contains(&meta.real_after_phase));
+            assert!((1..=11).contains(&meta.real_after_phase));
         }
     }
 
@@ -344,8 +360,7 @@ mod tests {
             .filter(|m| m.real)
             .map(|m| m.id)
             .collect();
-        // Every scenario now has a real engine (CURRENT_PHASE = 9), including
-        // distributed-fanout — nothing left on synthetic data.
+        // Every scenario has a real engine (CURRENT_PHASE = 11) — nothing synthetic.
         assert_eq!(
             real,
             vec![
@@ -357,7 +372,8 @@ mod tests {
                 "module-storm",
                 "component-storm",
                 "stream-pipe",
-                "distributed-fanout"
+                "distributed-fanout",
+                "http-throughput"
             ]
         );
     }
