@@ -48,10 +48,13 @@ ports), not RUSM. Phase 0 (metrics, live observer, benchmark harness + WebSocket
 server, `rusm` CLI, React dashboard, examples) is done. The **wasip1 bridge**
 (`bridges/wasip1.rs`) runs preview1 core modules as processes too — preview1 WASI,
 the same default-deny caps + `StoreLimiter`, the precomputed export index, and a
-raw `rusm::*` actor ABI over linear memory — RUSM on Lunatic's home turf
-(module-storm bench). Deferred follow-ons: p3 cross-component `stream<u8>` and
-`rusm dev` filesystem watch/reload. TLS folds into the Phase 9 secure cluster
-transport. See `docs/02-roadmap.md`.
+raw `rusm::*` actor ABI over linear memory, including **cross-process byte
+streaming** (`stream_open`/`write`/`close`/`accept`/`read` over the Wasm-free
+`StreamHandle`, real Tokio back-pressure) — RUSM on Lunatic's home turf
+(module-storm bench). Deferred follow-ons: the same stream ops through the
+component WIT world + a native p3-typed `stream<u8>`, and `rusm dev` filesystem
+watch/reload. TLS folds into the Phase 9 secure cluster transport. See
+`docs/02-roadmap.md`.
 
 ## Tech stack
 
