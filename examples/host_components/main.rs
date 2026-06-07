@@ -56,11 +56,17 @@ async fn main() {
     let pid = p.pid();
     println!("hosted a component as process {pid:?}");
     if let Some(info) = rt.info(pid) {
-        println!("  Process.info -> links={}, mailbox_depth={}", info.links, info.mailbox_depth);
+        println!(
+            "  Process.info -> links={}, mailbox_depth={}",
+            info.links, info.mailbox_depth
+        );
     }
     println!("  Process.list -> {:?}", rt.list());
     p.join().await;
-    println!("  it ran and was reaped; live processes now: {}\n", rt.process_count());
+    println!(
+        "  it ran and was reaped; live processes now: {}\n",
+        rt.process_count()
+    );
 
     // 2) Capabilities (default-deny). A tight memory cap denies the hungry
     //    component's growth -> it traps -> Crashed. A generous cap lets it finish.
@@ -69,10 +75,16 @@ async fn main() {
         .unwrap();
 
     let capped = wasm.spawn_component_with(&hungry, Capabilities::nothing().max_memory(64 << 10));
-    println!("hungry component, 64 KiB cap  -> {:?}", outcome(&rt, capped).await);
+    println!(
+        "hungry component, 64 KiB cap  -> {:?}",
+        outcome(&rt, capped).await
+    );
 
     let roomy = wasm.spawn_component_with(&hungry, Capabilities::nothing().max_memory(8 << 20));
-    println!("hungry component, 8 MiB cap   -> {:?}", outcome(&rt, roomy).await);
+    println!(
+        "hungry component, 8 MiB cap   -> {:?}",
+        outcome(&rt, roomy).await
+    );
 
     println!("\nSame component, two capability profiles — sandboxed by construction.");
 }

@@ -44,8 +44,9 @@ core through its public API; Wasm never bleeds into Wasm-irrelevant code.
 6. **Trap → `ExitReason::Crashed`** — a guest trap is reported through the same
    exit machinery as a native crash from [Phase 3](./phase-03-supervision.md).
 7. **Fairness engine** (`rusm-bench`) — Wasm spinners saturate **every core**
-   while Wasm bystanders keep calling `notify`; a nonzero bystander rate (~60M+
-   ops/sec) *is* the proof that preemption is yielding the spinners.
+   while Wasm bystanders keep calling `notify`; a nonzero bystander rate (~50M+
+   ops/sec under load, past 400M on free cores) *is* the proof that preemption is
+   yielding the spinners.
 
 ## Design notes — efficiency & honesty
 

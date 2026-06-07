@@ -22,7 +22,7 @@ sandbox, guest crate, clustering) are still *planned*. The value is in the
 >
 > **For the actor model — yes, and in places better** (one channel per process
 > vs two, free abort-handle cancellation, a sharded registry, Tokio-wheel timers;
-> ~2.45M spawns/sec, ~18M messages/sec, ~380k restarts/sec measured live). **For
+> ~2.4M spawns/sec, ~21M messages/sec, ~285k restarts/sec measured live). **For
 > Wasm execution — RUSM now hosts the *component model*** (`rusm-wasm`), which
 > Lunatic does **not** do at all (it runs only core modules with its own ABI):
 > instance-per-process with a pooling allocator, copy-on-write init, `InstancePre`,
@@ -31,7 +31,8 @@ sandbox, guest crate, clustering) are still *planned*. The value is in the
 > RUSM's spawn path is ahead by design.
 >
 > The **fairness** scenario runs on real Wasm — spinners saturate every core, yet
-> bystanders progress at ~60M+ ops/sec, proving epoch preemption live. What
+> bystanders progress at ~50M+ ops/sec (past 400M on free cores), proving epoch
+> preemption live. What
 > remains is a true head-to-head against Lunatic (see the question at the end).
 
 ## Snapshot
@@ -76,7 +77,7 @@ phase, same themes, same order.
 **Why each verdict (perf/efficiency):**
 
 - **1 — on par.** Identical model: one process = one Tokio task. RUSM's native
-  spawn sustains ~2.45M/s; Lunatic's per-spawn also instantiates a Wasm module, so
+  spawn sustains ~2.4M/s; Lunatic's per-spawn also instantiates a Wasm module, so
   a fair head-to-head waits for Phase 6.
 - **2 — ahead.** RUSM keeps **one** channel per process (the mailbox); Lunatic
   keeps two (signal + message) and double-handles each message (mpsc →
@@ -96,7 +97,7 @@ phase, same themes, same order.
   init + a per-module **`InstancePre`** + a **precomputed export index** sustain
   **~440k component instance-per-process spawns/s**, far ahead of a naive
   on-demand allocator, and **epoch** preemption (bumped on a dedicated thread)
-  keeps bystanders at ~60M+ ops/sec even with a tight-loop guest pinning every
+  keeps bystanders at ~50M+ ops/sec (past 400M on free cores) even with a tight-loop guest pinning every
   core. Lunatic ships on-demand allocation + fuel (and no component host), so RUSM is
   ahead on both the spawn path and preemption overhead by design — a true
   head-to-head benchmark is the remaining validation.
@@ -156,7 +157,7 @@ own.)
 
 | Borrow from Lunatic | Why it helps | RUSM status |
 | --- | --- | --- |
-| Process-per-connection accept loop — `lunatic-networking-api` | a slow/crashing connection can't affect the others | **✅ Done** — `Runtime::listen` spawns one rusm-otp process per accepted socket; the connection ceiling is the OS (fds, ephemeral ports, TIME_WAIT), not RUSM, since spawning is ~free (the spawn storm does 2.45M/s) |
+| Process-per-connection accept loop — `lunatic-networking-api` | a slow/crashing connection can't affect the others | **✅ Done** — `Runtime::listen` spawns one rusm-otp process per accepted socket; the connection ceiling is the OS (fds, ephemeral ports, TIME_WAIT), not RUSM, since spawning is ~free (the spawn storm does 2.4M/s) |
 | TCP owned read/write halves + per-conn timeouts in `HashMapId` — `lunatic-networking-api/src/lib.rs:71` | concurrent reader+writer without locking the stream | **Deferred** — native handlers own the whole `TcpStream`; split halves / per-conn timeouts arrive with the guest host ABI (Phase 6) |
 | TLS via `tokio-rustls` + `webpki-roots` — `tls_tcp.rs:392` | secure transport | **Moved to Phase 9** — TLS's real home is the secure cluster transport (QUIC + TLS); bolting it onto the loopback storm would only tank throughput |
 

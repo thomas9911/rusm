@@ -28,7 +28,7 @@ turns that signal into a restart instead of dying itself.
 6. **Exit cascades** — `exit(pid, reason)` propagates along links with a staged
    reason, so a crash can tear down a linked subtree exactly like the BEAM.
 7. **Fault-recovery engine** (`rusm-bench`) — crash-and-restart loop reporting
-   real restarts/sec (~380k/sec).
+   real restarts/sec (~285k/sec).
 
 ## How a developer uses it
 
@@ -58,7 +58,7 @@ if let Received::Exit { from, reason } = ctx.recv().await {
 ## Play with it
 
 ```sh
-cargo run -p rusm-bench -- run fault-recovery 5   # ~380k restarts/sec
+cargo run -p rusm-bench -- run fault-recovery 5   # ~285k restarts/sec
 ```
 
 ## Verification

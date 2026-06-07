@@ -33,10 +33,12 @@ lightweight processes: links, monitors, exit reasons, `trap_exit`, `spawn_link`,
 graceful `shutdown`, **TCP** (`listen`/`connect`, one process per connection),
 process **introspection** (`list`/`info`/`set_label`), and **byte streams**
 (`Received::Stream`, Tokio-backpressured). Six benchmarks are live (release):
-spawn-storm (~2.45M spawns/sec), ping-pong (~18M messages/sec, round-trip p50
-<1 µs), fault-recovery (~380k restarts/sec), fairness (bystanders at ~60M+
-ops/sec under tight-loop spinners), component-storm (~440k component spawns/sec),
-and connection-storm (thousands of concurrent connections; connect p50 ~64 µs).
+spawn-storm (~2.4M spawns/sec), ping-pong (~21M messages/sec, round-trip p50
+<1 µs), fault-recovery (~285k restarts/sec), fairness (bystanders at ~50M+
+ops/sec — past 400M on free cores — under tight-loop spinners), component-storm
+(~440k component spawns/sec), and connection-storm (thousands of concurrent
+connections; connect p50 sub-millisecond). Numbers are measured under everyday
+machine load and scale up with free CPU.
 Each process keeps a single channel; exit signals ride the mailbox (a `Received`
 enum) and kill rides a `futures` abort handle (no second signal channel — we beat
 Lunatic's two). The registry is a sharded `DashMap`, timers use Tokio's timer

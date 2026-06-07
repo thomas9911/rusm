@@ -65,9 +65,9 @@ run away), **not** a per-tier knob — the population self-limits well below it.
 
 | Profile | Spawn workers | Throughput (busy 10-core box, release) | Use it when |
 | --- | --- | --- | --- |
-| **Light** | ~¼ of cores | ~1.9M/s | speed isn't the point — leave the machine alone |
-| **Balanced** (default) | ~⅖ of cores | ~2.5M/s | good throughput with visible room above |
-| **Max** | ~½ of cores | ~2.6M/s | most performant — peak sustained rate, still smooth |
+| **Light** | ~¼ of cores | ~2.1M/s | speed isn't the point — leave the machine alone |
+| **Balanced** (default) | ~⅖ of cores | ~2.4M/s | good throughput with visible room above |
+| **Max** | ~½ of cores | ~2.8M/s | most performant — peak sustained rate, still smooth |
 
 `Max` deliberately stops at ~half the cores: the other half reap, which is the
 sustained-throughput peak. Pushing spawners higher does **not** go faster — it

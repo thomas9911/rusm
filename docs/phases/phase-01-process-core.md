@@ -30,7 +30,7 @@ count it, kill it without leaks) and the rest is additive.
 ## Design notes — why it's fast
 
 - **One `DashMap`, sharded** — concurrent spawns/reaps hit different shards, so
-  the table isn't a global lock. ~2.45M sustained spawns/sec across all cores.
+  the table isn't a global lock. ~2.4M sustained spawns/sec across all cores.
 - **One table write per process.** An earlier two-channel design cost 17%
   throughput; folding the abort handle into the single insert gave kill *for free*.
 - **Bounded population.** The storm holds a target live count so we measure

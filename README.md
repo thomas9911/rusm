@@ -22,13 +22,15 @@ Wasmtime does the isolation.
 > schedules, kills, messages, **supervises**, **manages**, and **connects** **real**
 > lightweight processes — links, monitors, `trap_exit`, exit cascades, a named
 > registry, timers, graceful shutdown, and **TCP** (one process per connection).
-> Six benchmarks show real numbers (release): spawn-storm **~2.45M spawns/sec**,
-> ping-pong **~18M messages/sec** (round-trip p50 <1 µs), fault-recovery
-> **~380k restarts/sec**, fairness keeping bystanders at **~60M+ ops/sec** under
-> tight-loop spinners, component-storm **~440k component spawns/sec**, and
-> connection-storm holding **thousands of concurrent connections** (connect p50
-> ~64 µs) — the connection ceiling is the OS, not RUSM. Clustering comes in later
-> phases. See the [roadmap](docs/02-roadmap.md).
+> Six benchmarks show real numbers (release): spawn-storm **~2.4M spawns/sec**,
+> ping-pong **~21M messages/sec** (round-trip p50 <1 µs), fault-recovery
+> **~285k restarts/sec**, fairness keeping bystanders at **~50M+ ops/sec**
+> (peaking past **400M** when cores are free) under tight-loop spinners,
+> component-storm **~440k component spawns/sec**, and connection-storm holding
+> **thousands of concurrent connections** (connect p50 sub-millisecond) — the
+> connection ceiling is the OS, not RUSM. These are measured under everyday load
+> and scale up with free CPU. Clustering comes in later phases. See the
+> [roadmap](docs/02-roadmap.md).
 
 ## Why
 

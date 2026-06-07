@@ -74,7 +74,7 @@ impl Scenario {
                 "How fast can RUSM CREATE processes? Raw spawn throughput (create + reap).",
                 vec![
                     "What's unique here: this stresses *creating* processes — nothing else. (Ping-pong is about messaging, fairness about CPU sharing, connection-storm about how many you can hold open.)",
-                    "Headline: spawns/sec — measured ~2.45M/sec. A RUSM process is one Tokio task (plus, for Wasm, one isolated instance), so a spawn is just instantiate + schedule.",
+                    "Headline: spawns/sec — measured ~2.4M/sec. A RUSM process is one Tokio task (plus, for Wasm, one isolated instance), so a spawn is just instantiate + schedule.",
                     "These are NOT OS processes/threads: hundreds of thousands run cooperatively over a few OS threads (the schedulers, ~one per CPU core). The BEAM runs millions; so can we.",
                     "Why it matters: if spawning is this cheap, you can model every request / connection / job as its own crash-isolated process.",
                     "Phase 1: REAL native rusm-otp processes — spawns/sec and spawn latency measured live.",
@@ -86,7 +86,7 @@ impl Scenario {
                 "How fast can two processes TALK? Message throughput + round-trip latency.",
                 vec![
                     "What's unique here: this stresses *messaging* between existing processes — the mailbox + scheduler hot path — not creating them (spawn storm).",
-                    "Headline: messages/sec — measured ~18M/sec, round-trip p50 well under 1µs.",
+                    "Headline: messages/sec — measured ~21M/sec, round-trip p50 well under 1µs.",
                     "Each ping carries the sender's pid so the ponger knows whom to reply to; messages move by value, nothing is shared, exactly like Erlang.",
                     "Low, stable round-trip latency under load means wakeups are cheap and scheduling is fair.",
                     "Phase 2: REAL rusm-otp processes exchanging real messages, measured live.",
@@ -98,7 +98,7 @@ impl Scenario {
                 "Can one CPU-HOGGING process starve the rest? It must not — preemption keeps others running.",
                 vec![
                     "\"Fairness\" = fair CPU sharing: no single process may hog a core and starve the others. What's unique here: it's about *CPU sharing*, not throughput. Tight-loop Wasm guests (spinners) try to hog every core while bystander guests must keep working.",
-                    "Headline: bystander progress (work/sec) — they keep running at tens of millions of ops/sec (~60M+) *despite* the spinners. A nonzero rate IS the proof.",
+                    "Headline: bystander progress (work/sec) — they keep running at tens of millions of ops/sec (~50M+ under everyday load, past 400M when cores are free) *despite* the spinners. A nonzero rate IS the proof; the absolute number scales with available CPU.",
                     "Phase 6: REAL Wasm. Tokio scheduling is cooperative, so RUSM arms Wasmtime epoch interruption — even an infinite-loop guest yields (the BEAM's reduction-counting idea; lighter than Lunatic's per-instruction fuel — a periodic atomic, ~zero steady-state cost).",
                     "Without preemption, spinners filling every scheduler thread would pin bystanders to zero. They don't.",
                 ],
@@ -109,7 +109,7 @@ impl Scenario {
                 "When a process CRASHES, how fast does its supervisor RESTART it?",
                 vec![
                     "What's unique here: it's about *crash recovery* — deliberately crashing supervised children and timing how fast they come back. \"Let it crash\", in action.",
-                    "Headline: restarts/sec — measured ~380k/sec.",
+                    "Headline: restarts/sec — measured ~285k/sec.",
                     "Each supervisor traps exits and links its children; a crash arrives as an exit signal and the supervisor starts a clean replacement while the rest of the system never notices.",
                     "Why it matters: per-process isolation is what makes crashes survivable rather than fatal.",
                     "Phase 3: REAL rusm-otp supervisors restarting real crashing children, measured live.",
@@ -123,7 +123,7 @@ impl Scenario {
                     "What's unique here: it's about *concurrency* — how many simultaneous TCP connections you can keep open, each served by its own isolated process — not raw create speed.",
                     "Headline: peak concurrent connections (the live process count) — thousands at once — plus connections/sec and connect latency.",
                     "Phase 5: REAL loopback TCP, each connection a cheap isolated process, measured live.",
-                    "The ceiling is the OS (file descriptors, ephemeral ports, the kernel connect/accept path), NOT RUSM: minting a process per connection is near-free (spawn storm does ~2.45M/sec, hundreds of times this). The 300k/s target wants an external load generator on a tuned OS — RUSM scales with the kernel, not the runtime.",
+                    "The ceiling is the OS (file descriptors, ephemeral ports, the kernel connect/accept path), NOT RUSM: minting a process per connection is near-free (spawn storm does ~2.4M/sec, hundreds of times this). The 300k/s target wants an external load generator on a tuned OS — RUSM scales with the kernel, not the runtime.",
                 ],
                 5,
             ),
