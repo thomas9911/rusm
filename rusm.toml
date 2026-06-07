@@ -16,3 +16,29 @@ profile = "balanced"
 
 # Snapshot / sampling rate in Hz (10–60).
 ticks_per_second = 20
+
+# --- App model (used by `rusm run` / `rusm dev`) -----------------------------
+#
+# Custom capability profiles — like Cargo's `[profile.<name>]`. A profile
+# `inherits` a built-in base (sandboxed | network-client | trusted; default
+# sandboxed = default-deny) and overrides only the grants it sets. Components
+# reference one by name via `capability = "<name>"`; an unknown name falls back
+# to the secure sandboxed default. A spawned child never exceeds its spawner.
+#
+# [capabilities.agent]
+# inherits = "network-client"   # base; omit for sandboxed (default-deny)
+# spawn = true                  # may spawn other components by name
+# process-control = false       # may kill/list/inspect other processes
+# stdio = false                 # inherit host stdio
+# max-memory-mb = 256           # per-process heap ceiling
+# env = ["OPENAI_API_KEY"]      # grant these keys (values from process env / .env)
+# preopen = [{ host = "./data", guest = "/data", read-only = false }]
+
+# Components to run as an app. Each loads from ./wasm/<name>.{wasm,js} (Rust
+# component or TS bundle) and runs under its capability profile, optionally
+# restarted on exit (supervision).
+#
+# [[components]]
+# name = "pages-agent"
+# capability = "agent"          # a custom profile above, or a built-in
+# restart = true

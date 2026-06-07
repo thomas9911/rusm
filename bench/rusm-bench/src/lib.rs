@@ -20,7 +20,7 @@ mod spawnstorm;
 mod streampipe;
 mod synthetic;
 
-pub use config::{ComponentSpec, NodeConfig};
+pub use config::{CapabilitySpec, ComponentSpec, NodeConfig, PreopenSpec};
 pub use profile::{ResourceProfile, ResourceProfileMeta};
 pub use protocol::{ClientCommand, Frame, ServerMessage};
 pub use report::summarize_frame;

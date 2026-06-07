@@ -168,17 +168,17 @@ impl Capabilities {
     }
 
     /// Whether this process may control others via the actor ABI.
-    pub(crate) fn process_control(&self) -> bool {
+    pub fn process_control(&self) -> bool {
         self.allow_process_control
     }
 
     /// Whether this process may spawn other components via the actor ABI.
-    pub(crate) fn can_spawn(&self) -> bool {
+    pub fn can_spawn(&self) -> bool {
         self.allow_spawn
     }
 
     /// The memory ceiling, for the runtime's `StoreLimiter`.
-    pub(crate) fn memory_limit(&self) -> usize {
+    pub fn memory_limit(&self) -> usize {
         self.max_memory
     }
 

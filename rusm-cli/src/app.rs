@@ -9,16 +9,21 @@
 //! rquickjs js-runner via [`WasmRuntime::spawn_js`]; a `.wasm` artifact is a
 //! component instance. Env vars are the Rust way: process env first, then `.env`.
 
+use std::collections::HashMap;
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use rusm_bench::ComponentSpec;
+use rusm_bench::{CapabilitySpec, ComponentSpec};
 use rusm_otp::ProcessHandle;
 use rusm_wasm::{Capabilities, CapabilityProfile, WasmRuntime};
 
-/// Resolves a capability-profile id to its [`Capabilities`], defaulting to the
-/// secure `Sandboxed` profile for an unknown id (default-deny).
-pub fn capabilities_for(id: &str) -> Capabilities {
+/// Resolves a capability id to its [`Capabilities`]: a custom `[capabilities.<id>]`
+/// profile first, then a built-in (`sandboxed` / `network-client` / `trusted`),
+/// falling back to the secure `Sandboxed` default (default-deny) for an unknown id.
+pub fn capabilities_for(id: &str, profiles: &HashMap<String, CapabilitySpec>) -> Capabilities {
+    if let Some(spec) = profiles.get(id) {
+        return spec.to_capabilities();
+    }
     CapabilityProfile::from_id(id)
         .unwrap_or(CapabilityProfile::Sandboxed)
         .capabilities()
@@ -34,11 +39,12 @@ pub fn spawn_components(
     dir: &Path,
     wasm: &WasmRuntime,
     specs: &[ComponentSpec],
+    profiles: &HashMap<String, CapabilitySpec>,
 ) -> Result<Vec<(String, ProcessHandle)>> {
     let wasm_dir = dir.join("wasm");
     let mut handles = Vec::with_capacity(specs.len());
     for spec in specs {
-        let caps = capabilities_for(&spec.capability);
+        let caps = capabilities_for(&spec.capability, profiles);
         let js_path = wasm_dir.join(format!("{}.js", spec.name));
         let handle = if js_path.is_file() {
             // TypeScript component: a Bun-built bundle run on the shared js-runner.
@@ -75,10 +81,34 @@ mod tests {
         (func (export "run") (canon lift (core func $i "run"))))"#;
 
     #[test]
-    fn unknown_capability_falls_back_to_sandboxed() {
-        // Both resolve without panicking; the unknown one is treated as Sandboxed.
-        let _ = capabilities_for("trusted");
-        let _ = capabilities_for("does-not-exist");
+    fn capability_resolution_prefers_custom_then_builtin_then_sandboxed() {
+        let mut profiles = HashMap::new();
+        profiles.insert(
+            "agent".to_string(),
+            CapabilitySpec {
+                inherits: Some("network-client".to_string()),
+                network: None,
+                spawn: Some(true),
+                process_control: None,
+                stdio: None,
+                max_memory_mb: Some(16),
+                env: Vec::new(),
+                preopen: Vec::new(),
+            },
+        );
+        // A custom profile resolves to its grants.
+        let agent = capabilities_for("agent", &profiles);
+        assert!(agent.can_spawn(), "custom profile grants spawn");
+        assert_eq!(agent.memory_limit(), 16 << 20);
+        // A built-in still resolves; an unknown id falls back to sandboxed.
+        assert!(
+            capabilities_for("trusted", &profiles).can_spawn(),
+            "built-in trusted resolves and grants spawn"
+        );
+        assert!(
+            !capabilities_for("does-not-exist", &profiles).can_spawn(),
+            "unknown id falls back to default-deny sandboxed"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -94,7 +124,7 @@ mod tests {
             capability: "sandboxed".to_string(),
             restart: false,
         }];
-        let handles = spawn_components(dir.path(), &wasm, &specs).unwrap();
+        let handles = spawn_components(dir.path(), &wasm, &specs, &HashMap::new()).unwrap();
         assert_eq!(handles.len(), 1);
         assert_eq!(handles[0].0, "echo");
         // The component runs to completion as a real process.
@@ -123,7 +153,7 @@ mod tests {
             capability: "sandboxed".to_string(),
             restart: false,
         }];
-        let handles = spawn_components(dir.path(), &wasm, &specs).unwrap();
+        let handles = spawn_components(dir.path(), &wasm, &specs, &HashMap::new()).unwrap();
         assert_eq!(handles.len(), 1);
         let (_name, handle) = handles.into_iter().next().unwrap();
         handle.join().await;
@@ -141,7 +171,7 @@ mod tests {
             capability: "sandboxed".to_string(),
             restart: false,
         }];
-        let err = spawn_components(dir.path(), &wasm, &specs)
+        let err = spawn_components(dir.path(), &wasm, &specs, &HashMap::new())
             .err()
             .expect("missing artifact must error");
         assert!(err.to_string().contains("absent.wasm"));

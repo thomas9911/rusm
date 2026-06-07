@@ -111,7 +111,7 @@ async fn run_app(args: &[String]) -> anyhow::Result<()> {
     let cfg = load_node_config(args);
     let rt = Runtime::new();
     let wasm = WasmRuntime::new(rt.clone())?;
-    let handles = spawn_components(Path::new("."), &wasm, &cfg.components)?;
+    let handles = spawn_components(Path::new("."), &wasm, &cfg.components, &cfg.capabilities)?;
     if handles.is_empty() {
         println!("no [[components]] in rusm.toml — nothing to run");
         return Ok(());

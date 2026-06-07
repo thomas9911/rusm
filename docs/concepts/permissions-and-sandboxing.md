@@ -11,6 +11,12 @@ where any goroutine/process can touch the whole machine.
 - **Network**: whether outbound/inbound sockets are allowed.
 - **Memory**: a hard ceiling via Wasmtime store limits; exceeding it traps *that*
   process only (see [links & supervision](./links-and-supervision.md)).
+- **Process control**: whether the process may `kill`/`list`/`inspect` *other*
+  processes via the actor ABI — default-deny, so a sandboxed process manages only
+  itself.
+- **Spawn**: whether the process may **spawn other components by name** via the
+  actor ABI — default-deny. A spawned child's capabilities never exceed its
+  spawner's (no escalation).
 - **Host functions**: only the `rusm::*` imports the process was linked with are
   callable.
 
@@ -19,13 +25,30 @@ where any goroutine/process can touch the whole machine.
 A process gets **nothing** unless granted. Named profiles (`caps.rs`) bundle
 sensible defaults, and a per-spawn `Capabilities` builder overrides them:
 
-- **`Sandboxed`** — CPU + a bounded heap only: no fs, net, env, or stdio.
+- **`Sandboxed`** — CPU + a bounded heap only: no fs, net, env, stdio, control, or spawn.
 - **`NetworkClient`** — sandboxed plus outbound network.
-- **`Trusted`** — inherits stdio, allows network, a large heap.
+- **`Trusted`** — inherits stdio, allows network, process control, spawn, a large heap.
 
 Grants map onto **standard WASI** (`wasi:cli/environment`, `wasi:filesystem`,
 `wasi:sockets`) plus a `StoreLimiter` memory cap — no wasmCloud-style
 `wasi:config/store`.
+
+### Custom profiles in the manifest
+
+An app author isn't limited to the three built-ins. `rusm.toml` accepts custom
+`[capabilities.<name>]` profiles — like Cargo's `[profile.<name>]`: each
+`inherits` a built-in base (default `sandboxed`) and overrides only the grants it
+sets. A component selects one with `capability = "<name>"`; an unknown name falls
+back to the default-deny `sandboxed`.
+
+```toml
+[capabilities.agent]
+inherits = "network-client"
+spawn = true
+max-memory-mb = 256
+env = ["OPENAI_API_KEY"]
+preopen = [{ host = "./data", guest = "/data", read-only = false }]
+```
 
 ## Why it matters
 

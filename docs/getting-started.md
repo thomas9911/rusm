@@ -162,12 +162,31 @@ profile = "balanced"
 
 [[components]]
 name = "worker"          # loaded from ./wasm/worker.wasm
-capability = "sandboxed" # sandboxed | network-client | trusted
+capability = "sandboxed" # a built-in or a custom profile (below)
 restart = true           # supervise: restart if it exits
 ```
 
 ```sh
 rusm run          # load every [[components]] from ./wasm/, spawn under its profile
+```
+
+**Custom capability profiles.** Beyond the three built-ins (`sandboxed` /
+`network-client` / `trusted`), you can define your own — like Cargo's
+`[profile.<name>]`. A profile `inherits` a built-in base (default `sandboxed`,
+default-deny) and overrides only the grants it sets; a component references it by
+name. A spawned child never exceeds its spawner's capabilities (no escalation).
+
+```toml
+[capabilities.agent]
+inherits = "network-client"   # base; omit for sandboxed (default-deny)
+spawn = true                  # may spawn other components by name
+max-memory-mb = 256
+env = ["OPENAI_API_KEY"]      # grant these keys (values from process env / .env)
+preopen = [{ host = "./data", guest = "/data", read-only = false }]
+
+[[components]]
+name = "pages-agent"
+capability = "agent"          # resolves to the custom profile above
 ```
 
 ## 4. A Rust WASM component (source only)
