@@ -32,11 +32,16 @@ client ─TCP/TLS─▶ listener process ─hyper─▶ wasi:http ─▶ compone
   events over time** to that stream — backpressured by RUSM's Tokio-backed
   [byte streams](./concepts/byte-streams.md) (Phase 7), so a slow client slows the
   producer instead of growing memory.
-- **WS — host-mediated upgrade onto a RUSM stream.** `wasi:http` has no stable
-  WebSocket surface, so RUSM handles the `Upgrade` handshake at the listener, then
-  hands the guest the upgraded connection as a **RUSM byte stream** (the same Phase 7
-  stream primitive) delivered to a **long-lived component process**. The guest
-  reads/writes frames over the stream — WS as an actor over a stream.
+- **WS — entirely host-side, not via `wasi:http` at all.** A WebSocket is only HTTP
+  for its handshake; after the `Upgrade` it's a raw bidirectional stream — and the
+  handshake + upgrade live on the host, which RUSM fully controls. **hyper** surfaces
+  the upgrade (`hyper::upgrade::on`), **`tokio-tungstenite`** runs the WS protocol
+  (handshake, masking/opcodes, ping/pong, fragmentation, close), and the guest
+  receives a clean **message stream** over the same Phase 7 byte-stream primitive —
+  delivered to a **long-lived component process**. The guest never sees raw frames or
+  `wasi:http`. So `wasi:http` having no WebSocket surface is irrelevant: WS doesn't
+  go through it. The guest's socket API is a RUSM convention (like the actor world) —
+  and since there's no *wasi* WS standard, there's nothing to be non-portable against.
 
 ### Why this leans on Phase 10
 
@@ -167,8 +172,10 @@ because the streams are Tokio-backpressured.
 ## Battle-proven foundations (no reinvention)
 
 - **hyper** — HTTP/1.1 + HTTP/2 parsing and connection management.
-- **`wasmtime-wasi-http`** — the official hyper ↔ `wasi:http` bridge; we host the
-  standard interface, we don't define our own.
+- **`wasmtime-wasi-http`** — the official hyper ↔ `wasi:http` bridge (default host
+  impl; we can hand-roll the same interface if needed — see above).
+- **`tokio-tungstenite`** — the battle-proven Rust WebSocket protocol (handshake,
+  framing, ping/pong, close); the host runs it, the guest sees clean messages.
 - **`wstd`** — the Bytecode Alliance ergonomic layer for RS `wasi:http` guests.
 - **Web `fetch`/`Response`/`ReadableStream`** — the Workers/Deno shape for TS, a DX
   millions of developers already know; the polyfills exist (Phase 8).
@@ -176,13 +183,22 @@ because the streams are Tokio-backpressured.
 - **RUSM's own** — pooled instance-per-request spawn, Tokio-backpressured byte
   streams, the on-demand overflow tier, capability profiles, and supervision.
 
-## Open questions to derisk before building
+## Implementation choices — all host-side, under our control
 
-- **`wasi:http` maturity in wasmtime 45** — confirm the incoming-handler + streaming
-  response bodies behave as needed under `call_async`.
-- **WebSocket** is *not* in stable `wasi:http`; the host-mediated upgrade onto a RUSM
-  stream is RUSM's answer until a standard lands. The seam (a byte stream to a
-  component) is already proven.
-- **Instance-per-request vs keep-warm** — start instance-per-request (simplest,
-  total isolation); measure, and add an opt-in warm-pool only if the benchmark shows
-  instantiate cost dominating.
+**None of these are capability blockers.** RUSM owns the host bridge (hyper + Tokio +
+the WASI host bindings it already hand-wires via `bindgen!`), so each is a
+"which path" decision, not a "can we" one.
+
+- **Who provides the `wasi:http` host side.** Default to the off-the-shelf
+  **`wasmtime-wasi-http`** (the official hyper ↔ `wasi:http` bridge). If it falls
+  short on any point — e.g. async streaming response bodies under the p3 component
+  model — we implement the `wasi:http` host interface **ourselves** over hyper + our
+  stream primitive, exactly as we already hand-wire WASI p2/p3 and the actor world.
+  The guest contract (the standard `wasi:http` WIT) is fixed either way; only our
+  host implementation varies. So HTTP serving is never gated on someone else's crate.
+- **WebSocket** — fully host-side (hyper upgrade + `tokio-tungstenite` + the stream
+  primitive); it doesn't go through `wasi:http` at all. A RUSM convention, not a
+  missing capability.
+- **Instance-per-request vs keep-warm** — the one genuine *measure-first* call: start
+  instance-per-request (simplest, total isolation), and add an opt-in warm pool only
+  if the benchmark shows instantiate cost dominating.
