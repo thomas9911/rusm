@@ -11,8 +11,8 @@ Wasmtime does the isolation.
 
 > **Status: Phase 7 of 10 complete.** RUSM now **hosts real WASM components** as
 > isolated, supervised processes. The Wasmtime backend (`rusm-wasm`) runs each
-> component instance-per-process with the **component model** (WASI p2; p3 is a
-> compiled-in feature awaiting its bridge),
+> component instance-per-process with the **component model** (WASI p2; a p3
+> bridge is a roadmap follow-on),
 > a `rusm:runtime` **WIT actor world** (a component calls `self`/`send`/`receive`/
 > `list`/`info`/`kill`/`register` — the Erlang `Process` API, in any language),
 > **default-deny capability profiles** (fs/net/env/memory), epoch preemption, and a

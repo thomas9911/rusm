@@ -13,5 +13,7 @@ rusm-otp = { path = "../rusm-otp" }
 anyhow = { workspace = true }
 tokio = { version = "1.52.3", features = ["rt", "rt-multi-thread", "macros", "time"] }
 wasmtime = "45.0.1"
-# Default features give WASI p1 + p2; `p3` adds preview3 (native async/streams).
-wasmtime-wasi = { version = "45.0.1", features = ["p3"] }
+# Default features give WASI p1 + p2, which the wasip1/wasip2 bridges use. The
+# `p3` feature is intentionally left off until a `wasip3` bridge actually uses it
+# (no enabled-but-unused features).
+wasmtime-wasi = "45.0.1"
