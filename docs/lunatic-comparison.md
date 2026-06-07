@@ -10,12 +10,13 @@
 
 ## How to read this
 
-This is not apples-to-apples. RUSM has **Phases 1–6 complete**: the OTP core spawns, messages, supervises,
+This is not apples-to-apples. RUSM has **Phases 1–7 complete**: the OTP core spawns, messages, supervises,
 manages, and connects real processes over TCP, and the `rusm-wasm` backend runs
-them as real **Wasm instances** (instance-per-process, pooling + CoW + epoch). All
-five live scenarios run on real data — including **fairness**, where Wasm spinners
-saturate every core yet bystanders keep progressing. The later phases (WASI
-sandbox, guest crate, clustering) are still *planned*. The value is in the
+them as real **Wasm instances** behind three bridges (wasip1 core modules, wasip2
+components, wasip3 `@0.3.0`), with default-deny capabilities, instance-per-process,
+pooling + CoW + epoch. All **eight** live scenarios run on real data — including
+**fairness**, where Wasm spinners saturate every core yet bystanders keep
+progressing. The later phases (guest crate, clustering) are still *planned*. The value is in the
 **efficiency playbook** below.
 
 > ### Does RUSM handle lightweight processes as efficiently as Lunatic — today?
@@ -48,11 +49,11 @@ sandbox, guest crate, clustering) are still *planned*. The value is in the
 
 | | RUSM (today) | Lunatic |
 | --- | --- | --- |
-| Status | Active, Phases 1-6 complete | Dormant since 2023 (v0.13.0) |
+| Status | Active, Phases 1-7 complete | Dormant since 2023 (v0.13.0) |
 | Rust LOC | ~5,350 (6 crates) + ~790 TS | ~15,150 (20 crates) |
 | Tests | ~164 Rust + 21 TS, ~99% cov | ~26 test annotations |
 | Wasmtime | v45 (instance-per-process) | v8 (2023) |
-| Guest target | planned `wasm32-wasip1` | `wasm32-wasi` (preview1) |
+| Guest target | `wasm32-wasip2` components + `wasm32-wasip1` core modules (WASI p1/p2/p3) | `wasm32-wasi` (preview1) |
 | License | MIT | MIT + Apache-2.0 |
 
 ## Capability matrix

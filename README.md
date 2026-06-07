@@ -11,26 +11,29 @@ Wasmtime does the isolation.
 
 > **Status: Phase 7 of 10 complete.** RUSM now **hosts real WASM components** as
 > isolated, supervised processes. The Wasmtime backend (`rusm-wasm`) runs each
-> component instance-per-process with the **component model** (WASI p2 + p3),
-> a `rusm:runtime` **WIT actor world** (a component calls `self`/`send`/`receive`/
-> `list`/`info`/`kill`/`register` — the Erlang `Process` API, in any language),
-> **default-deny capability profiles** (fs/net/env/memory), epoch preemption, and a
-> spawn path tuned to **~440k component spawns/sec**. An **app model** lets you
+> instance-per-process behind three bridges — **wasip1** (core modules + a raw
+> `rusm::*` actor ABI + cross-process byte streams), **wasip2** (components, the
+> `rusm:runtime` **WIT actor world** — `self`/`send`/`receive`/`list`/`info`/`kill`/
+> `register`, the Erlang `Process` API in any language), and **wasip3** (the
+> `@0.3.0` async WASI interfaces). **Default-deny capability profiles**
+> (fs/net/env/memory), epoch preemption, and a spawn path tuned to **~440k
+> component spawns/sec**. An **app model** lets you
 > `rusm dev` a project: `rusm.toml` `[[components]]`, source under `components/`,
 > built to `./wasm/`, spawned under their capabilities — env the Rust way (process
 > env, then `.env`). Underneath, the Wasm-free OTP core (`rusm-otp`) spawns,
 > schedules, kills, messages, **supervises**, **manages**, and **connects** **real**
 > lightweight processes — links, monitors, `trap_exit`, exit cascades, a named
 > registry, timers, graceful shutdown, and **TCP** (one process per connection).
-> Seven benchmarks show real numbers (release): spawn-storm **~2.4M spawns/sec**,
+> Eight benchmarks show real numbers (release): spawn-storm **~2.4M spawns/sec**,
 > ping-pong **~21M messages/sec** (round-trip p50 <1 µs), fault-recovery
 > **~285k restarts/sec**, fairness keeping bystanders at **~50M+ ops/sec**
 > (peaking past **400M** when cores are free) under tight-loop spinners,
 > module-storm **~475k wasip1 core-module spawns/sec** (the direct Lunatic
-> head-to-head), component-storm **~440k component spawns/sec**, and
-> connection-storm holding **thousands of concurrent connections** (connect p50
-> sub-millisecond) — the connection ceiling is the OS, not RUSM. These are
-> measured under everyday load and scale up with free CPU. Clustering comes in
+> head-to-head), component-storm **~440k component spawns/sec**, stream-pipe
+> piping bytes between processes at **multiple GB/sec**, and connection-storm
+> holding **thousands of concurrent connections** (connect p50 sub-millisecond) —
+> the connection ceiling is the OS, not RUSM. These are measured under everyday
+> load and scale up with free CPU. Clustering comes in
 > later phases. See the [roadmap](docs/02-roadmap.md).
 
 ## Why
@@ -61,8 +64,9 @@ beat the runtime that inspired this.
 
 Prerequisites:
 
-- **Rust** 1.94+ (`rustup`). The `wasm32-wasip1` target is only needed once the
-  Wasm backend lands (Phase 6): `rustup target add wasm32-wasip1`.
+- **Rust** 1.94+ (`rustup`). To build guest components/modules add the Wasm
+  targets: `rustup target add wasm32-wasip2 wasm32-wasip1` (`rusm build` uses
+  `wasm32-wasip2` for components; `wasm32-wasip1` for core modules).
 - **Bun** 1.3+ (the dashboard and docs site use Bun — never Node.js).
 
 ```sh
@@ -144,11 +148,11 @@ by construction** — Wasm lives only in the `rusm-wasm` backend.
 | Crate | Kind | Purpose |
 | --- | --- | --- |
 | `rusm-otp` | lib | **The Erlang/OTP core** — processes, scheduler, mailboxes & selective receive, links/monitors/supervision, registry, timers, TCP. Pure Rust, **no `wasmtime` dependency** (usable standalone). Built up across Phases 1–5. |
-| `rusm-wasm` | lib | **The Wasmtime backend** (Phase 6) — the *only* crate that touches Wasmtime; runs each process as a sandboxed Wasm instance (instance-per-process, host ABI, epoch preemption, pooling + CoW) behind the same `rusm-otp` API. |
+| `rusm-wasm` | lib | **The Wasmtime backend** — the *only* crate that touches Wasmtime; runs each process as a sandboxed Wasm instance behind three bridges (`wasip1` core modules + raw actor ABI + byte streams, `wasip2` components + WIT actor world, `wasip3` `@0.3.0` interfaces), with default-deny capabilities, epoch preemption, pooling + CoW — all behind the same `rusm-otp` API. |
 | `rusm-metrics` | lib | Counters, HdrHistogram-backed latency percentiles, ring-buffer time-series. |
 | `rusm-observer` | lib | Low-overhead live-observer snapshots — aggregate counters plus a sampled per-instance table, with a detail on/off toggle. |
-| `rusm-bench` | lib + bin | Scenarios, the synthetic data source, the real engines (spawn-storm, ping-pong, fault-recovery), the run aggregator, the wire protocol, and the WebSocket server. Binary: `rusm-bench serve` / `run`. |
-| `rusm-cli` | bin (`rusm`) | The `rusm` command: `node start` and `attach <url>` (live REPL). |
+| `rusm-bench` | lib + bin | Scenarios, the synthetic data source, the eight real engines (spawn-storm, ping-pong, fault-recovery, connection-storm, fairness, module-storm, component-storm, stream-pipe), the run aggregator, the wire protocol, and the WebSocket server. Binary: `rusm-bench serve` / `run`. |
+| `rusm-cli` | bin (`rusm`) | The `rusm` command: `node start`, `attach <url>` (live REPL), and the app model — `build` / `run` / `dev` over `rusm.toml [[components]]`. |
 
 Not crates: the dashboard at `bench/dashboard` (Bun/React); docs under `docs/`.
 

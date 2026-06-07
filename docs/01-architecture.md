@@ -68,15 +68,22 @@ Wasmtime is a swappable backend — a structural fact, not a claim. Even message
 stay Wasm-agnostic: bytes plus opaque resource handles (`Arc<dyn Any + Send +
 Sync>`), no Wasm types.
 
-## Phase 0 shape
-
-Phase 0 builds the **observability + harness** that every later phase plugs into:
+## How the crates stack up
 
 ```
-rusm-metrics ─┐
-rusm-observer ─┼─→ rusm-bench (runner + WebSocket server) ─→ dashboard / rusm attach
-synthetic src ─┘
+                       ┌─ bridges/wasip1 (core modules + raw rusm::* ABI + byte streams)
+rusm-otp  ◀── rusm-wasm ┼─ bridges/wasip2 (components + rusm:runtime WIT actor world)
+(Wasm-free │            └─ bridges/wasip3 (WASI @0.3.0 async interfaces)
+ OTP core) │            caps.rs (default-deny profiles) · epoch · pooling + CoW
+           │
+           └── rusm-cli (app model: rusm.toml [[components]], build/run/dev, attach)
+
+observability ── rusm-metrics + rusm-observer ─→ rusm-bench (runner + WebSocket
+                 server) ─→ dashboard / rusm attach
 ```
 
-The runtime crates (engine, processes, host ABI, networking, distribution) are
-introduced phase by phase — see [the roadmap](./02-roadmap.md).
+`rusm-otp` is the Wasm-free core; `rusm-wasm` is the *only* crate that touches
+Wasmtime and drives the core through its public API. The observability stack
+(metrics/observer/bench/dashboard) plugs into any node. Distribution (QUIC + TLS
+cluster transport, Phase 9) is the one major layer still to come — see
+[the roadmap](./02-roadmap.md).

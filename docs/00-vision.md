@@ -36,6 +36,9 @@ process table — culminating in proving the **"300k/s connections"** claim
 
 We build it in small, test-driven phases (see [the roadmap](./02-roadmap.md)),
 each one teaching one concept. Phase 0 built the dashboard and observability
-foundation on synthetic data, so every later phase has something to measure
-with; Phase 1 made the process core real. See the [roadmap](./02-roadmap.md) for
-where things stand.
+foundation on synthetic data, so every later phase has something to measure with;
+Phases 1–5 made the OTP core real (processes, messaging, supervision, management,
+TCP); Phase 6 slotted in Wasmtime as the process backend; and by **Phase 7** a
+RUSM process is a real, supervised, sandboxed **WASM component** (or wasip1 core
+module) hosting WASI p1/p2/p3 — eight live benchmarks now run on real data. See
+the [roadmap](./02-roadmap.md) for where things stand.
