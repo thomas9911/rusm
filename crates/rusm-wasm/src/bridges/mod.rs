@@ -16,6 +16,8 @@ use std::sync::Arc;
 use rusm_otp::{Context, Runtime, StreamHandle, StreamWriter};
 use wasmtime::ResourceLimiter;
 use wasmtime_wasi::{ResourceTable, WasiCtx, WasiCtxView, WasiView};
+use wasmtime_wasi_http::p2::{WasiHttpCtxView, WasiHttpView};
+use wasmtime_wasi_http::WasiHttpCtx;
 
 use crate::caps::Capabilities;
 use crate::Spawner;
@@ -28,6 +30,9 @@ use crate::Spawner;
 pub(crate) struct WasiHost {
     pub(crate) wasi: WasiCtx,
     pub(crate) table: ResourceTable,
+    /// `wasi:http` host context, for serving a component as an HTTP handler
+    /// (Phase 11). Idle for non-HTTP guests.
+    pub(crate) http: WasiHttpCtx,
     /// The owning process's pid (for `own-pid`, `register`, `set-label`).
     pub(crate) pid: u64,
     /// This process's capabilities: the source of truth for its memory ceiling,
@@ -58,6 +63,16 @@ impl WasiView for WasiHost {
         WasiCtxView {
             ctx: &mut self.wasi,
             table: &mut self.table,
+        }
+    }
+}
+
+impl WasiHttpView for WasiHost {
+    fn http(&mut self) -> WasiHttpCtxView<'_> {
+        WasiHttpCtxView {
+            ctx: &mut self.http,
+            table: &mut self.table,
+            hooks: Default::default(),
         }
     }
 }
@@ -95,6 +110,7 @@ mod tests {
         let mut host = WasiHost {
             wasi: WasiCtxBuilder::new().build(),
             table: ResourceTable::new(),
+            http: WasiHttpCtx::new(),
             pid: 0,
             caps: Capabilities::nothing(),
             rt: Runtime::new(),

@@ -44,6 +44,9 @@ pub(crate) fn build_linker(engine: &Engine) -> Result<ComponentLinker<WasiHost>>
     let mut linker = ComponentLinker::new(engine);
     wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
     super::wasip3::add_to_linker(&mut linker)?;
+    // wasi:http imports, so a component can be served as an HTTP handler (Phase 11)
+    // and outbound `wasi:http` resolves. Idle for non-HTTP guests.
+    wasmtime_wasi_http::p2::add_only_http_to_linker_async(&mut linker)?;
     crate::actor::add_to_linker(&mut linker)?;
     Ok(linker)
 }
@@ -198,6 +201,7 @@ async fn run(spawner: Arc<Spawner>, prepared: PreparedComponent, caps: Capabilit
     let host = WasiHost {
         wasi,
         table: ResourceTable::new(),
+        http: wasmtime_wasi_http::WasiHttpCtx::new(),
         pid: pid.raw(),
         caps,
         rt,
@@ -295,6 +299,7 @@ mod tests {
         WasiHost {
             wasi: caps.build_wasi().unwrap(),
             table: ResourceTable::new(),
+            http: wasmtime_wasi_http::WasiHttpCtx::new(),
             pid: 0,
             caps,
             rt: rt.clone(),
