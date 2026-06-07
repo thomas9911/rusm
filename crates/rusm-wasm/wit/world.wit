@@ -3,7 +3,8 @@ package rusm:runtime@0.1.0;
 /// The actor / process API a RUSM component imports. Composition is by **message
 /// passing** — components address each other by pid and send bytes; there is no
 /// static component-to-component wiring and no lattice. A Rust guest binds this
-/// with `wit-bindgen`, a TS guest with `jco`; both call the same functions.
+/// with `wit-bindgen` (a TS guest via the planned Bun + rquickjs shell, no jco);
+/// both call the same functions.
 interface actor {
     /// A process identifier (Erlang's pid).
     type pid = u64;

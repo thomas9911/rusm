@@ -53,7 +53,7 @@ progressing. The later phases (guest crate, clustering) are still *planned*. The
 | Rust LOC | ~5,350 (6 crates) + ~790 TS | ~15,150 (20 crates) |
 | Tests | ~164 Rust + 21 TS, ~99% cov | ~26 test annotations |
 | Wasmtime | v45 (instance-per-process) | v8 (2023) |
-| Guest target | `wasm32-wasip2` components + `wasm32-wasip1` core modules (WASI p1/p2/p3) | `wasm32-wasi` (preview1) |
+| Guest target | components (`wasm32-wasip2`, WASI p2/p3) + core modules (`wasm32-wasip1`, WASI p1) | `wasm32-wasi` (preview1) |
 | License | MIT | MIT + Apache-2.0 |
 
 ## Capability matrix
