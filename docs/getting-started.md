@@ -250,45 +250,73 @@ the actor world. You write TS; **Bun** bundles it to one `.js`; the runner
 executes it inside the same sandbox (capabilities, memory cap, epoch preemption)
 as a Rust component. A TS component is just a folder with an `index.ts`:
 
-```
-components/worker/
-├── index.ts
-└── rusm.d.ts        # ambient types for the Process API (ships with the runner)
-```
+A TS component comes in two shapes. A **service** just exports functions — RUSM
+runs the receive→dispatch→reply loop around them:
 
 ```ts
+// components/calc/index.ts
 /// <reference path="./rusm.d.ts" />
-const replyTo = Process.receiveText();        // block for a message
-Process.setLabel("ts-worker");
-Process.send(replyTo, `pong from ${Process.self()}`);
+export function add(a: number, b: number): number { return a + b; }
+export async function greet({ name }: { name: string }) { return `hi ${name}`; }
 ```
 
-Declare it in `rusm.toml` next to your Rust components — same manifest, same
-capability profiles:
+A **worker** exports a `default` (async) function — RUSM runs it once. It reaches a
+service through the **typed client**: `spawn<typeof Calc>("calc")` returns a proxy
+whose calls are real cross-process messages, hidden behind `await`:
+
+```ts
+// components/commander/index.ts
+/// <reference path="./rusm.d.ts" />
+import type * as Calc from "../calc/index";
+
+export default async function () {
+  const calc = spawn<typeof Calc>("calc");     // spawn-from-guest, capability-gated
+  console.log("2 + 3 =", await calc.add(2, 3)); // concealed call: spawn + send + receive
+  console.log(await calc.greet({ name: "RUSM" }));
+}
+```
+
+Declare both in `rusm.toml`, with capability profiles (the commander needs the
+`spawn` capability — here a custom profile inheriting `trusted`):
 
 ```toml
+[capabilities.orchestrator]
+inherits = "trusted"
+
 [[components]]
-name = "worker"
+name = "calc"
 capability = "sandboxed"
+
+[[components]]
+name = "commander"
+capability = "orchestrator"
 ```
 
-`rusm build` detects the `index.ts` and runs `bun build --format=iife` →
-`wasm/worker.js` (a Rust component builds to `wasm/<name>.wasm` instead). `rusm run`
-loads `.js` artifacts on the shared js-runner under their declared profile. Blocking
-JS "just works": `Process.receiveText()` suspends the whole instance's fiber until a
-message arrives — no async/await, exactly like a Rust guest. The full `Process` API
-(`self`/`list`/`send`/`receive`/`receiveText`/`register`/`whereis`/`isAlive`/`kill`/
-`setLabel`/`openStream`/`acceptStream`) is bridged and typed by `rusm.d.ts`; binary
-(`Uint8Array`) messages and [byte streams](#streaming-from-a-component) work from JS
-too, and the Web APIs the runner polyfills (`URL`, `TextEncoder`, `Headers`,
-`ReadableStream`, `console`) are simply present. See the runnable
-`host_ts_component` example.
+`rusm build` detects each `index.ts` and runs `bun build --format=cjs` →
+`wasm/<name>.js` (a Rust component builds to `wasm/<name>.wasm` instead — same
+manifest, same loader). `rusm run` loads `.js` artifacts on the shared js-runner and
+prints:
+
+```
+2 + 3 = 5
+hi RUSM
+```
+
+`receive`/`receiveText` and `Stream.read` are **async** (`await`) — the host call
+still suspends the whole instance's fiber (freeing the worker), so it's cheap and
+composes with Promises. The full `Process` API (`self`/`list`/`spawn`/`send`/
+`receive`/`receiveText`/`register`/`whereis`/`isAlive`/`kill`/`setLabel`/
+`openStream`/`acceptStream`), the `spawn<T>()` typed client, binary (`Uint8Array`)
+messages, and [byte streams](#streaming-from-a-component) are all typed by
+`rusm.d.ts`; the Web APIs the runner polyfills (`URL`, `TextEncoder`, `Headers`,
+`ReadableStream`, `console`) are simply present. See the runnable `ts-app` example
+(Bun-built service + commander) and `host_ts_component`.
 
 > **`fetch` is deferred.** It rejects with a clear error until RUSM hosts
 > `wasi:http` (roadmap) — it's not silently missing.
 
-> **The other half of Phase 8** is the **`rusm-rs`** Rust guest crate (ergonomic
-> spawn/Mailbox/AbstractProcess/Supervisor over the raw actor ABI) — not started.
+> **Next:** the **`rusm-rs`** Rust guest crate (ergonomic spawn/Mailbox/
+> AbstractProcess/Supervisor over the same ABI) — the other half of Phase 8.
 
 ## Process management from inside a component (Rust)
 
