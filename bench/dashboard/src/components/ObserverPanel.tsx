@@ -5,9 +5,11 @@ interface ObserverPanelProps {
   observer: ObserverSnapshot | null;
   detail: boolean;
   onToggleDetail: (enabled: boolean) => void;
+  /** The node's Wasm pool capacity (reserved ceiling), shown next to live usage. */
+  capacity?: number;
 }
 
-export function ObserverPanel({ observer, detail, onToggleDetail }: ObserverPanelProps) {
+export function ObserverPanel({ observer, detail, onToggleDetail, capacity }: ObserverPanelProps) {
   const processes = observer?.processes ?? [];
   const schedulerLoad = observer?.scheduler_load ?? [];
   const hasSchedulerLoad = schedulerLoad.some((l) => l > 0);
@@ -41,6 +43,11 @@ export function ObserverPanel({ observer, detail, onToggleDetail }: ObserverPane
         <span>
           <strong>{schedulerLoad.length}</strong> schedulers
         </span>
+        {capacity ? (
+          <span title="Reserved Wasm-instance pool ceiling (live usage is shown left)">
+            <strong>{formatCount(capacity)}</strong> Wasm pool cap
+          </span>
+        ) : null}
       </div>
 
       {hasSchedulerLoad && (

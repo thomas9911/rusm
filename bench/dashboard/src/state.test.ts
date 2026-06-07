@@ -66,9 +66,11 @@ test('hello populates the scenario and profile menus', () => {
       },
     ],
     profiles: [{ id: 'balanced', label: 'Balanced', description: 'd' }],
+    instance_capacity: 1024,
   });
   expect(s.scenarios).toHaveLength(1);
   expect(s.profiles).toHaveLength(1);
+  expect(s.instanceCapacity).toBe(1024);
 });
 
 test('error records the message', () => {

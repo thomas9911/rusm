@@ -36,6 +36,7 @@ impl Node {
         ServerMessage::Hello {
             scenarios: self.scenarios.clone(),
             profiles: ResourceProfile::all_meta(),
+            instance_capacity: rusm_wasm::DEFAULT_MAX_INSTANCES,
         }
     }
 

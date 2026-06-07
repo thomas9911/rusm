@@ -74,7 +74,12 @@ export interface ResourceProfileMeta {
 }
 
 export type ServerMessage =
-  | { type: 'hello'; scenarios: ScenarioMeta[]; profiles: ResourceProfileMeta[] }
+  | {
+      type: 'hello';
+      scenarios: ScenarioMeta[];
+      profiles: ResourceProfileMeta[];
+      instance_capacity: number;
+    }
   | { type: 'tick'; frame: Frame }
   | { type: 'error'; message: string };
 

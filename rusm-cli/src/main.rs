@@ -31,6 +31,18 @@ async fn main() {
             cfg.profile.id(),
             cfg.ticks_per_second
         );
+        // Wasm pool ceiling (reserved): the most concurrent Wasm instances and the
+        // per-instance heap cap. The reservation is lazy virtual memory; real RSS
+        // tracks live instances (the dashboard Observer shows live vs this cap).
+        let (cap, mem) = (
+            rusm_wasm::DEFAULT_MAX_INSTANCES,
+            rusm_wasm::DEFAULT_MAX_MEMORY,
+        );
+        println!(
+            "Wasm pool: {cap} instances x {} MiB  (~{} GiB virtual reserved)",
+            mem >> 20,
+            (cap as usize * mem) >> 30
+        );
         if let Err(error) = serve(&cfg.listen, node).await {
             eprintln!("node error: {error}");
             std::process::exit(1);

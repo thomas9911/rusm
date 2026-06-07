@@ -39,11 +39,11 @@ const EPOCH_TICK: Duration = Duration::from_millis(10);
 /// *live* instances. A busy node raises this via [`WasmRuntime::with_limits`].
 /// (A true "millions of Wasm processes" tier needs an on-demand fallback above
 /// the pool — see the roadmap.)
-const DEFAULT_MAX_INSTANCES: u32 = 1024;
+pub const DEFAULT_MAX_INSTANCES: u32 = 1024;
 /// Default per-instance linear-memory ceiling (virtual, copy-on-write). Sized for
 /// real components (a minimal Rust component needs ~1 MiB; the rquickjs js-runner
 /// a few); a per-process capability `StoreLimiter` caps usage *below* this.
-const DEFAULT_MAX_MEMORY: usize = 16 << 20;
+pub const DEFAULT_MAX_MEMORY: usize = 16 << 20;
 
 /// Counters shared by every instance of one [`WasmRuntime`], so host functions
 /// can report aggregate activity (e.g. guest progress for the fairness scenario).

@@ -31,6 +31,8 @@ export interface DashboardState {
   history: number[];
   totals: Totals;
   error: string | null;
+  /** The node's Wasm pool capacity (max concurrent instances), from `hello`. */
+  instanceCapacity: number;
 }
 
 export const HISTORY_LIMIT = 240;
@@ -55,6 +57,7 @@ export function initialState(): DashboardState {
     history: [],
     totals: ZERO_TOTALS,
     error: null,
+    instanceCapacity: 0,
   };
 }
 
@@ -66,7 +69,12 @@ export function setConnected(state: DashboardState, connected: boolean): Dashboa
 export function applyMessage(state: DashboardState, message: ServerMessage): DashboardState {
   switch (message.type) {
     case 'hello':
-      return { ...state, scenarios: message.scenarios, profiles: message.profiles };
+      return {
+        ...state,
+        scenarios: message.scenarios,
+        profiles: message.profiles,
+        instanceCapacity: message.instance_capacity,
+      };
     case 'error':
       return { ...state, error: message.message };
     case 'tick':

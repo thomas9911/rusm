@@ -35,10 +35,12 @@ pub enum ClientCommand {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerMessage {
-    /// Sent on connect: the scenario menu and the resource-profile menu.
+    /// Sent on connect: the scenario menu, the resource-profile menu, and the
+    /// Wasm pool capacity (the reserved ceiling the Observer shows live usage against).
     Hello {
         scenarios: Vec<ScenarioMeta>,
         profiles: Vec<ResourceProfileMeta>,
+        instance_capacity: u32,
     },
     Tick {
         frame: Box<Frame>,
@@ -69,6 +71,16 @@ impl ServerMessage {
     pub fn profiles(&self) -> Option<&[ResourceProfileMeta]> {
         match self {
             ServerMessage::Hello { profiles, .. } => Some(profiles),
+            _ => None,
+        }
+    }
+
+    /// The Wasm pool capacity, if this is a [`ServerMessage::Hello`].
+    pub fn instance_capacity(&self) -> Option<u32> {
+        match self {
+            ServerMessage::Hello {
+                instance_capacity, ..
+            } => Some(*instance_capacity),
             _ => None,
         }
     }
@@ -139,9 +151,11 @@ mod tests {
         let hello = ServerMessage::Hello {
             scenarios: crate::scenario::Scenario::all_meta(),
             profiles: crate::profile::ResourceProfile::all_meta(),
+            instance_capacity: 1024,
         };
         assert!(hello.scenarios().is_some());
         assert!(hello.profiles().is_some());
+        assert_eq!(hello.instance_capacity(), Some(1024));
         assert!(hello.tick_frame().is_none());
 
         let mut runner = crate::runner::Runner::new(crate::runner::RunnerConfig::default());

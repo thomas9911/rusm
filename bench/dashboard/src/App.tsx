@@ -140,6 +140,7 @@ export function App() {
             observer={state.frame?.observer ?? null}
             detail={detail}
             onToggleDetail={toggleDetail}
+            capacity={state.instanceCapacity}
           />
         </main>
       </div>
