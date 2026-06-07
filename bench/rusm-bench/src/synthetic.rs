@@ -182,6 +182,25 @@ impl SyntheticSource {
                 latency_ns: (200_000, 3_000_000),
                 processes: (8, 256),
             },
+            // Real from Phase 5; preview shape — many held connections, low reconnect
+            // rate, sub-ms connect latency.
+            Scenario::ConnectionScale => Ranges {
+                ops: (5_000, 30_000),
+                latency_ns: (50_000, 1_000_000),
+                processes: (10_000, 50_000),
+            },
+            // Real from Phase 11; preview shape — WS echo round-trips/sec, sub-ms.
+            Scenario::WsEcho => Ranges {
+                ops: (100_000, 250_000),
+                latency_ns: (200_000, 2_000_000),
+                processes: (8, 256),
+            },
+            // Real from Phase 11; preview shape — SSE events/sec across held streams.
+            Scenario::SseFanout => Ranges {
+                ops: (500_000, 2_000_000),
+                latency_ns: (1_000, 50_000),
+                processes: (8, 256),
+            },
         }
     }
 }

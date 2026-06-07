@@ -2,6 +2,7 @@ use rusm_metrics::{LatencyHistogram, TimeSeries};
 use rusm_observer::{NodeSample, Observer};
 
 use crate::componentstorm::ComponentStormEngine;
+use crate::connectionscale::ConnectionScaleEngine;
 use crate::connectionstorm::ConnectionStormEngine;
 use crate::distributedfanout::DistributedFanoutEngine;
 use crate::fairness::FairnessEngine;
@@ -14,8 +15,10 @@ use crate::protocol::Frame;
 use crate::sample::Sample;
 use crate::scenario::Scenario;
 use crate::spawnstorm::SpawnStormEngine;
+use crate::ssefanout::SseFanoutEngine;
 use crate::streampipe::StreamPipeEngine;
 use crate::synthetic::SyntheticSource;
+use crate::wsecho::WsEchoEngine;
 
 fn available_cores() -> usize {
     std::thread::available_parallelism().map_or(4, |n| n.get())
@@ -66,6 +69,9 @@ enum Engine {
     StreamPipe(StreamPipeEngine),
     DistributedFanout(DistributedFanoutEngine),
     HttpThroughput(HttpThroughputEngine),
+    ConnectionScale(ConnectionScaleEngine),
+    WsEcho(WsEchoEngine),
+    SseFanout(SseFanoutEngine),
 }
 
 impl Engine {
@@ -114,6 +120,18 @@ impl Engine {
                 config.spawn_workers,
                 config.scheduler_count,
             )),
+            Scenario::ConnectionScale => Engine::ConnectionScale(ConnectionScaleEngine::new(
+                config.spawn_workers,
+                config.scheduler_count,
+            )),
+            Scenario::WsEcho => Engine::WsEcho(WsEchoEngine::new(
+                config.spawn_workers,
+                config.scheduler_count,
+            )),
+            Scenario::SseFanout => Engine::SseFanout(SseFanoutEngine::new(
+                config.spawn_workers,
+                config.scheduler_count,
+            )),
         }
     }
 
@@ -135,6 +153,9 @@ impl Engine {
             Engine::StreamPipe(engine) => engine.tick(),
             Engine::DistributedFanout(engine) => engine.tick(),
             Engine::HttpThroughput(engine) => engine.tick(),
+            Engine::ConnectionScale(engine) => engine.tick(),
+            Engine::WsEcho(engine) => engine.tick(),
+            Engine::SseFanout(engine) => engine.tick(),
         }
     }
 }
@@ -196,7 +217,10 @@ impl Runner {
             | Scenario::ComponentStorm
             | Scenario::StreamPipe
             | Scenario::DistributedFanout
-            | Scenario::HttpThroughput),
+            | Scenario::HttpThroughput
+            | Scenario::ConnectionScale
+            | Scenario::WsEcho
+            | Scenario::SseFanout),
         ) = self.scenario()
         {
             self.start(scenario);

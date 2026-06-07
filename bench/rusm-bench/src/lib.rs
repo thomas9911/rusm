@@ -4,6 +4,7 @@
 
 mod componentstorm;
 mod config;
+mod connectionscale;
 mod connectionstorm;
 mod distributedfanout;
 mod fairness;
@@ -19,8 +20,10 @@ mod sample;
 mod scenario;
 mod server;
 mod spawnstorm;
+mod ssefanout;
 mod streampipe;
 mod synthetic;
+mod wsecho;
 
 pub use config::{CapabilitySpec, ComponentSpec, NodeConfig, PreopenSpec};
 pub use profile::{ResourceProfile, ResourceProfileMeta};

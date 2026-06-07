@@ -21,6 +21,11 @@ pub enum Scenario {
     ModuleStorm,
     StreamPipe,
     HttpThroughput,
+    // Added after the originals so the synthetic source's per-variant seeding (by
+    // discriminant) stays deterministic.
+    ConnectionScale,
+    WsEcho,
+    SseFanout,
 }
 
 /// What a scenario's headline throughput number *counts*, so the dashboard can
@@ -64,17 +69,20 @@ impl Scenario {
     // Ordered by the phase each scenario goes live (the dashboard menu shows them
     // in this order). The enum discriminants are unchanged, so the synthetic
     // source stays deterministic.
-    pub const ALL: [Scenario; 10] = [
+    pub const ALL: [Scenario; 13] = [
         Scenario::SpawnStorm,        // phase 1
         Scenario::PingPong,          // phase 2
         Scenario::FaultRecovery,     // phase 3
         Scenario::ConnectionStorm,   // phase 5
+        Scenario::ConnectionScale,   // phase 5 — held-open concurrency to the OS ceiling
         Scenario::Fairness,          // phase 6
         Scenario::ModuleStorm,       // phase 6 — wasip1 core modules (Lunatic head-to-head)
         Scenario::ComponentStorm,    // phase 7
         Scenario::StreamPipe,        // phase 7 — cross-process byte-stream throughput
         Scenario::DistributedFanout, // phase 9
         Scenario::HttpThroughput,    // phase 11 — serve a WASM component over HTTP
+        Scenario::WsEcho,            // phase 11 — WebSocket echo, component per connection
+        Scenario::SseFanout,         // phase 11 — Server-Sent Events fan-out
     ];
 
     pub fn id(self) -> &'static str {
@@ -89,6 +97,9 @@ impl Scenario {
             Scenario::HttpThroughput => "http-throughput",
             Scenario::ModuleStorm => "module-storm",
             Scenario::StreamPipe => "stream-pipe",
+            Scenario::ConnectionScale => "connection-scale",
+            Scenario::WsEcho => "ws-echo",
+            Scenario::SseFanout => "sse-fanout",
         }
     }
 
@@ -123,6 +134,9 @@ impl Scenario {
                 ("distributedfanout.rs", include_str!("distributedfanout.rs"))
             }
             Scenario::HttpThroughput => ("httpthroughput.rs", include_str!("httpthroughput.rs")),
+            Scenario::ConnectionScale => ("connectionscale.rs", include_str!("connectionscale.rs")),
+            Scenario::WsEcho => ("wsecho.rs", include_str!("wsecho.rs")),
+            Scenario::SseFanout => ("ssefanout.rs", include_str!("ssefanout.rs")),
         })
     }
 
@@ -256,6 +270,39 @@ impl Scenario {
                 ],
                 11,
             ),
+            Scenario::ConnectionScale => (
+                "Connection scale",
+                "How MANY connections can RUSM hold at once — pushed to the OS ceiling?",
+                vec![
+                    "What's unique here: like connection-storm, but it *holds every connection open* instead of recycling — so it measures pure concurrency: how many live connection processes coexist, ramped to the machine's wall.",
+                    "Headline: peak concurrent connections (the live process count) — tens of thousands held, each its own isolated rusm-otp process, plus the reconnect rate at the edge.",
+                    "The ceiling is the OS, never RUSM: a loopback connection costs 2 file descriptors, so the per-process fd cap is the wall (~61k here). The client sheds the ephemeral-port limit with the 4-tuple trick (disjoint source-port stripes + SO_REUSEADDR across many destination ports), so fds are the only wall left.",
+                    "Phase 5: REAL loopback TCP, one process per held connection. A real deployment takes connections from many client hosts, so the per-node ceiling is fds and the fleet ceiling is the Phase 9 cluster — RUSM rides the kernel, with a full supervised process behind every socket.",
+                ],
+                5,
+            ),
+            Scenario::WsEcho => (
+                "WebSocket echo",
+                "How fast can RUSM echo WebSockets — one sandboxed component PROCESS per connection?",
+                vec![
+                    "What's unique here: every connection is served by its own WASM **component process** (WasmRuntime::ws_server), not a shared event loop — inbound frame → the process mailbox, reply via a Wasm-free writer process that owns the socket sink. Clean actor isolation per socket.",
+                    "Headline: echo round-trips/sec and round-trip p50/p99 across many held connections. Measured ~192k round-trips/s, and the component path lands inside noise of the bare hyper+tungstenite transport — the per-message mailbox hop is ~free.",
+                    "Real (Phase 11): the upgrade + WS protocol run host-side (hyper + tokio-tungstenite); after the upgrade each connection is a supervised pair of processes. A handler crash drops only that socket — never the listener or the other connections.",
+                    "Why it matters: per-connection isolation + supervision is what a single shared event loop (the usual WS server) can't give you.",
+                ],
+                11,
+            ),
+            Scenario::SseFanout => (
+                "SSE fan-out",
+                "How many live Server-Sent Event streams can a WASM component push at once?",
+                vec![
+                    "What's unique here: many long-lived `text/event-stream` connections, each served by its own wasi:http component instance streaming events as fast as the client drains them — the 'many concurrent streaming responses, all held' story (where a NATS-lattice host tends to wobble).",
+                    "Headline: events/sec across all streams + the inter-event cadence. Measured ~1.5M events/s across 128 held streams; a dropped client tears down only its own instance.",
+                    "Real (Phase 11): SSE needs no special transport — it's a wasi:http component that writes `data:` frames over time; the instance-per-request HttpServer already runs the handler in its own task and flushes each chunk as the guest yields it, back-pressured by the wasi:http body (an idle stream costs ~nothing).",
+                    "Why it matters: streaming fan-out to many subscribers is the shape of live dashboards, LLM token streams, and push feeds.",
+                ],
+                11,
+            ),
         };
         ScenarioMeta {
             id: self.id().to_string(),
@@ -368,12 +415,15 @@ mod tests {
                 "ping-pong",
                 "fault-recovery",
                 "connection-storm",
+                "connection-scale",
                 "fairness",
                 "module-storm",
                 "component-storm",
                 "stream-pipe",
                 "distributed-fanout",
-                "http-throughput"
+                "http-throughput",
+                "ws-echo",
+                "sse-fanout"
             ]
         );
     }
