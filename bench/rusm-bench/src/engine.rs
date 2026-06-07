@@ -69,7 +69,6 @@ impl SpawnStormEngine {
             .as_secs_f64()
             .max(f64::MIN_POSITIVE);
         let ops_per_sec = spawned.saturating_sub(self.last_spawned) as f64 / dt;
-        self.last_spawned = spawned;
         self.last_at = now;
 
         let latencies_ns = (0..LATENCY_SAMPLE)
@@ -80,6 +79,9 @@ impl SpawnStormEngine {
             })
             .collect();
 
+        // Baseline from the counter *after* sampling so this tick's synthetic
+        // latency-sample spawns never inflate the next tick's measured rate.
+        self.last_spawned = self.runtime.spawned();
         let process_count = self.runtime.process_count() as u64;
         Sample {
             ops_per_sec,
