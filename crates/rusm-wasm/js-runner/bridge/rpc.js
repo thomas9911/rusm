@@ -176,14 +176,17 @@ async function __rusm_serve(handlers) {
 // A guest **supervisor**: spawn + monitor named children and restart per a
 // strategy ("one_for_one" | "one_for_all" | "rest_for_one") when one dies. A dead
 // child arrives as a `{ __down }` message (no polling). `await supervise({...})`.
-globalThis.supervise = async function ({ strategy = "one_for_one", children = [], maxRestarts = 0 }) {
+globalThis.supervise = async function ({ strategy = "one_for_one", children = [], maxRestarts = 0, maxSeconds = 0 }) {
   const start = (name) => {
     const pid = Process.spawn(name);
     Process.monitor(pid);
     return pid;
   };
   let pids = children.map(start);
-  let restarts = 0;
+  // Lifetime mode counts; windowed mode (maxSeconds) keeps restart times in-window
+  // — Erlang's restart intensity. System signals are unaffected.
+  let lifetime = 0;
+  let window = [];
   for (;;) {
     let m;
     try { m = JSON.parse(await Process.receiveText()); } catch { continue; }
@@ -191,7 +194,17 @@ globalThis.supervise = async function ({ strategy = "one_for_one", children = []
     const dead = BigInt(m.__down);
     const i = pids.findIndex((p) => p === dead);
     if (i < 0) continue;
-    if (maxRestarts && ++restarts > maxRestarts) return;
+    let overBudget;
+    if (maxSeconds) {
+      const now = Date.now();
+      window.push(now);
+      const cutoff = now - maxSeconds * 1000;
+      window = window.filter((t) => t >= cutoff);
+      overBudget = maxRestarts && window.length > maxRestarts;
+    } else {
+      overBudget = maxRestarts && ++lifetime > maxRestarts;
+    }
+    if (overBudget) return;
     if (strategy === "one_for_all") {
       pids.forEach((p, j) => { if (j !== i) Process.kill(p); });
       pids = children.map(start);

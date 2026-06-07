@@ -2,6 +2,8 @@
 //! name, `monitor` them, and restart per a strategy when one dies. Event-driven
 //! (a dead child arrives as a `__down` message — no polling).
 
+use std::time::{Duration, Instant};
+
 use crate::{kill, monitor, receive_bytes, spawn, Pid};
 
 /// How a supervisor reacts when one child dies.
@@ -22,6 +24,10 @@ pub struct Supervisor {
     children: Vec<String>,
     /// Max restarts before the supervisor gives up and exits (0 = unlimited).
     max_restarts: u32,
+    /// Restart-intensity window. `None` counts `max_restarts` over the whole
+    /// lifetime; `Some(w)` counts only restarts within the last `w` (Erlang's
+    /// `{max_restarts, max_seconds}`).
+    within: Option<Duration>,
 }
 
 impl Supervisor {
@@ -31,6 +37,7 @@ impl Supervisor {
             strategy,
             children: Vec::new(),
             max_restarts: 0,
+            within: None,
         }
     }
 
@@ -40,10 +47,23 @@ impl Supervisor {
         self
     }
 
-    /// Give up (return) after this many restarts — overload protection (Erlang's
-    /// restart intensity). 0 (the default) means never give up.
+    /// Give up (return) after this many restarts — overload protection. By default
+    /// this counts over the supervisor's whole lifetime; pair it with
+    /// [`within`](Supervisor::within) for a sliding window. 0 (the default) means
+    /// never give up.
     pub fn max_restarts(mut self, n: u32) -> Self {
         self.max_restarts = n;
+        self
+    }
+
+    /// Bound [`max_restarts`](Supervisor::max_restarts) to a sliding **time
+    /// window** — give up only if more than `max_restarts` happen within `window`
+    /// (Erlang's restart *intensity*, `{max_restarts, max_seconds}`). Restarts
+    /// spread out wider than the window never trip it, so an occasional crash over a
+    /// long uptime won't eventually exhaust the budget. Without this, the budget is
+    /// the supervisor's whole lifetime.
+    pub fn within(mut self, window: Duration) -> Self {
+        self.within = Some(window);
         self
     }
 
@@ -51,7 +71,9 @@ impl Supervisor {
     /// restart per the strategy. Returns only if `max_restarts` is exceeded.
     pub fn run(self) {
         let mut pids: Vec<Pid> = self.children.iter().map(|c| start(c)).collect();
-        let mut restarts = 0u32;
+        // Lifetime mode counts; windowed mode keeps the restart instants in-window.
+        let mut lifetime = 0u32;
+        let mut window: Vec<Instant> = Vec::new();
         loop {
             let raw = receive_bytes();
             let Some(dead) = parse_down(&raw) else {
@@ -60,8 +82,19 @@ impl Supervisor {
             let Some(index) = pids.iter().position(|&p| p == dead) else {
                 continue; // a Down for something we don't supervise (already restarted)
             };
-            restarts += 1;
-            if self.max_restarts != 0 && restarts > self.max_restarts {
+            let over_budget = match self.within {
+                Some(span) => {
+                    let now = Instant::now();
+                    window.push(now);
+                    window.retain(|t| now.duration_since(*t) <= span);
+                    self.max_restarts != 0 && window.len() as u32 > self.max_restarts
+                }
+                None => {
+                    lifetime += 1;
+                    self.max_restarts != 0 && lifetime > self.max_restarts
+                }
+            };
+            if over_budget {
                 return; // overload — let the supervisor itself crash/stop
             }
             match self.strategy {

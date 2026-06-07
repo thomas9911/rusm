@@ -221,9 +221,19 @@ dependencies = [
 name = "rusm-rs"
 version = "0.0.0"
 dependencies = [
+ "rusm-rs-macros",
  "serde",
  "serde_json",
  "wit-bindgen",
+]
+
+[[package]]
+name = "rusm-rs-macros"
+version = "0.0.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]

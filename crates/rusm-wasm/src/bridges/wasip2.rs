@@ -852,6 +852,68 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_typescript_supervisor_gives_up_past_its_restart_intensity() {
+        // Parity with the Rust supervisor: `supervise({ maxRestarts, maxSeconds })`
+        // gives up once a burst exceeds the restart intensity, so its process exits.
+        const FLAKY: &str = r#"
+            module.exports.default = async function () {
+                const c = Process.whereis("collector");
+                if (c !== null) Process.send(c, "started:" + Process.self());
+                for (;;) await Process.receive();
+            };
+        "#;
+        const SUP: &str = r#"
+            module.exports.default = async function () {
+                await supervise({ strategy: "one_for_one", children: ["flaky"], maxRestarts: 2, maxSeconds: 3600 });
+            };
+        "#;
+        let rt = Runtime::new();
+        let wr = WasmRuntime::new(rt.clone()).unwrap();
+        wr.register_js_component("flaky", FLAKY.as_bytes());
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let collector = rt.spawn(move |mut ctx| async move {
+            loop {
+                if let rusm_otp::Received::Message(b) = ctx.recv().await {
+                    let _ = tx.send(String::from_utf8(b).unwrap());
+                }
+            }
+        });
+        rt.register("collector", collector.pid());
+        let sup = wr.spawn_js_with(SUP.as_bytes(), CapabilityProfile::Trusted.capabilities());
+        let sup_pid = sup.pid();
+
+        let parse = |m: String| -> u64 { m.strip_prefix("started:").unwrap().parse().unwrap() };
+        let mut starts = Vec::new();
+        for _ in 0..3 {
+            let pid = parse(rx.recv().await.unwrap());
+            starts.push(pid);
+            rt.kill(rusm_otp::Pid::from_raw(pid));
+        }
+
+        let mut gave_up = false;
+        for _ in 0..400 {
+            if !rt.is_alive(sup_pid) {
+                gave_up = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        assert!(
+            gave_up,
+            "TS supervisor exited after exceeding restart intensity"
+        );
+        assert_eq!(
+            starts
+                .iter()
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            3,
+            "each restart was a fresh process"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_rust_supervisor_restarts_a_dead_child() {
         // `rusm_rs::Supervisor` (one-for-one): it spawns + monitors the `flaky`
         // child, which announces its pid to the registered collector. Killing the
@@ -889,6 +951,69 @@ mod tests {
         assert_ne!(
             pid_a, pid_b,
             "the supervisor restarted the dead child as a fresh process"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_rust_supervisor_gives_up_past_its_restart_intensity() {
+        // `rs-sup` allows 2 restarts within an hour. A rapid burst of kills exceeds
+        // that intensity, so the supervisor gives up and its own process exits —
+        // letting the failure escalate instead of restart-looping forever.
+        const FLAKY: &[u8] = include_bytes!("../../tests/fixtures/rs_flaky.wasm");
+        const SUP: &[u8] = include_bytes!("../../tests/fixtures/rs_sup.wasm");
+        let rt = Runtime::new();
+        let wr = WasmRuntime::new(rt.clone()).unwrap();
+        let flaky = wr
+            .prepare_component(&wr.compile_component(FLAKY).unwrap(), "run")
+            .unwrap();
+        let sup = wr
+            .prepare_component(&wr.compile_component(SUP).unwrap(), "run")
+            .unwrap();
+        wr.register_component("flaky", flaky);
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let collector = rt.spawn(move |mut ctx| async move {
+            loop {
+                if let rusm_otp::Received::Message(b) = ctx.recv().await {
+                    let _ = tx.send(String::from_utf8(b).unwrap());
+                }
+            }
+        });
+        rt.register("collector", collector.pid());
+
+        let sup_handle = wr.spawn_component_with(&sup, CapabilityProfile::Trusted.capabilities());
+        let sup_pid = sup_handle.pid();
+
+        // Initial start + 2 restarts = 3 starts; kill the child each time it appears.
+        // The 3rd death is the one that exceeds the intensity.
+        let parse = |m: String| -> u64 { m.strip_prefix("started:").unwrap().parse().unwrap() };
+        let mut starts = Vec::new();
+        for _ in 0..3 {
+            let pid = parse(rx.recv().await.unwrap());
+            starts.push(pid);
+            rt.kill(rusm_otp::Pid::from_raw(pid));
+        }
+
+        // Past its restart intensity, the supervisor gives up — its own process ends.
+        let mut gave_up = false;
+        for _ in 0..400 {
+            if !rt.is_alive(sup_pid) {
+                gave_up = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        assert!(
+            gave_up,
+            "supervisor exited after exceeding restart intensity"
+        );
+        assert_eq!(
+            starts
+                .iter()
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            3,
+            "each restart was a fresh process"
         );
     }
 

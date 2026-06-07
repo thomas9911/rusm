@@ -70,7 +70,13 @@ export type Strategy = "one_for_one" | "one_for_all" | "rest_for_one";
 export interface SupervisorOptions {
   children: string[];
   strategy?: Strategy;
+  /** Give up after this many restarts (0 = never). By default counted over the
+   *  supervisor's whole lifetime; set {@link maxSeconds} for a sliding window. */
   maxRestarts?: number;
+  /** Restart-intensity window in seconds: give up only if more than `maxRestarts`
+   *  happen within this span (Erlang's `{max_restarts, max_seconds}`). Without it,
+   *  `maxRestarts` counts over the whole lifetime. */
+  maxSeconds?: number;
 }
 
 // The runner installs these globals before the bundle runs (and wraps the bundle
