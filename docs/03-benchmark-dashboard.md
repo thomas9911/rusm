@@ -63,11 +63,11 @@ worker count is the dial** and is relative to your CPU count; throughput rises
 with each tier. The in-flight cap is a uniform per-core safety net (memory can't
 run away), **not** a per-tier knob — the population self-limits well below it.
 
-| Profile | Spawn workers | Throughput (10-core box) | Use it when |
+| Profile | Spawn workers | Throughput (busy 10-core box, release) | Use it when |
 | --- | --- | --- | --- |
-| **Light** | ~¼ of cores | ~1.1M/s | speed isn't the point — leave the machine alone |
-| **Balanced** (default) | ~⅖ of cores | ~1.4M/s | good throughput with visible room above |
-| **Max** | ~½ of cores | ~1.5M/s | most performant — peak sustained rate, still smooth |
+| **Light** | ~¼ of cores | ~1.9M/s | speed isn't the point — leave the machine alone |
+| **Balanced** (default) | ~⅖ of cores | ~2.5M/s | good throughput with visible room above |
+| **Max** | ~½ of cores | ~2.6M/s | most performant — peak sustained rate, still smooth |
 
 `Max` deliberately stops at ~half the cores: the other half reap, which is the
 sustained-throughput peak. Pushing spawners higher does **not** go faster — it

@@ -66,6 +66,7 @@ export default defineConfig({
           { text: 'Phase 4 — Management', link: '/phases/phase-04-management' },
           { text: 'Phase 5 — TCP', link: '/phases/phase-05-tcp' },
           { text: 'Phase 6 — Wasm backend', link: '/phases/phase-06-wasm-backend' },
+          { text: 'Phase 7 — Component hosting', link: '/phases/phase-07-components' },
         ],
       },
     ],

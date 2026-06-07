@@ -97,7 +97,7 @@ impl Scenario {
                 "Fairness under tight loop",
                 "Can one CPU-HOGGING process starve the rest? It must not — preemption keeps others running.",
                 vec![
-                    "What's unique here: it's about *CPU sharing*, not throughput. Tight-loop Wasm guests (spinners) try to hog every core while bystander guests must keep working.",
+                    "\"Fairness\" = fair CPU sharing: no single process may hog a core and starve the others. What's unique here: it's about *CPU sharing*, not throughput. Tight-loop Wasm guests (spinners) try to hog every core while bystander guests must keep working.",
                     "Headline: bystander progress (work/sec) — they keep running at tens of millions of ops/sec (~60M+) *despite* the spinners. A nonzero rate IS the proof.",
                     "Phase 6: REAL Wasm. Tokio scheduling is cooperative, so RUSM arms Wasmtime epoch interruption — even an infinite-loop guest yields (the BEAM's reduction-counting idea; lighter than Lunatic's per-instruction fuel — a periodic atomic, ~zero steady-state cost).",
                     "Without preemption, spinners filling every scheduler thread would pin bystanders to zero. They don't.",

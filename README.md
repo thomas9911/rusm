@@ -9,20 +9,26 @@ core** (pure Rust); **WebAssembly is the sandboxed execution backend** that late
 runs each process as an isolated instance. Rust + Tokio do the scheduling;
 Wasmtime does the isolation.
 
-> **Status: Phase 6 of 10 complete.** The **Wasmtime backend** (`rusm-wasm`) runs
-> each process as an isolated Wasm instance — instance-per-process, a host ABI,
-> epoch preemption (even one tight-loop guest per core yields and stays killable),
-> pooling + copy-on-write for **~167k Wasm spawns/sec**, and trap → process crash.
-> The fairness scenario is live: Wasm spinners saturate every core, yet bystanders
-> still run at ~12M ops/sec. Underneath, the Wasm-free OTP core (`rusm-otp`) spawns,
+> **Status: Phase 7 of 10 complete.** RUSM now **hosts real WASM components** as
+> isolated, supervised processes. The Wasmtime backend (`rusm-wasm`) runs each
+> component instance-per-process with the **component model** (WASI p2, p3-ready),
+> a `rusm:runtime` **WIT actor world** (a component calls `self`/`send`/`receive`/
+> `list`/`info`/`kill`/`register` — the Erlang `Process` API, in any language),
+> **default-deny capability profiles** (fs/net/env/memory), epoch preemption, and a
+> spawn path tuned to **~440k component spawns/sec**. An **app model** lets you
+> `rusm dev` a project: `rusm.toml` `[[components]]`, source under `components/`,
+> built to `./wasm/`, spawned under their capabilities — env the Rust way (process
+> env, then `.env`). Underneath, the Wasm-free OTP core (`rusm-otp`) spawns,
 > schedules, kills, messages, **supervises**, **manages**, and **connects** **real**
 > lightweight processes — links, monitors, `trap_exit`, exit cascades, a named
 > registry, timers, graceful shutdown, and **TCP** (one process per connection).
-> Four benchmarks show real numbers: spawn-storm at **~1.4M spawns/sec**,
-> ping-pong at **~3M messages/sec** (round-trip p50 ~2 µs), fault-recovery at
-> **~100k restarts/sec**, and connection-storm holding **thousands of concurrent
-> real connections** (connect p50 ~70 µs) — the connection ceiling is the OS, not
-> RUSM. Clustering comes in later phases. See the [roadmap](docs/02-roadmap.md).
+> Six benchmarks show real numbers (release): spawn-storm **~2.45M spawns/sec**,
+> ping-pong **~18M messages/sec** (round-trip p50 <1 µs), fault-recovery
+> **~380k restarts/sec**, fairness keeping bystanders at **~60M+ ops/sec** under
+> tight-loop spinners, component-storm **~440k component spawns/sec**, and
+> connection-storm holding **thousands of concurrent connections** (connect p50
+> ~64 µs) — the connection ceiling is the OS, not RUSM. Clustering comes in later
+> phases. See the [roadmap](docs/02-roadmap.md).
 
 ## Why
 

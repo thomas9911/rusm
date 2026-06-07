@@ -26,8 +26,9 @@ core through its public API; Wasm never bleeds into Wasm-irrelevant code.
 2. **Instance-per-process** — `compile(wat) -> Module`, `prepare(module) ->
    InstancePre<Host>`, `spawn(prepared, entry) -> ProcessHandle`. Each spawn
    instantiates a fresh, isolated instance as a rusm-otp process.
-3. **Fast spawns (~167k Wasm spawns/sec, ~3.2× naïve on-demand)** via three levers
-   on one `Engine`:
+3. **Fast spawns** (instance-per-process, far cheaper than a naive on-demand
+   allocator; the optimized component path reaches ~440k spawns/sec — see
+   [Phase 7](./phase-07-components.md)) via three levers on one `Engine`:
    - **pooling allocator** — instances/memories/tables recycled from a pool,
    - **`memory_init_cow`** — copy-on-write memory images, so a fresh instance
      doesn't zero/copy its whole linear memory,
@@ -43,7 +44,7 @@ core through its public API; Wasm never bleeds into Wasm-irrelevant code.
 6. **Trap → `ExitReason::Crashed`** — a guest trap is reported through the same
    exit machinery as a native crash from [Phase 3](./phase-03-supervision.md).
 7. **Fairness engine** (`rusm-bench`) — Wasm spinners saturate **every core**
-   while Wasm bystanders keep calling `notify`; a nonzero bystander rate (~12M
+   while Wasm bystanders keep calling `notify`; a nonzero bystander rate (~60M+
    ops/sec) *is* the proof that preemption is yielding the spinners.
 
 ## Design notes — efficiency & honesty
@@ -76,6 +77,6 @@ invariant holds (no `wasmtime` anywhere under `rusm-otp`).
 
 ## Next
 
-[Phase 7](../02-roadmap.md): **WASI + per-process sandbox/permissions** — true
-fine-grained capabilities per instance (the path toward hosting real WASM
-components in a controlled, performant environment).
+[Phase 7](./phase-07-components.md): **component hosting** — run real WASM
+*components* (the component model + WASI p2/p3) as RUSM processes, with a
+`rusm:runtime` actor ABI and default-deny per-process capabilities.

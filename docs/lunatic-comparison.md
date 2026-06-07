@@ -22,14 +22,16 @@ sandbox, guest crate, clustering) are still *planned*. The value is in the
 >
 > **For the actor model — yes, and in places better** (one channel per process
 > vs two, free abort-handle cancellation, a sharded registry, Tokio-wheel timers;
-> ~1.4M spawns/sec, ~3M messages/sec, ~100k restarts/sec measured live). **For
-> Wasm execution — the backend is now in** (`rusm-wasm`): instance-per-process
-> with a pooling allocator, copy-on-write init, `InstancePre`, and epoch
-> preemption — **~167k Wasm spawns/sec** (3.2× a naive on-demand allocator).
-> Lunatic ships on-demand allocation + fuel; RUSM's spawn path is ahead by design.
+> ~2.45M spawns/sec, ~18M messages/sec, ~380k restarts/sec measured live). **For
+> Wasm execution — RUSM now hosts the *component model*** (`rusm-wasm`), which
+> Lunatic does **not** do at all (it runs only core modules with its own ABI):
+> instance-per-process with a pooling allocator, copy-on-write init, `InstancePre`,
+> a precomputed export index, and epoch preemption — **~440k component
+> spawns/sec** live (component-storm). Lunatic ships on-demand allocation + fuel;
+> RUSM's spawn path is ahead by design.
 >
-> The **fairness** scenario now runs on real Wasm — spinners saturate every core,
-> yet bystanders progress at ~12M ops/sec, proving epoch preemption live. What
+> The **fairness** scenario runs on real Wasm — spinners saturate every core, yet
+> bystanders progress at ~60M+ ops/sec, proving epoch preemption live. What
 > remains is a true head-to-head against Lunatic (see the question at the end).
 
 ## Snapshot
@@ -58,8 +60,9 @@ phase, same themes, same order.
 | 3 ✅ | Links, monitors, supervision, fault tolerance | ✅ done (links/monitors/trap/exit) | ✅ `Signal` enum | ⚡ ahead |
 | 4 ✅ | Process management (registry, timers, lifecycle) | ✅ done (sharded registry, Tokio timers) | ✅ | ⚡ ahead |
 | 5 ✅ | Connectivity — TCP | ✅ done (TCP, process-per-conn; TLS → P9) | ✅ TCP/UDP/DNS/TLS | ✅ on par |
-| 6 ✅ | Wasmtime backend (instance-per-process, preemption) | ✅ done (pooling+CoW+epoch, ~167k spawns/s; fairness live) | ✅ (fuel) | ⚡ ahead by design |
-| 7 | WASI + per-process sandbox | ❌ | ✅ | — not built |
+| 6 ✅ | Wasmtime backend (instance-per-process, preemption) | ✅ done (pooling+CoW+epoch; fairness live) | ✅ (fuel) | ⚡ ahead by design |
+| 7 ✅ | **Component hosting** (component model, WASI p2/p3, capabilities, actor WIT ABI, app model) | ✅ done (~440k component spawns/s; default-deny caps + memory limits; component-storm live) | ❌ **no component-model host** (core modules only) | ⚡ **ahead — an axis Lunatic lacks** |
+| 7b | wasip1 bridge full WASI + raw actor ABI; p3 cross-component streams | ⏳ deferred follow-on | ✅ wasip1 | — partial |
 | 8 | Guest crate | ❌ → `rusm-rs` | 🅛 `lunatic-rs` (separate repo) | — n/a (DX, not perf) |
 | 9 | Distributed clusters + live attach | ❌ | ✅ (Axum + Submillisecond) | — not built |
 | 10 | Performance (pooling + CoW + epoch) | ❌ | ⚠️ OnDemand + fuel | — TBD |
@@ -73,7 +76,7 @@ phase, same themes, same order.
 **Why each verdict (perf/efficiency):**
 
 - **1 — on par.** Identical model: one process = one Tokio task. RUSM's native
-  spawn sustains ~1.4M/s; Lunatic's per-spawn also instantiates a Wasm module, so
+  spawn sustains ~2.45M/s; Lunatic's per-spawn also instantiates a Wasm module, so
   a fair head-to-head waits for Phase 6.
 - **2 — ahead.** RUSM keeps **one** channel per process (the mailbox); Lunatic
   keeps two (signal + message) and double-handles each message (mpsc →
@@ -89,11 +92,12 @@ phase, same themes, same order.
   kernel `connect`/`accept` ceiling (identical for both), and minting a process
   per connection is ~free on both (RUSM spawns ~100× faster than the loopback
   hands out sockets).
-- **6 — ahead by design.** A **pooling allocator** + **copy-on-write** memory
-  init + a per-module **`InstancePre`** give **~167k Wasm instance-per-process
-  spawns/s** (3.2× a naive on-demand allocator), and **epoch** preemption (bumped
-  on a dedicated thread) keeps bystanders at ~12M ops/sec even with a tight-loop
-  guest pinning every core. Lunatic ships on-demand allocation + fuel, so RUSM is
+- **6/7 — ahead by design.** A **pooling allocator** + **copy-on-write** memory
+  init + a per-module **`InstancePre`** + a **precomputed export index** sustain
+  **~440k component instance-per-process spawns/s**, far ahead of a naive
+  on-demand allocator, and **epoch** preemption (bumped on a dedicated thread)
+  keeps bystanders at ~60M+ ops/sec even with a tight-loop guest pinning every
+  core. Lunatic ships on-demand allocation + fuel (and no component host), so RUSM is
   ahead on both the spawn path and preemption overhead by design — a true
   head-to-head benchmark is the remaining validation.
 
@@ -152,7 +156,7 @@ own.)
 
 | Borrow from Lunatic | Why it helps | RUSM status |
 | --- | --- | --- |
-| Process-per-connection accept loop — `lunatic-networking-api` | a slow/crashing connection can't affect the others | **✅ Done** — `Runtime::listen` spawns one rusm-otp process per accepted socket; the connection ceiling is the OS (fds, ephemeral ports, TIME_WAIT), not RUSM, since spawning is ~free (the spawn storm does 1.4M/s) |
+| Process-per-connection accept loop — `lunatic-networking-api` | a slow/crashing connection can't affect the others | **✅ Done** — `Runtime::listen` spawns one rusm-otp process per accepted socket; the connection ceiling is the OS (fds, ephemeral ports, TIME_WAIT), not RUSM, since spawning is ~free (the spawn storm does 2.45M/s) |
 | TCP owned read/write halves + per-conn timeouts in `HashMapId` — `lunatic-networking-api/src/lib.rs:71` | concurrent reader+writer without locking the stream | **Deferred** — native handlers own the whole `TcpStream`; split halves / per-conn timeouts arrive with the guest host ABI (Phase 6) |
 | TLS via `tokio-rustls` + `webpki-roots` — `tls_tcp.rs:392` | secure transport | **Moved to Phase 9** — TLS's real home is the secure cluster transport (QUIC + TLS); bolting it onto the loopback storm would only tank throughput |
 
@@ -160,15 +164,16 @@ own.)
 
 | Borrow from Lunatic | Why it helps | RUSM status |
 | --- | --- | --- |
-| `InstancePre` (imports type-checked once) + Arc'd `Module` + async — `runtimes/wasmtime.rs:34,63,163` | fast instantiation, compile-once | **✅ Done** — the linker is built once and each module's imports resolve once into an `InstancePre`; a spawn skips import resolution entirely (the 2.6× step to ~167k/s) |
-| `InstanceAllocationStrategy::OnDemand` — `runtimes/wasmtime.rs:173` | fresh memory per instance → slower, heavier spawn | **✅ Ahead** — pooling allocator (pre-reserved slabs) → spawns reuse slots, no mmap; **~167k/s vs ~53k/s on-demand** |
+| `InstancePre` (imports type-checked once) + Arc'd `Module` + async — `runtimes/wasmtime.rs:34,63,163` | fast instantiation, compile-once | **✅ Done** — the linker is built once and each module's imports resolve once into an `InstancePre`; a spawn skips import resolution (and a precomputed export index skips the by-name lookup) — part of the path to ~440k component spawns/s |
+| `InstanceAllocationStrategy::OnDemand` — `runtimes/wasmtime.rs:173` | fresh memory per instance → slower, heavier spawn | **✅ Ahead** — pooling allocator (pre-reserved slabs) → spawns reuse slots, no mmap (a large multiple of on-demand allocation) |
 | `static_memory_forced(true)` on v8 (no CoW) — `runtimes/wasmtime.rs:175` | static memories, but no copy-on-write | **✅ Ahead** — `memory_init_cow`: a fresh instance shares the module image until first write, so init is near-free |
 | Preemption via **fuel** (`consume_fuel`, `out_of_fuel_async_yield`) — `runtimes/wasmtime.rs:166,56` | works, but per-unit accounting overhead | **✅ Ahead** — epoch interruption: a periodic atomic bump, ≈ near-zero steady-state; an infinite-loop guest still yields and stays killable |
 
-**Why this phase matters most:** pooling + CoW + epoch + `InstancePre` are exactly
-the levers for cheap instance-per-process. They're in (`rusm-wasm`), giving ~167k
-Wasm spawns/s, and the fairness scenario proves epoch preemption live. Lunatic
-(Wasmtime 8, on-demand, fuel) predates easy access to them — the remaining work is
+**Why this phase matters most:** pooling + CoW + epoch + `InstancePre` + a
+precomputed export index are exactly the levers for cheap instance-per-process.
+They're in (`rusm-wasm`), giving ~440k component spawns/s, and the fairness
+scenario proves epoch preemption live. Lunatic (Wasmtime 8, on-demand, fuel,
+core-modules-only) predates easy access to them — the remaining work is
 a true head-to-head benchmark to put numbers on the delta.
 
 ## Phase 7 — WASI + per-process sandbox

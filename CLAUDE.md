@@ -8,37 +8,48 @@ distributed clusters you can hook into live. See `README.md` for the pitch and
 
 ## Status
 
-**Phase 6 of 10 — complete.** The Wasmtime backend (`rusm-wasm`, the *only* crate
-that touches Wasmtime) runs each process as an isolated Wasm instance:
-instance-per-process, a host ABI, epoch preemption (the epoch bumps on a
-dedicated OS thread, so even one tight-loop guest per core yields and stays
-killable), and the efficiency levers — pooling allocator + copy-on-write + a
-per-module `InstancePre` — for **~167k Wasm spawns/sec** (3.2× a naive on-demand
-allocator). Trap → process `Crashed`. The **fairness** scenario is graduated to
-real Wasm: spinners saturate every core, yet bystanders still progress at ~12M
-ops/sec — preemption proven live. `rusm-otp` stays Wasm-free (verified: no
-`wasmtime` in its dep tree).
+**Phase 7 of 10 — complete.** RUSM **hosts real WASM components** as isolated,
+supervised processes. The Wasmtime backend (`rusm-wasm`, the *only* crate that
+touches Wasmtime) runs each component instance-per-process via the **component
+model** (`wasmtime-wasi` p1/p2/p3; `bridges/{wasip1,wasip2,wasip3}.rs` over a
+shared core). It exposes a `rusm:runtime` **WIT actor world** (`bindgen!`): a
+component calls `self`/`send`/`receive`/`list`/`info`/`kill`/`register`/`whereis`/
+`set-label` — the Erlang `Process` API, callable from Rust or TS guests — backed
+by thin calls into `rusm-otp`. **Default-deny capability profiles** (`caps.rs`:
+Sandboxed/NetworkClient/Trusted) build a `WasiCtx` + a `StoreLimiter` memory cap.
+The spawn path is optimized — pooling allocator + copy-on-write + per-module
+`InstancePre` + **precomputed export index** + **opt-in mailbox depth** (default
+off → zero hot-path atomics) + single runtime-handle clone — sustaining **~440k
+component spawns/sec** (live `component-storm` scenario). Trap → process
+`Crashed`. An **app model** (`rusm-cli`): `rusm.toml [[components]]`, `rusm build`
+(cargo `wasm32-wasip2` per `components/*`, no jco), `rusm run`/`rusm dev`; env the
+Rust way (process env, then `.env` via `dotenvy`). `rusm-otp` stays Wasm-free
+(verified: no `wasmtime` in its dep tree).
 
 Underneath, the Wasm-free OTP core (`rusm-otp`) spawns,
 schedules, kills, messages, supervises, manages, and **connects** **real**
 lightweight processes: links, monitors, exit reasons, `trap_exit`, `spawn_link`,
 `exit/2`, exit cascades, a named **registry**, **timers** (`send_after`/`cancel`),
-graceful `shutdown`, and **TCP** (`listen`/`connect`, one process per connection).
-Four benchmarks are live — spawn-storm (~1.4M spawns/sec), ping-pong (~3M
-messages/sec, round-trip p50 ~2 µs), fault-recovery (~100k restarts/sec), and
-connection-storm (thousands of concurrent real connections, each a process;
-connect p50 ~70 µs). Each process keeps a single channel; exit signals ride the
-mailbox (a `Received` enum) and kill rides a `futures` abort handle (no second
-signal channel — we beat Lunatic's two). The registry is a sharded `DashMap`,
-timers use Tokio's timer wheel, and TCP is process-per-connection — the
-connection ceiling is the OS (fds, ports), not RUSM. Phase 0 (metrics, live
-observer, benchmark harness + WebSocket server, `rusm` CLI, React dashboard,
-examples) is done. TLS folds into the Phase 9 secure cluster transport. See
-`docs/02-roadmap.md`.
+graceful `shutdown`, **TCP** (`listen`/`connect`, one process per connection),
+process **introspection** (`list`/`info`/`set_label`), and **byte streams**
+(`Received::Stream`, Tokio-backpressured). Six benchmarks are live (release):
+spawn-storm (~2.45M spawns/sec), ping-pong (~18M messages/sec, round-trip p50
+<1 µs), fault-recovery (~380k restarts/sec), fairness (bystanders at ~60M+
+ops/sec under tight-loop spinners), component-storm (~440k component spawns/sec),
+and connection-storm (thousands of concurrent connections; connect p50 ~64 µs).
+Each process keeps a single channel; exit signals ride the mailbox (a `Received`
+enum) and kill rides a `futures` abort handle (no second signal channel — we beat
+Lunatic's two). The registry is a sharded `DashMap`, timers use Tokio's timer
+wheel, and TCP is process-per-connection — the connection ceiling is the OS (fds,
+ports), not RUSM. Phase 0 (metrics, live observer, benchmark harness + WebSocket
+server, `rusm` CLI, React dashboard, examples) is done. Deferred follow-ons: the
+wasip1 bridge's full WASI + raw actor ABI, p3 cross-component `stream<u8>`, and
+`rusm dev` filesystem watch/reload. TLS folds into the Phase 9 secure cluster
+transport. See `docs/02-roadmap.md`.
 
 ## Tech stack
 
-- **Rust** (host) + **Tokio** (scheduler/IO) + **Wasmtime** (guests, later phases).
+- **Rust** (host) + **Tokio** (scheduler/IO) + **Wasmtime** (component guests, in `rusm-wasm`).
 - **Bun** for all JS/TS (dashboard, docs site) — never Node.js.
 - Charts: **uPlot**. Docs site: **VitePress**.
 

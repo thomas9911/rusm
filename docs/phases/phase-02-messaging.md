@@ -56,13 +56,13 @@ let reply = ctx.recv_match(|m| m.message()
 ## Play with it
 
 ```sh
-cargo run -p rusm-bench -- run ping-pong 5    # real round-trips, ~3M msgs/sec
+cargo run -p rusm-bench -- run ping-pong 5    # real round-trips, ~18M msgs/sec
 ```
 
 ## Verification
 
 `cargo test -p rusm-otp` green (FIFO order, send-to-dead, selective-receive
-ordering, park/wake); ping-pong shows ~3M msgs/sec, round-trip p50 ~2 µs.
+ordering, park/wake); ping-pong shows ~18M msgs/sec, round-trip p50 <1 µs.
 
 ## Next
 
