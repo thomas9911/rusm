@@ -18,3 +18,7 @@ wasmtime = "45.0.1"
 wasmtime-wasi = { version = "45.0.1", features = ["p3"] }
 wasmtime-wasi-http = "45.0.1"
 hyper = { version = "1", features = ["server", "http1"] }
+tokio-tungstenite = "0.29"
+futures-util = "0.3"
+http-body-util = "0.1"
+hyper-util = { version = "0.1", features = ["tokio"] }

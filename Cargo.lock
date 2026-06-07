@@ -1885,9 +1885,13 @@ name = "rusm-wasm"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "futures-util",
+ "http-body-util",
  "hyper",
+ "hyper-util",
  "rusm-otp",
  "tokio",
+ "tokio-tungstenite",
  "wasmtime",
  "wasmtime-wasi",
  "wasmtime-wasi-http",

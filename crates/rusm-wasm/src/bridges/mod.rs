@@ -10,6 +10,7 @@ pub(crate) mod http;
 pub(crate) mod wasip1;
 pub(crate) mod wasip2;
 pub(crate) mod wasip3;
+pub(crate) mod ws;
 
 use std::collections::HashMap;
 use std::sync::Arc;
