@@ -30,14 +30,25 @@
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::{Arc, Once, RwLock};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, Once, RwLock};
 
 use anyhow::{anyhow, Context as _, Result};
 use quinn::rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use quinn::{ClientConfig, Connection, Endpoint, RecvStream, SendStream, ServerConfig};
 use rusm_otp::{Pid, Runtime};
 use serde::{Deserialize, Serialize};
-use tokio::sync::Mutex as AsyncMutex;
+use tokio::sync::{oneshot, Mutex as AsyncMutex};
+
+/// A named factory a node knows how to run on request from a peer: given the local
+/// runtime and the caller's argument bytes, it spawns a process and returns its
+/// pid. Registered with [`ClusterNode::register_spawnable`] and invoked remotely
+/// with [`ClusterNode::spawn_remote`]. (The cluster can't ship a closure across the
+/// wire, so a node spawns only work it has been taught to build.)
+pub type Spawnable = Arc<dyn Fn(&Runtime, Vec<u8>) -> Pid + Send + Sync>;
+
+/// The outcome of a control-plane RPC: the op's reply bytes, or an error string.
+type RpcReply = Result<Vec<u8>, String>;
 
 /// The TLS server name presented and verified across a cluster. Connections pin
 /// the shared [`Identity`] as their trust root, so this is a fixed SAN, not a
@@ -94,13 +105,22 @@ impl Identity {
     }
 }
 
-/// Gossip exchanged over a peer's control stream to keep global registries in sync.
+/// Messages exchanged over a peer's control stream: global-registry gossip and a
+/// request/reply control-plane RPC (remote spawn, live-attach listing — correlated
+/// by `req`).
 #[derive(Serialize, Deserialize)]
 enum Control {
     /// `name` is now globally registered on `node`.
     Register { name: String, node: String },
     /// `name` is no longer globally registered.
     Unregister { name: String },
+    /// A control-plane RPC: run `op` with `args`, correlated by `req`.
+    Request { req: u64, op: String, args: Vec<u8> },
+    /// The outcome of request `req`: the op's reply bytes, or why it failed.
+    Reply {
+        req: u64,
+        result: Result<Vec<u8>, String>,
+    },
 }
 
 /// A live link to one peer node: the connection (for opening message streams) and
@@ -120,6 +140,12 @@ struct Inner {
     peers: RwLock<HashMap<String, Peer>>,
     /// cluster-wide registered name → the node that owns it (including ourselves).
     globals: RwLock<HashMap<String, String>>,
+    /// factory name → how to spawn it when a peer asks.
+    spawnables: RwLock<HashMap<String, Spawnable>>,
+    /// in-flight control-plane RPCs, by `req` id, awaiting their reply.
+    pending: Mutex<HashMap<u64, oneshot::Sender<RpcReply>>>,
+    /// monotonic source of control-plane `req` ids.
+    next_req: AtomicU64,
 }
 
 /// A node in a RUSM cluster: a local runtime plus a QUIC endpoint that connects to
@@ -151,6 +177,9 @@ impl ClusterNode {
                 client_config: id.client_config()?,
                 peers: RwLock::new(HashMap::new()),
                 globals: RwLock::new(HashMap::new()),
+                spawnables: RwLock::new(HashMap::new()),
+                pending: Mutex::new(HashMap::new()),
+                next_req: AtomicU64::new(0),
             }),
         };
         let acceptor = node.clone();
@@ -257,9 +286,114 @@ impl ClusterNode {
         }
     }
 
+    /// Teach this node how to spawn `name` on a peer's request — see
+    /// [`Spawnable`] and [`spawn_remote`](Self::spawn_remote). Replacing an existing
+    /// factory of the same name is allowed (last registration wins).
+    pub fn register_spawnable(
+        &self,
+        name: impl Into<String>,
+        factory: impl Fn(&Runtime, Vec<u8>) -> Pid + Send + Sync + 'static,
+    ) {
+        self.inner
+            .spawnables
+            .write()
+            .unwrap()
+            .insert(name.into(), Arc::new(factory));
+    }
+
+    /// Ask node `to_node` to run its spawnable `factory` with `args`, and return the
+    /// pid it spawned (a handle valid *on that node*). Errors if we are not
+    /// connected to `to_node`, the peer has no such factory, or the link drops
+    /// before it replies.
+    pub async fn spawn_remote(&self, to_node: &str, factory: &str, args: Vec<u8>) -> Result<Pid> {
+        let mut payload = Vec::with_capacity(4 + factory.len() + args.len());
+        payload.extend_from_slice(&(factory.len() as u32).to_le_bytes());
+        payload.extend_from_slice(factory.as_bytes());
+        payload.extend_from_slice(&args);
+
+        let reply = self.request(to_node, "spawn", payload).await?;
+        let raw = u64::from_le_bytes(
+            reply
+                .as_slice()
+                .try_into()
+                .context("remote spawn: reply was not a pid")?,
+        );
+        Ok(Pid::from_raw(raw))
+    }
+
+    /// List the pids currently alive on a connected peer — the cluster primitive
+    /// behind **live attach** (point at a running node and see its processes).
+    /// Errors if we are not connected to `to_node`.
+    pub async fn remote_pids(&self, to_node: &str) -> Result<Vec<Pid>> {
+        let reply = self.request(to_node, "list", Vec::new()).await?;
+        if reply.len() % 8 != 0 {
+            return Err(anyhow!("remote list: reply was not a pid array"));
+        }
+        Ok(reply
+            .chunks_exact(8)
+            .map(|c| Pid::from_raw(u64::from_le_bytes(c.try_into().unwrap())))
+            .collect())
+    }
+
     /// The names of peer nodes this node currently has a live connection to.
     pub fn peers(&self) -> Vec<String> {
         self.inner.peers.read().unwrap().keys().cloned().collect()
+    }
+
+    /// Issue a control-plane RPC to `to_node` and await its reply bytes.
+    async fn request(&self, to_node: &str, op: &str, args: Vec<u8>) -> Result<Vec<u8>> {
+        let req = self.inner.next_req.fetch_add(1, Ordering::Relaxed);
+        let (tx, rx) = oneshot::channel();
+        self.inner.pending.lock().unwrap().insert(req, tx);
+
+        let request = Control::Request {
+            req,
+            op: op.to_string(),
+            args,
+        };
+        if let Err(err) = self.send_control(to_node, &request).await {
+            self.inner.pending.lock().unwrap().remove(&req);
+            return Err(err);
+        }
+
+        rx.await
+            .context("control request: peer dropped before replying")?
+            .map_err(|err| anyhow!(err))
+    }
+
+    /// Serve a peer's control-plane RPC. Sync and quick: a factory only *starts* a
+    /// process (its body runs on the scheduler), and `list` is a registry read.
+    fn handle_request(&self, op: &str, args: &[u8]) -> Result<Vec<u8>, String> {
+        match op {
+            "spawn" => {
+                let (factory, args) = parse_message(args).ok_or("malformed spawn request")?;
+                let spawnable = self
+                    .inner
+                    .spawnables
+                    .read()
+                    .unwrap()
+                    .get(factory)
+                    .cloned()
+                    .ok_or_else(|| {
+                        format!(
+                            "node {:?} has no spawnable named {factory:?}",
+                            self.inner.name
+                        )
+                    })?;
+                Ok(spawnable(&self.inner.rt, args.to_vec())
+                    .raw()
+                    .to_le_bytes()
+                    .to_vec())
+            }
+            "list" => {
+                let mut out = Vec::new();
+                for pid in self.inner.rt.list() {
+                    out.extend_from_slice(&pid.raw().to_le_bytes());
+                }
+                Ok(out)
+            }
+            other => Err(format!("unknown control op {other:?}")),
+        }
     }
 
     async fn accept_loop(self) {
@@ -362,6 +496,22 @@ impl ClusterNode {
                 Ok(Control::Unregister { name }) => {
                     self.inner.globals.write().unwrap().remove(&name);
                 }
+                Ok(Control::Request { req, op, args }) => {
+                    // Handle off the control loop so a slow op or a back-pressured
+                    // reply never stalls this peer's gossip.
+                    let node = self.clone();
+                    let peer = peer.clone();
+                    tokio::spawn(async move {
+                        let result = node.handle_request(&op, &args);
+                        let reply = Control::Reply { req, result };
+                        let _ = node.send_control(&peer, &reply).await;
+                    });
+                }
+                Ok(Control::Reply { req, result }) => {
+                    if let Some(tx) = self.inner.pending.lock().unwrap().remove(&req) {
+                        let _ = tx.send(result);
+                    }
+                }
                 Err(err) => tracing::warn!(%err, "cluster: malformed control frame"),
             }
         }
@@ -412,6 +562,21 @@ impl ClusterNode {
             let mut send = sender.lock().await;
             let _ = write_frame(&mut send, &json).await;
         }
+    }
+
+    /// Send one control frame to a single named peer.
+    async fn send_control(&self, to_node: &str, control: &Control) -> Result<()> {
+        let sender = self
+            .inner
+            .peers
+            .read()
+            .unwrap()
+            .get(to_node)
+            .map(|p| p.control.clone())
+            .ok_or_else(|| anyhow!("no connection to node {to_node:?}"))?;
+        let json = serde_json::to_vec(control).context("encoding control frame")?;
+        let mut send = sender.lock().await;
+        write_frame(&mut send, &json).await
     }
 }
 
@@ -680,6 +845,74 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("nowhere"));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_node_spawns_a_process_on_a_remote_node() {
+        let id = Identity::generate().unwrap();
+
+        let rt_b = Runtime::new();
+        let node_b = ClusterNode::bind("B", rt_b, localhost(), &id).unwrap();
+        // B is taught one factory; invoking it records the args and spawns a process.
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        node_b.register_spawnable("recorder", move |rt, args| {
+            tx.send(args).unwrap();
+            rt.spawn(|mut ctx| async move {
+                let _ = ctx.recv().await;
+            })
+            .pid()
+        });
+
+        let node_a = ClusterNode::bind("A", Runtime::new(), localhost(), &id).unwrap();
+        node_a.connect(node_b.local_addr().unwrap()).await.unwrap();
+
+        let pid = node_a
+            .spawn_remote("B", "recorder", b"build me".to_vec())
+            .await
+            .unwrap();
+        assert!(node_b.runtime().is_alive(pid));
+
+        let got = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("factory never ran")
+            .unwrap();
+        assert_eq!(got, b"build me");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn live_attach_lists_a_remote_nodes_processes() {
+        let id = Identity::generate().unwrap();
+
+        // B is running three processes when A attaches.
+        let rt_b = Runtime::new();
+        for _ in 0..3 {
+            spawn_inbox(&rt_b);
+        }
+        let node_b = ClusterNode::bind("B", rt_b, localhost(), &id).unwrap();
+
+        let node_a = ClusterNode::bind("A", Runtime::new(), localhost(), &id).unwrap();
+        node_a.connect(node_b.local_addr().unwrap()).await.unwrap();
+
+        let remote_pids = node_a.remote_pids("B").await.unwrap();
+        assert_eq!(remote_pids.len(), 3);
+        // The pids A sees are real handles on B.
+        assert!(remote_pids
+            .iter()
+            .all(|&pid| node_b.runtime().is_alive(pid)));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn remote_spawn_of_an_unknown_factory_errors() {
+        let id = Identity::generate().unwrap();
+        let node_b = ClusterNode::bind("B", Runtime::new(), localhost(), &id).unwrap();
+        let node_a = ClusterNode::bind("A", Runtime::new(), localhost(), &id).unwrap();
+        node_a.connect(node_b.local_addr().unwrap()).await.unwrap();
+
+        let err = node_a
+            .spawn_remote("B", "missing", vec![])
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("missing"));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
