@@ -116,6 +116,11 @@ fn upgrade_required() -> hyper::Response<Empty<Bytes>> {
 #[derive(Clone)]
 pub struct WsServer {
     prepared: PreparedComponent,
+    /// `Some` when the handler is a **TS/JS bundle** on the shared js-runner: the
+    /// bundle is sent as the runner's first message (its protocol), so the writer
+    /// pid becomes the guest's *first* `Process.receive()`. `None` = a plain
+    /// `rusm:runtime` component that gets the writer pid as message 1 directly.
+    bundle: Option<Arc<Vec<u8>>>,
     spawner: Arc<Spawner>,
     caps: Capabilities,
 }
@@ -126,6 +131,20 @@ impl WasmRuntime {
     pub fn ws_server(&self, prepared: &PreparedComponent, caps: Capabilities) -> WsServer {
         WsServer {
             prepared: prepared.clone(),
+            bundle: None,
+            spawner: Arc::clone(&self.spawner),
+            caps,
+        }
+    }
+
+    /// Build a WebSocket server whose per-connection handler is a **TypeScript/JS
+    /// bundle** (Bun-built) running on the embedded js-runner — the TS twin of
+    /// [`ws_server`](Self::ws_server). The guest is a worker (`export default`): its
+    /// first `Process.receive()` is the writer pid, then each inbound frame.
+    pub fn ws_server_js(&self, bundle: impl Into<Vec<u8>>, caps: Capabilities) -> WsServer {
+        WsServer {
+            prepared: self.js_runner().clone(),
+            bundle: Some(Arc::new(bundle.into())),
             spawner: Arc::clone(&self.spawner),
             caps,
         }
@@ -185,10 +204,14 @@ impl WsServer {
             }
         });
 
-        // The sandboxed handler. Message 1 tells it where to send replies.
+        // The sandboxed handler. For a JS bundle, the runner's first message is the
+        // bundle itself; the writer pid then lands as the guest's first receive.
         let component = self
             .spawner
             .spawn_component(&self.prepared, self.caps.clone());
+        if let Some(bundle) = &self.bundle {
+            rt.send(component.pid(), bundle.as_ref().clone());
+        }
         rt.send(component.pid(), writer.pid().raw().to_string().into_bytes());
 
         // Pump inbound frames into the component's mailbox (one message per frame).
@@ -250,6 +273,32 @@ mod tests {
         ws.send(Message::text("hi component")).await.unwrap();
         let reply = ws.next().await.unwrap().unwrap();
         assert_eq!(&reply.into_data()[..], b"hi component");
+
+        handle.abort();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_typescript_component_handles_a_websocket() {
+        use crate::{CapabilityProfile, WasmRuntime};
+        use rusm_otp::Runtime;
+
+        // The reply comes from a TypeScript worker (Bun-built) on the js-runner.
+        const TS_WS_ECHO: &str = include_str!("../../tests/fixtures/ts_ws_echo.js");
+        let wr = WasmRuntime::new(Runtime::new()).unwrap();
+        let server = wr.ws_server_js(
+            TS_WS_ECHO.as_bytes().to_vec(),
+            CapabilityProfile::Trusted.capabilities(),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = tokio::spawn(server.serve(listener));
+
+        let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/"))
+            .await
+            .unwrap();
+        ws.send(Message::text("hi from TS")).await.unwrap();
+        let reply = ws.next().await.unwrap().unwrap();
+        assert_eq!(&reply.into_data()[..], b"hi from TS");
 
         handle.abort();
     }
