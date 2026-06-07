@@ -40,13 +40,6 @@ killable, preemptible process — the BEAM model, for the component ecosystem.
    the Rust way: process env, then `.env`.
 6. **Lifetime superiority** — a component runs as long as it needs, stays killable
    and preemptible (epoch), supervised — **no wasmCloud-style execution timeout**.
-8. **Cross-process byte streams** (`bridges/wasip1.rs`) — RUSM's stream-passing
-   reaches guests: `stream_open(to)` hands a Tokio-backpressured `StreamHandle`'s
-   read end to another process (it rides the mailbox as `Received::Stream`, the
-   *same* primitive a native process gets) while the opener keeps the write end;
-   `stream_write`/`stream_close` and `stream_accept`/`stream_read` move chunks with
-   real back-pressure (a slow reader parks the writer's fiber, no busy-poll). This
-   is composition the RUSM way — message-passing, not WIT inter-component wiring.
 7. **The wasip1 bridge** (`bridges/wasip1.rs`) — RUSM on **Lunatic's home turf**:
    preview1 **core modules** run as processes too, with preview1 WASI, the same
    default-deny capabilities + `StoreLimiter`, the precomputed export index, and a
@@ -56,6 +49,13 @@ killable, preemptible process — the BEAM model, for the component ecosystem.
    world, just a flat `(ptr, len)` calling convention. A misbehaving guest (bad
    pointer, no `memory`, non-UTF8 name) becomes a clean process crash, never a host
    panic.
+8. **Cross-process byte streams** (`bridges/wasip1.rs`) — RUSM's stream-passing
+   reaches guests: `stream_open(to)` hands a Tokio-backpressured `StreamHandle`'s
+   read end to another process (it rides the mailbox as `Received::Stream`, the
+   *same* primitive a native process gets) while the opener keeps the write end;
+   `stream_write`/`stream_close` and `stream_accept`/`stream_read` move chunks with
+   real back-pressure (a slow reader parks the writer's fiber, no busy-poll). This
+   is composition the RUSM way — message-passing, not WIT inter-component wiring.
 
 ## Performance
 

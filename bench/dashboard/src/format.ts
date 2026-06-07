@@ -19,10 +19,10 @@ export function formatRate(perSec: number): string {
  * and so a billions-of-bytes rate never reads as a bare `17.5B/s`.
  */
 export function formatByteRate(bytesPerSec: number): string {
-  if (bytesPerSec < 1_000) return `${Math.round(bytesPerSec)} B/s`;
-  if (bytesPerSec < 1_000_000) return `${(bytesPerSec / 1_000).toFixed(1)} KB/s`;
-  if (bytesPerSec < 1_000_000_000) return `${(bytesPerSec / 1_000_000).toFixed(1)} MB/s`;
-  return `${(bytesPerSec / 1_000_000_000).toFixed(2)} GB/s`;
+  if (bytesPerSec < 1_000) return `${Math.round(bytesPerSec)}B/s`;
+  if (bytesPerSec < 1_000_000) return `${(bytesPerSec / 1_000).toFixed(1)}KB/s`;
+  if (bytesPerSec < 1_000_000_000) return `${(bytesPerSec / 1_000_000).toFixed(1)}MB/s`;
+  return `${(bytesPerSec / 1_000_000_000).toFixed(2)}GB/s`;
 }
 
 /** Formats a throughput value per its metric unit (count vs byte rate). */

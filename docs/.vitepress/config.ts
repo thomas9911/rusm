@@ -6,9 +6,19 @@ export default defineConfig({
   cleanUrls: true,
   themeConfig: {
     nav: [
-      { text: 'Vision', link: '/00-vision' },
-      { text: 'Architecture', link: '/01-architecture' },
-      { text: 'Roadmap', link: '/02-roadmap' },
+      {
+        text: 'Guide',
+        items: [
+          { text: 'Vision — why RUSM', link: '/00-vision' },
+          { text: 'Architecture', link: '/01-architecture' },
+          { text: 'Roadmap', link: '/02-roadmap' },
+          { text: 'Development', link: '/06-development' },
+        ],
+      },
+      { text: 'Concepts', link: '/concepts/wasm-instance-as-process' },
+      { text: 'Benchmarks', link: '/03-benchmark-dashboard' },
+      { text: 'Phase log', link: '/phases/phase-00-foundation' },
+      { text: 'vs Lunatic', link: '/lunatic-comparison' },
     ],
     // One front-to-back line: why → how → the plan, then the concepts and
     // subsystems in roadmap-phase order, then how to contribute, reference, and

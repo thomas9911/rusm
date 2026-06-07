@@ -28,15 +28,15 @@ test('formatRate appends per-second', () => {
 });
 
 test('formatByteRate uses data-rate units (so 17.5e9 reads as GB/s, not 17.5B/s)', () => {
-  expect(formatByteRate(800)).toBe('800 B/s');
-  expect(formatByteRate(12_300)).toBe('12.3 KB/s');
-  expect(formatByteRate(812_000_000)).toBe('812.0 MB/s');
-  expect(formatByteRate(17_500_000_000)).toBe('17.50 GB/s');
+  expect(formatByteRate(800)).toBe('800B/s');
+  expect(formatByteRate(12_300)).toBe('12.3KB/s');
+  expect(formatByteRate(812_000_000)).toBe('812.0MB/s');
+  expect(formatByteRate(17_500_000_000)).toBe('17.50GB/s');
 });
 
 test('formatThroughput switches on unit', () => {
   expect(formatThroughput(300_000, 'count')).toBe('300.0k/s');
-  expect(formatThroughput(17_500_000_000, 'bytes')).toBe('17.50 GB/s');
+  expect(formatThroughput(17_500_000_000, 'bytes')).toBe('17.50GB/s');
 });
 
 test('formatBytes uses binary units', () => {
