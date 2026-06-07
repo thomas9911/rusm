@@ -23,7 +23,10 @@ use rusm_wasm::{CapabilityProfile, WasmRuntime};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 
-const HELLO: &[u8] = include_bytes!("../../crates/rusm-wasm/tests/fixtures/http_hello.wasm");
+/// wstd `wasi:http` component (ergonomic, carries an async reactor).
+const WSTD: &[u8] = include_bytes!("../../crates/rusm-wasm/tests/fixtures/http_hello.wasm");
+/// Lean `wasi:http` component (raw bindings, no reactor) — the host's serving ceiling.
+const LEAN: &[u8] = include_bytes!("../../crates/rusm-wasm/tests/fixtures/http_lean.wasm");
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -31,25 +34,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let clients: usize = arg(2).unwrap_or(64);
     println!("HTTP stress: {clients} keep-alive clients, {secs}s each\n");
 
-    // The WASM component server: a fresh sandboxed instance per request.
-    let wr = WasmRuntime::new(Runtime::new())?;
-    let prepared = wr.prepare_http(&wr.compile_component(HELLO)?)?;
-    let server = wr.http_server(&prepared, CapabilityProfile::Trusted.capabilities());
-    let wasm_listener = TcpListener::bind("127.0.0.1:0").await?;
-    let wasm_addr = wasm_listener.local_addr()?;
-    let wasm_task = tokio::spawn(server.serve(wasm_listener));
-    let wasm = stress(wasm_addr, clients, secs).await;
-    wasm_task.abort();
-
-    // Breakdown: how much of a request is just standing up the instance? (1 thread.)
-    let inst = wr.http_server(&prepared, CapabilityProfile::Trusted.capabilities());
-    let mut instantiations = 0u64;
-    let inst_start = Instant::now();
-    while inst_start.elapsed() < Duration::from_secs(2) {
-        inst.instantiate_once().await.unwrap();
-        instantiations += 1;
-    }
-    let inst_rate = instantiations as f64 / inst_start.elapsed().as_secs_f64();
+    // The guest you write determines the cost: a lean raw-wasi:http component vs the
+    // ergonomic wstd one (which runs an async reactor per request).
+    let (lean, lean_inst) = wasm_run(LEAN, clients, secs).await?;
+    let (wstd, wstd_inst) = wasm_run(WSTD, clients, secs).await?;
 
     // Bare-hyper baseline: identical loop, a static response, no Wasm at all.
     let base_listener = TcpListener::bind("127.0.0.1:0").await?;
@@ -58,20 +46,52 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let base = stress(base_addr, clients, secs).await;
     base_task.abort();
 
-    println!("WASM component (instance-per-request):");
-    wasm.report();
+    println!("lean WASM component (raw wasi:http):");
+    lean.report();
+    println!(
+        "  instantiate-only: {lean_inst:.0}/sec = {:.1}µs each",
+        1e6 / lean_inst
+    );
+    println!("\nwstd WASM component (async reactor per request):");
+    wstd.report();
+    println!(
+        "  instantiate-only: {wstd_inst:.0}/sec = {:.1}µs each",
+        1e6 / wstd_inst
+    );
     println!("\nbare hyper (no Wasm, baseline):");
     base.report();
     println!(
-        "\nsandbox overhead: {:.1}x fewer req/s, +{:.1}µs p50",
-        base.rps / wasm.rps.max(1.0),
-        wasm.p50 - base.p50,
-    );
-    println!(
-        "\ninstantiate-only (1 thread): {inst_rate:.0}/sec = {:.1}µs each — the per-request cost",
-        1e6 / inst_rate,
+        "\nlean WASM vs bare hyper: {:.1}x fewer req/s, +{:.1}µs p50  (the true sandbox cost)",
+        base.rps / lean.rps.max(1.0),
+        lean.p50 - base.p50,
     );
     Ok(())
+}
+
+/// Serve `component` over HTTP, stress it, and also time instantiation alone.
+async fn wasm_run(
+    component: &[u8],
+    clients: usize,
+    secs: u64,
+) -> Result<(Stats, f64), Box<dyn std::error::Error>> {
+    let wr = WasmRuntime::new(Runtime::new())?;
+    let prepared = wr.prepare_http(&wr.compile_component(component)?)?;
+    let server = wr.http_server(&prepared, CapabilityProfile::Trusted.capabilities());
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let addr = listener.local_addr()?;
+    let task = tokio::spawn(server.serve(listener));
+    let stats = stress(addr, clients, secs).await;
+    task.abort();
+
+    // Instantiation-only (1 thread): the per-request sandbox cost in isolation.
+    let inst = wr.http_server(&prepared, CapabilityProfile::Trusted.capabilities());
+    let mut n = 0u64;
+    let start = Instant::now();
+    while start.elapsed() < Duration::from_secs(2) {
+        inst.instantiate_once().await?;
+        n += 1;
+    }
+    Ok((stats, n as f64 / start.elapsed().as_secs_f64()))
 }
 
 struct Stats {
