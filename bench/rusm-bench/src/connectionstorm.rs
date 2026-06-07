@@ -109,7 +109,7 @@ impl ConnectionStormEngine {
                                         .set_linger(Some(Duration::ZERO));
                                     held.push(stream);
                                     opened += 1;
-                                    if opened % LATENCY_EVERY == 0 {
+                                    if opened.is_multiple_of(LATENCY_EVERY) {
                                         let _ =
                                             latency_tx.send(started.elapsed().as_nanos() as u64);
                                     }

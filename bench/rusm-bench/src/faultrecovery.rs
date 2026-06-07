@@ -69,7 +69,7 @@ impl FaultRecoveryEngine {
                         spawn_crashing_child(&sup_rt, me);
                         restarts.fetch_add(1, Ordering::Relaxed);
                         restarted += 1;
-                        if restarted % LATENCY_EVERY == 0 {
+                        if restarted.is_multiple_of(LATENCY_EVERY) {
                             let _ = latency_tx.send(started.elapsed().as_nanos() as u64);
                         }
                     }

@@ -40,7 +40,7 @@ impl SpawnStormEngine {
                     loop {
                         let _ = rt.spawn(|_| async {});
                         n = n.wrapping_add(1);
-                        if n % YIELD_EVERY == 0 {
+                        if n.is_multiple_of(YIELD_EVERY) {
                             tokio::task::yield_now().await;
                             // Backpressure: let the live population drain so memory
                             // stays bounded (sustainable create-and-reap).

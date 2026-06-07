@@ -5,6 +5,7 @@
 mod componentstorm;
 mod config;
 mod connectionstorm;
+mod distributedfanout;
 mod fairness;
 mod faultrecovery;
 mod modulestorm;

@@ -33,7 +33,7 @@ mod tests {
     #[test]
     fn renders_tick_as_summary() {
         let mut runner = Runner::new(RunnerConfig::default());
-        runner.start(Scenario::DistributedFanout);
+        runner.start_synthetic(Scenario::DistributedFanout);
         let message = ServerMessage::Tick {
             frame: Box::new(runner.tick(10)),
         };

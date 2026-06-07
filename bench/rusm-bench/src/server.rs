@@ -190,8 +190,9 @@ mod tests {
         assert!(err.contains("unknown profile"));
     }
 
-    #[test]
-    fn apply_run_starts_known_scenario() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn apply_run_starts_known_scenario() {
+        // Run starts the scenario's real engine, so this needs a Tokio runtime.
         let node = Node::new(RunnerConfig::default());
         node.apply(ClientCommand::Run {
             scenario: "distributed-fanout".to_string(),
@@ -214,11 +215,11 @@ mod tests {
         assert!(err.contains("unknown scenario"));
     }
 
-    #[test]
-    fn apply_stop_and_detail_toggle() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn apply_stop_and_detail_toggle() {
         let node = Node::new(RunnerConfig::default());
         node.apply(ClientCommand::Run {
-            scenario: "distributed-fanout".to_string(), // synthetic — no Tokio runtime needed here
+            scenario: "distributed-fanout".to_string(),
         })
         .unwrap();
         node.apply(ClientCommand::SetObserverDetail { enabled: false })

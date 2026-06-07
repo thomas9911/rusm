@@ -7,10 +7,11 @@ use serde::{Deserialize, Serialize};
 /// too few spawners under-drives the machine, too many starve the reapers and
 /// pile processes up. `Max` sits at the balance point (≈half the cores spawn,
 /// half reap) for peak *smooth* throughput.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ResourceProfile {
     Light,
+    #[default]
     Balanced,
     Max,
 }
@@ -21,12 +22,6 @@ pub struct ResourceProfileMeta {
     pub id: String,
     pub label: String,
     pub description: String,
-}
-
-impl Default for ResourceProfile {
-    fn default() -> Self {
-        ResourceProfile::Balanced
-    }
 }
 
 /// Live-process safety net, per core. The profiles self-limit their population

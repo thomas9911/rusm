@@ -340,6 +340,14 @@ impl ClusterNode {
         self.inner.peers.read().unwrap().keys().cloned().collect()
     }
 
+    /// Tear the node down: stop accepting and close every connection. The accept
+    /// loop and per-peer loops then end (their `accept`/`recv` calls return), so the
+    /// node's background tasks drain and its `Arc` state can be reclaimed once any
+    /// processes holding it exit. Idempotent.
+    pub fn shutdown(&self) {
+        self.inner.endpoint.close(0u32.into(), b"node shutdown");
+    }
+
     /// Issue a control-plane RPC to `to_node` and await its reply bytes.
     async fn request(&self, to_node: &str, op: &str, args: Vec<u8>) -> Result<Vec<u8>> {
         let req = self.inner.next_req.fetch_add(1, Ordering::Relaxed);
@@ -935,6 +943,25 @@ mod tests {
         )
         .unwrap();
         assert!(node_a.connect(addr_b).await.is_err());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn shutdown_drops_the_peer_link() {
+        let id = Identity::generate().unwrap();
+        let node_b = ClusterNode::bind("B", Runtime::new(), localhost(), &id).unwrap();
+        let node_a = ClusterNode::bind("A", Runtime::new(), localhost(), &id).unwrap();
+        node_a.connect(node_b.local_addr().unwrap()).await.unwrap();
+        eventually(|| node_a.peers() == vec!["B".to_string()]).await;
+
+        // Closing B's endpoint tears the link down; A's send then fails.
+        node_b.shutdown();
+        for _ in 0..500 {
+            if node_a.send("B", "x", b"y").await.is_err() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+        panic!("link to a shut-down node never failed");
     }
 
     #[test]

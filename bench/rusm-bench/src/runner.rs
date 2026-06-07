@@ -3,6 +3,7 @@ use rusm_observer::{NodeSample, Observer};
 
 use crate::componentstorm::ComponentStormEngine;
 use crate::connectionstorm::ConnectionStormEngine;
+use crate::distributedfanout::DistributedFanoutEngine;
 use crate::fairness::FairnessEngine;
 use crate::faultrecovery::FaultRecoveryEngine;
 use crate::modulestorm::ModuleStormEngine;
@@ -50,8 +51,8 @@ impl Default for RunnerConfig {
     }
 }
 
-/// The per-scenario data source: synthetic for most scenarios, a real
-/// `rusm-otp` spawn engine for spawn-storm.
+/// The data source driving a run: a real engine per scenario, or a deterministic
+/// [`SyntheticSource`] for the runtime-free preview mode ([`Runner::start_synthetic`]).
 enum Engine {
     Synthetic(SyntheticSource),
     SpawnStorm(SpawnStormEngine),
@@ -62,12 +63,13 @@ enum Engine {
     ModuleStorm(ModuleStormEngine),
     ComponentStorm(ComponentStormEngine),
     StreamPipe(StreamPipeEngine),
+    DistributedFanout(DistributedFanoutEngine),
 }
 
 impl Engine {
+    /// The real engine backing a scenario. Every scenario now has one; they scale
+    /// their worker/pair/node count with the resource profile.
     fn for_scenario(scenario: Scenario, config: &RunnerConfig) -> Self {
-        // Real engines scale their worker/pair/supervisor count with the resource
-        // profile; the rest are still synthetic.
         match scenario {
             Scenario::SpawnStorm => Engine::SpawnStorm(SpawnStormEngine::new(
                 config.spawn_workers,
@@ -102,7 +104,10 @@ impl Engine {
                 config.spawn_workers,
                 config.scheduler_count,
             )),
-            _ => Engine::Synthetic(SyntheticSource::new(scenario)),
+            Scenario::DistributedFanout => Engine::DistributedFanout(DistributedFanoutEngine::new(
+                config.spawn_workers,
+                config.scheduler_count,
+            )),
         }
     }
 
@@ -122,6 +127,7 @@ impl Engine {
             Engine::ModuleStorm(engine) => engine.tick(),
             Engine::ComponentStorm(engine) => engine.tick(),
             Engine::StreamPipe(engine) => engine.tick(),
+            Engine::DistributedFanout(engine) => engine.tick(),
         }
     }
 }
@@ -181,7 +187,8 @@ impl Runner {
             | Scenario::Fairness
             | Scenario::ModuleStorm
             | Scenario::ComponentStorm
-            | Scenario::StreamPipe),
+            | Scenario::StreamPipe
+            | Scenario::DistributedFanout),
         ) = self.scenario()
         {
             self.start(scenario);
@@ -196,15 +203,30 @@ impl Runner {
         self.run.as_ref().map(|r| r.scenario)
     }
 
-    /// Starts (or restarts) `scenario`, resetting all metrics to a clean slate.
+    /// Starts (or restarts) `scenario` on its real engine, resetting all metrics to
+    /// a clean slate. Must be called within a Tokio runtime (engines bind sockets /
+    /// spawn tasks).
     pub fn start(&mut self, scenario: Scenario) {
+        let engine = Engine::for_scenario(scenario, &self.config);
+        self.start_with(scenario, engine);
+    }
+
+    /// Starts `scenario` on **deterministic synthetic data** instead of its real
+    /// engine — a runtime-free "demo/preview" mode (reproducible per `(scenario,
+    /// tick)`), used for dashboard/UI development and as the deterministic fixture
+    /// for the runner's own tests.
+    pub fn start_synthetic(&mut self, scenario: Scenario) {
+        self.start_with(scenario, Engine::Synthetic(SyntheticSource::new(scenario)));
+    }
+
+    fn start_with(&mut self, scenario: Scenario, engine: Engine) {
         let detail = self.observer.detail_enabled();
         self.observer = fresh_observer(&self.config, detail);
         self.latency.clear();
         self.throughput.clear();
         self.run = Some(RunState {
             scenario,
-            engine: Engine::for_scenario(scenario, &self.config),
+            engine,
             tick: 0,
             peak_concurrent: 0,
         });
@@ -316,7 +338,7 @@ mod tests {
     #[test]
     fn start_then_tick_produces_running_frame() {
         let mut r = runner();
-        r.start(Scenario::DistributedFanout);
+        r.start_synthetic(Scenario::DistributedFanout);
         assert!(r.is_running());
         assert_eq!(r.scenario(), Some(Scenario::DistributedFanout));
         let frame = r.tick(50);
@@ -333,7 +355,7 @@ mod tests {
     #[test]
     fn peak_concurrent_is_monotonic_across_ticks() {
         let mut r = runner();
-        r.start(Scenario::DistributedFanout);
+        r.start_synthetic(Scenario::DistributedFanout);
         let mut peak = 0;
         for tick in 0..20 {
             let frame = r.tick(tick);
@@ -345,7 +367,7 @@ mod tests {
     #[test]
     fn stop_returns_to_idle() {
         let mut r = runner();
-        r.start(Scenario::DistributedFanout);
+        r.start_synthetic(Scenario::DistributedFanout);
         r.stop();
         assert!(!r.is_running());
         assert!(!r.tick(0).running);
@@ -354,11 +376,11 @@ mod tests {
     #[test]
     fn restart_resets_metrics() {
         let mut r = runner();
-        r.start(Scenario::DistributedFanout);
+        r.start_synthetic(Scenario::DistributedFanout);
         for tick in 0..10 {
             r.tick(tick);
         }
-        r.start(Scenario::DistributedFanout);
+        r.start_synthetic(Scenario::DistributedFanout);
         // A fresh run accumulates from scratch — one tick of synthetic samples.
         let frame = r.tick(0);
         assert_eq!(frame.scenario.as_deref(), Some("distributed-fanout"));
@@ -372,7 +394,7 @@ mod tests {
     fn observer_detail_toggle_persists_across_restart() {
         let mut r = runner();
         r.set_observer_detail(false);
-        r.start(Scenario::DistributedFanout);
+        r.start_synthetic(Scenario::DistributedFanout);
         assert!(!r.observer_detail_enabled());
         let frame = r.tick(0);
         assert!(frame.observer.processes.is_empty());
@@ -468,7 +490,7 @@ mod tests {
     #[test]
     fn throughput_window_is_bounded() {
         let mut r = runner();
-        r.start(Scenario::DistributedFanout);
+        r.start_synthetic(Scenario::DistributedFanout);
         for tick in 0..500 {
             r.tick(tick);
         }

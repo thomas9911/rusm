@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 /// The roadmap phase RUSM has reached. A scenario runs on **real** runtime data
 /// once its `real_after_phase` is at or below this — bump it as each phase lands.
-pub const CURRENT_PHASE: u8 = 7;
+pub const CURRENT_PHASE: u8 = 9;
 
 /// A benchmark scenario the dashboard can run.
 ///
@@ -116,7 +116,9 @@ impl Scenario {
             Scenario::ModuleStorm => ("modulestorm.rs", include_str!("modulestorm.rs")),
             Scenario::ComponentStorm => ("componentstorm.rs", include_str!("componentstorm.rs")),
             Scenario::StreamPipe => ("streampipe.rs", include_str!("streampipe.rs")),
-            Scenario::DistributedFanout => return None,
+            Scenario::DistributedFanout => {
+                ("distributedfanout.rs", include_str!("distributedfanout.rs"))
+            }
         })
     }
 
@@ -229,12 +231,12 @@ impl Scenario {
                 "Distributed fan-out",
                 "How fast do processes on DIFFERENT machines talk? Cross-node messaging.",
                 vec![
-                    "What's unique here: all the others run on one node; this one crosses the network between separate RUSM nodes (different machines/processes).",
-                    "Cluster: a handful of independent nodes — each its own OS process, typically on a separate machine or CPU core (simulated in Phase 0).",
-                    "Headline: cross-node message latency over the QUIC + TLS transport.",
-                    "Processes spawn and message across nodes transparently — distributed Erlang, for WebAssembly.",
+                    "What's unique here: all the others run on one node; this one crosses the QUIC + TLS link between separate RUSM nodes (here, several real nodes in-process, each on its own loopback endpoint — a faithful stand-in for separate machines).",
+                    "Real (Phase 9): a hub node and a pool of senders each keep one round-trip in flight to worker nodes' echo processes, so the headline is genuine cross-node throughput, not a backlog.",
+                    "Headline: cross-node round-trips/sec and round-trip latency over the rusm-cluster transport (~550k cross-node msgs/sec, ~39µs p50 unloaded on loopback).",
+                    "Processes message across nodes transparently — distributed Erlang, for WebAssembly — with remote spawn and live attach on the same transport.",
                     "Why it matters: a single machine has limits; horizontal scale needs cheap, secure node-to-node messaging.",
-                    "Background: nodes connect like Node.connect/1, and a global registry resolves process names cluster-wide.",
+                    "Background: nodes connect like Node.connect/1, and a gossiped global registry resolves process names cluster-wide.",
                 ],
                 9,
             ),
@@ -303,7 +305,11 @@ mod tests {
             .source
             .unwrap()
             .contains("StreamPipeEngine"));
-        assert_eq!(Scenario::DistributedFanout.meta().source, None);
+        assert!(Scenario::DistributedFanout
+            .meta()
+            .source
+            .unwrap()
+            .contains("DistributedFanoutEngine"));
     }
 
     #[test]
@@ -338,8 +344,8 @@ mod tests {
             .filter(|m| m.real)
             .map(|m| m.id)
             .collect();
-        // Exactly the scenarios with a real engine (real_after_phase <= 7); only
-        // distributed-fanout (phase 9) is still synthetic.
+        // Every scenario now has a real engine (CURRENT_PHASE = 9), including
+        // distributed-fanout — nothing left on synthetic data.
         assert_eq!(
             real,
             vec![
@@ -350,7 +356,8 @@ mod tests {
                 "fairness",
                 "module-storm",
                 "component-storm",
-                "stream-pipe"
+                "stream-pipe",
+                "distributed-fanout"
             ]
         );
     }

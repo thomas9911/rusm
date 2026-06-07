@@ -21,7 +21,7 @@ mod tests {
     #[test]
     fn summarizes_a_running_frame() {
         let mut runner = Runner::new(RunnerConfig::default());
-        runner.start(Scenario::DistributedFanout);
+        runner.start_synthetic(Scenario::DistributedFanout);
         let line = summarize_frame(&runner.tick(100));
         assert!(line.contains("distributed-fanout"));
         assert!(line.contains("ops/s"));

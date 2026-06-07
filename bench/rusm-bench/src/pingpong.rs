@@ -65,7 +65,7 @@ impl PingPongEngine {
                     let _pong = ctx.recv().await;
                     messages.fetch_add(2, Ordering::Relaxed); // the ping and the pong
                     round += 1;
-                    if round % LATENCY_EVERY == 0 {
+                    if round.is_multiple_of(LATENCY_EVERY) {
                         let _ = latency_tx.send(started.elapsed().as_nanos() as u64);
                     }
                 }
