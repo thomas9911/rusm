@@ -1,2 +1,0 @@
-cargo:rustc-link-lib=static=wit_bindgen_cabi0_46_0
-cargo:rustc-link-search=native=/Users/paul/Sources/rusm/crates/rusm-wasm/tests/fixtures/callback/target/wasm32-wasip2/release/build/wit-bindgen-6ecfce640634e801/out

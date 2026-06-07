@@ -1,1 +1,0 @@
-/Users/paul/Sources/rusm/crates/rusm-wasm/tests/fixtures/callback/target/wasm32-wasip2/release/callback.wasm: /Users/paul/Sources/rusm/crates/rusm-wasm/tests/fixtures/callback/src/lib.rs /Users/paul/Sources/rusm/crates/rusm-wasm/tests/fixtures/callback/wit/world.wit
