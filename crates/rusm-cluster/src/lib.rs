@@ -2,10 +2,24 @@
 //!
 //! A [`ClusterNode`] wraps a Wasm-free [`rusm_otp::Runtime`] with a QUIC endpoint
 //! (TLS 1.3, rustls + ring) so processes can message each other **across nodes**.
-//! It is deliberately thin: a node is `(runtime, endpoint, peer table)`, and a
-//! cross-node send is "open a QUIC uni-stream, write a framed `(name, bytes)`, the
-//! peer routes it into its local registry". No lattice, no brokers — the same
+//! It is deliberately thin: a node is `(runtime, endpoint, peers, global registry)`,
+//! and a cross-node send is "open a QUIC uni-stream, write a framed `(name, bytes)`,
+//! the peer routes it into its local registry". No lattice, no brokers — the same
 //! actor model as a single node, with the wire in between.
+//!
+//! ## Per-peer streams
+//! Each link carries two kinds of stream:
+//! - a single long-lived **control stream** (the bidirectional stream opened during
+//!   the handshake), used for node-name exchange and **global-registry gossip**;
+//! - one **uni-stream per message**, so messages never head-of-line-block each
+//!   other (the reason to reach for QUIC over TCP).
+//!
+//! ## Addressing
+//! Nodes have names. A message is addressed either explicitly as
+//! `(node_name, registered_process_name)` via [`ClusterNode::send`] / the
+//! [`RemoteNode`] handle, or by a **cluster-wide name** via
+//! [`ClusterNode::send_global`] — the node resolves which peer owns that name from
+//! its [global registry](ClusterNode::register_global) and routes there.
 //!
 //! ## Security
 //! Every link is QUIC, i.e. TLS 1.3 — encrypted and authenticated. For now a
@@ -13,15 +27,6 @@
 //! a node only completes a handshake with a peer presenting the same cert, and the
 //! client pins that cert as its sole trust root. Per-node certificates signed by a
 //! cluster CA are a later refinement; the transport seam does not change.
-//!
-//! ## Addressing
-//! Nodes have names. On connect both ends exchange a `Hello`, so each side learns
-//! the other's node name and keeps the connection in a peer table. A message is
-//! then addressed as `(node_name, registered_process_name)` — or sent directly
-//! through the [`RemoteNode`] handle returned by [`ClusterNode::connect`].
-//!
-//! This is the Phase 9 transport foundation; remote spawn and a global registry
-//! build on top of it.
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -29,8 +34,10 @@ use std::sync::{Arc, Once, RwLock};
 
 use anyhow::{anyhow, Context as _, Result};
 use quinn::rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
-use quinn::{ClientConfig, Connection, Endpoint, ServerConfig};
-use rusm_otp::Runtime;
+use quinn::{ClientConfig, Connection, Endpoint, RecvStream, SendStream, ServerConfig};
+use rusm_otp::{Pid, Runtime};
+use serde::{Deserialize, Serialize};
+use tokio::sync::Mutex as AsyncMutex;
 
 /// The TLS server name presented and verified across a cluster. Connections pin
 /// the shared [`Identity`] as their trust root, so this is a fixed SAN, not a
@@ -40,8 +47,8 @@ const CLUSTER_SERVER_NAME: &str = "rusm-node";
 /// Largest cross-node message we will buffer off a single uni-stream (16 MiB).
 const MAX_FRAME: usize = 16 << 20;
 
-/// Upper bound on a node name read during the handshake — names are short labels.
-const MAX_NODE_NAME: usize = 1 << 10;
+/// Upper bound on a length-prefixed control frame (node names, gossip — all small).
+const MAX_CONTROL_FRAME: usize = 64 << 10;
 
 /// rustls 0.23 needs a process-wide default crypto provider; install ring once.
 fn ensure_crypto() {
@@ -87,14 +94,32 @@ impl Identity {
     }
 }
 
+/// Gossip exchanged over a peer's control stream to keep global registries in sync.
+#[derive(Serialize, Deserialize)]
+enum Control {
+    /// `name` is now globally registered on `node`.
+    Register { name: String, node: String },
+    /// `name` is no longer globally registered.
+    Unregister { name: String },
+}
+
+/// A live link to one peer node: the connection (for opening message streams) and
+/// the shared sender half of its control stream (for pushing gossip).
+struct Peer {
+    conn: Connection,
+    control: Arc<AsyncMutex<SendStream>>,
+}
+
 struct Inner {
     name: String,
     rt: Runtime,
     endpoint: Endpoint,
     client_config: ClientConfig,
-    /// node name → live connection, populated as handshakes complete. A `RwLock`
-    /// because cross-node sends (reads) far outnumber peer churn (writes).
-    peers: RwLock<HashMap<String, Connection>>,
+    /// node name → live peer link. A `RwLock` because sends (reads) far outnumber
+    /// peer churn (writes).
+    peers: RwLock<HashMap<String, Peer>>,
+    /// cluster-wide registered name → the node that owns it (including ourselves).
+    globals: RwLock<HashMap<String, String>>,
 }
 
 /// A node in a RUSM cluster: a local runtime plus a QUIC endpoint that connects to
@@ -125,6 +150,7 @@ impl ClusterNode {
                 endpoint,
                 client_config: id.client_config()?,
                 peers: RwLock::new(HashMap::new()),
+                globals: RwLock::new(HashMap::new()),
             }),
         };
         let acceptor = node.clone();
@@ -137,6 +163,11 @@ impl ClusterNode {
         &self.inner.name
     }
 
+    /// The local runtime this node serves to the cluster.
+    pub fn runtime(&self) -> &Runtime {
+        &self.inner.rt
+    }
+
     /// The socket address this node is actually bound to.
     pub fn local_addr(&self) -> Result<SocketAddr> {
         self.inner
@@ -146,8 +177,8 @@ impl ClusterNode {
     }
 
     /// Connect to a peer node at `addr`. Completes the handshake — both ends learn
-    /// each other's name over a dedicated control stream — before returning a
-    /// handle to the peer.
+    /// each other's name over the control stream — before returning a handle to the
+    /// peer.
     pub async fn connect(&self, addr: SocketAddr) -> Result<RemoteNode> {
         let conn = self
             .inner
@@ -156,8 +187,8 @@ impl ClusterNode {
             .context("dialing peer")?
             .await
             .context("establishing QUIC connection")?;
-        let peer = self.handshake_as_dialer(&conn).await?;
-        self.serve_peer(peer.clone(), conn);
+        let (peer, send, recv) = self.handshake_as_dialer(&conn).await?;
+        self.serve_peer(peer.clone(), conn, send, recv);
         Ok(RemoteNode {
             node: self.clone(),
             name: peer,
@@ -173,9 +204,57 @@ impl ClusterNode {
             .read()
             .unwrap()
             .get(to_node)
-            .cloned()
+            .map(|p| p.conn.clone())
             .ok_or_else(|| anyhow!("no connection to node {to_node:?}"))?;
         send_message(&conn, to_name, payload).await
+    }
+
+    /// Register `pid` under a **cluster-wide** `name`: it is registered locally and
+    /// the registration is gossiped to every connected peer, so any node can reach
+    /// it with [`send_global`](Self::send_global). Returns `false` if the local
+    /// registry already holds `name` (mirroring [`Runtime::register`]).
+    pub fn register_global(&self, name: impl Into<String>, pid: Pid) -> bool {
+        let name = name.into();
+        if !self.inner.rt.register(&name, pid) {
+            return false;
+        }
+        self.inner
+            .globals
+            .write()
+            .unwrap()
+            .insert(name.clone(), self.inner.name.clone());
+        let node = self.clone();
+        let control = Control::Register {
+            name,
+            node: self.inner.name.clone(),
+        };
+        tokio::spawn(async move { node.broadcast(&control).await });
+        true
+    }
+
+    /// Resolve a cluster-wide `name` to the node that currently owns it.
+    pub fn whereis_global(&self, name: &str) -> Option<String> {
+        self.inner.globals.read().unwrap().get(name).cloned()
+    }
+
+    /// Send `payload` to a **cluster-wide** registered `name`, wherever it lives —
+    /// delivered locally if we own it, otherwise routed to the owning node. Errors
+    /// if the name is unknown or (when local) its process has gone.
+    pub async fn send_global(&self, name: &str, payload: &[u8]) -> Result<()> {
+        let owner = self
+            .whereis_global(name)
+            .ok_or_else(|| anyhow!("no global registration for {name:?}"))?;
+        if owner == self.inner.name {
+            let pid = self
+                .inner
+                .rt
+                .whereis(name)
+                .ok_or_else(|| anyhow!("global {name:?} has no live local process"))?;
+            self.inner.rt.send(pid, payload.to_vec());
+            Ok(())
+        } else {
+            self.send(&owner, name, payload).await
+        }
     }
 
     /// The names of peer nodes this node currently has a live connection to.
@@ -187,55 +266,75 @@ impl ClusterNode {
         while let Some(incoming) = self.inner.endpoint.accept().await {
             let node = self.clone();
             tokio::spawn(async move {
-                let peer = match incoming.await {
+                let err = match incoming.await {
                     Ok(conn) => match node.handshake_as_acceptor(&conn).await {
-                        Ok(peer) => {
-                            node.serve_peer(peer, conn);
+                        Ok((peer, send, recv)) => {
+                            node.serve_peer(peer, conn, send, recv);
                             return;
                         }
                         Err(err) => err,
                     },
                     Err(err) => err.into(),
                 };
-                tracing::warn!(%peer, "cluster: peer connection failed");
+                tracing::warn!(%err, "cluster: incoming peer failed");
             });
         }
     }
 
     /// The dialer opens the control stream, announces itself, then reads the
-    /// acceptor's name. A bidirectional stream makes the handshake unambiguous and
-    /// independent of how data streams happen to interleave.
-    async fn handshake_as_dialer(&self, conn: &Connection) -> Result<String> {
+    /// acceptor's name. A dedicated bidirectional stream makes the handshake
+    /// unambiguous and independent of how data streams happen to interleave.
+    async fn handshake_as_dialer(
+        &self,
+        conn: &Connection,
+    ) -> Result<(String, SendStream, RecvStream)> {
         let (mut send, mut recv) = conn.open_bi().await.context("opening control stream")?;
-        send.write_all(self.inner.name.as_bytes())
+        write_frame(&mut send, self.inner.name.as_bytes())
             .await
             .context("announcing node name")?;
-        send.finish().context("finishing control stream")?;
-        read_node_name(&mut recv).await
+        let peer = read_node_name(&mut recv).await?;
+        Ok((peer, send, recv))
     }
 
     /// The acceptor reads the dialer's name off the control stream, then announces
     /// its own — the mirror of [`handshake_as_dialer`](Self::handshake_as_dialer).
-    async fn handshake_as_acceptor(&self, conn: &Connection) -> Result<String> {
+    async fn handshake_as_acceptor(
+        &self,
+        conn: &Connection,
+    ) -> Result<(String, SendStream, RecvStream)> {
         let (mut send, mut recv) = conn.accept_bi().await.context("accepting control stream")?;
         let peer = read_node_name(&mut recv).await?;
-        send.write_all(self.inner.name.as_bytes())
+        write_frame(&mut send, self.inner.name.as_bytes())
             .await
             .context("announcing node name")?;
-        send.finish().context("finishing control stream")?;
-        Ok(peer)
+        Ok((peer, send, recv))
     }
 
-    /// Record a connected peer and start routing its messages into the registry.
-    fn serve_peer(&self, peer: String, conn: Connection) {
-        self.inner.peers.write().unwrap().insert(peer, conn.clone());
+    /// Record a connected peer, start routing its messages, read its gossip, and
+    /// tell it which global names we own.
+    fn serve_peer(&self, peer: String, conn: Connection, send: SendStream, recv: RecvStream) {
+        let control = Arc::new(AsyncMutex::new(send));
+        self.inner.peers.write().unwrap().insert(
+            peer.clone(),
+            Peer {
+                conn: conn.clone(),
+                control: control.clone(),
+            },
+        );
+
         let node = self.clone();
         tokio::spawn(async move { node.delivery_loop(conn).await });
+
+        let node = self.clone();
+        tokio::spawn(async move { node.control_loop(peer, recv).await });
+
+        let node = self.clone();
+        tokio::spawn(async move { node.bootstrap_globals(control).await });
     }
 
     /// Read messages off `conn`'s uni-streams and route each into the local
-    /// registry. Each message is its own stream — independent, with no
-    /// head-of-line blocking between them (the reason to use QUIC over TCP).
+    /// registry. Each message is its own stream — independent, no head-of-line
+    /// blocking between them.
     async fn delivery_loop(self, conn: Connection) {
         while let Ok(mut recv) = conn.accept_uni().await {
             let node = self.clone();
@@ -249,6 +348,69 @@ impl ClusterNode {
                     }
                 }
             });
+        }
+    }
+
+    /// Apply a peer's global-registry gossip until its control stream closes; then
+    /// drop the peer and prune the global names it owned.
+    async fn control_loop(self, peer: String, mut recv: RecvStream) {
+        while let Ok(buf) = read_frame(&mut recv, MAX_CONTROL_FRAME).await {
+            match serde_json::from_slice::<Control>(&buf) {
+                Ok(Control::Register { name, node }) => {
+                    self.inner.globals.write().unwrap().insert(name, node);
+                }
+                Ok(Control::Unregister { name }) => {
+                    self.inner.globals.write().unwrap().remove(&name);
+                }
+                Err(err) => tracing::warn!(%err, "cluster: malformed control frame"),
+            }
+        }
+        self.inner.peers.write().unwrap().remove(&peer);
+        self.inner
+            .globals
+            .write()
+            .unwrap()
+            .retain(|_, owner| owner != &peer);
+        tracing::debug!(%peer, "cluster: peer disconnected");
+    }
+
+    /// Tell a freshly-connected peer about every global name we own.
+    async fn bootstrap_globals(self, control: Arc<AsyncMutex<SendStream>>) {
+        let mine: Vec<Control> = {
+            let globals = self.inner.globals.read().unwrap();
+            globals
+                .iter()
+                .filter(|(_, owner)| *owner == &self.inner.name)
+                .map(|(name, node)| Control::Register {
+                    name: name.clone(),
+                    node: node.clone(),
+                })
+                .collect()
+        };
+        let mut send = control.lock().await;
+        for control in &mine {
+            if let Ok(json) = serde_json::to_vec(control) {
+                let _ = write_frame(&mut send, &json).await;
+            }
+        }
+    }
+
+    /// Push one control frame to every connected peer.
+    async fn broadcast(&self, control: &Control) {
+        let Ok(json) = serde_json::to_vec(control) else {
+            return;
+        };
+        let senders: Vec<_> = self
+            .inner
+            .peers
+            .read()
+            .unwrap()
+            .values()
+            .map(|p| p.control.clone())
+            .collect();
+        for sender in senders {
+            let mut send = sender.lock().await;
+            let _ = write_frame(&mut send, &json).await;
         }
     }
 }
@@ -272,13 +434,43 @@ impl RemoteNode {
     }
 }
 
-/// Read a node name announced on a control stream (the whole stream is the name).
-async fn read_node_name(recv: &mut quinn::RecvStream) -> Result<String> {
-    let bytes = recv
-        .read_to_end(MAX_NODE_NAME)
+/// Read a length-prefixed node name off the control stream.
+async fn read_node_name(recv: &mut RecvStream) -> Result<String> {
+    let bytes = read_frame(recv, MAX_NODE_NAME)
         .await
         .context("reading peer node name")?;
     String::from_utf8(bytes).context("peer node name was not valid UTF-8")
+}
+
+/// Upper bound on a node name (a short label).
+const MAX_NODE_NAME: usize = 1 << 10;
+
+/// Write a `[len: u32 LE][payload]` frame to a stream.
+async fn write_frame(send: &mut SendStream, payload: &[u8]) -> Result<()> {
+    send.write_all(&(payload.len() as u32).to_le_bytes())
+        .await
+        .context("writing frame length")?;
+    send.write_all(payload)
+        .await
+        .context("writing frame body")?;
+    Ok(())
+}
+
+/// Read one `[len: u32 LE][payload]` frame, rejecting frames larger than `max`.
+async fn read_frame(recv: &mut RecvStream, max: usize) -> Result<Vec<u8>> {
+    let mut len = [0u8; 4];
+    recv.read_exact(&mut len)
+        .await
+        .context("reading frame length")?;
+    let n = u32::from_le_bytes(len) as usize;
+    if n > max {
+        return Err(anyhow!("frame of {n} bytes exceeds {max}-byte limit"));
+    }
+    let mut buf = vec![0u8; n];
+    recv.read_exact(&mut buf)
+        .await
+        .context("reading frame body")?;
+    Ok(buf)
 }
 
 /// Send one message — `[name_len: u32 LE][name][payload]` — on its own uni-stream.
@@ -313,16 +505,23 @@ mod tests {
         "127.0.0.1:0".parse().unwrap()
     }
 
-    /// Spawn a process on `rt` registered as `name` that forwards its first
-    /// message over a oneshot, so a test can await cross-node delivery.
-    fn inbox(rt: &Runtime, name: &str) -> oneshot::Receiver<Vec<u8>> {
+    /// Spawn a process that forwards its first message over a oneshot, so a test
+    /// can await cross-node delivery. Not registered — the caller chooses local
+    /// ([`Runtime::register`]) or cluster-wide ([`ClusterNode::register_global`]).
+    fn spawn_inbox(rt: &Runtime) -> (Pid, oneshot::Receiver<Vec<u8>>) {
         let (tx, rx) = oneshot::channel();
         let handle = rt.spawn(|mut ctx| async move {
             let msg = ctx.recv().await.message().unwrap();
             let _ = tx.send(msg);
         });
-        assert!(rt.register(name, handle.pid()));
-        rx
+        (handle.pid(), rx)
+    }
+
+    /// `spawn_inbox` plus a local registration under `name`.
+    fn inbox(rt: &Runtime, name: &str) -> (Pid, oneshot::Receiver<Vec<u8>>) {
+        let (pid, rx) = spawn_inbox(rt);
+        assert!(rt.register(name, pid));
+        (pid, rx)
     }
 
     /// Await a cross-node delivery with a generous ceiling (loopback is instant;
@@ -334,16 +533,16 @@ mod tests {
             .unwrap()
     }
 
-    /// Poll until `node` has registered a live connection to `peer`. Handshakes
-    /// complete in well under a millisecond on loopback; this only avoids a race.
-    async fn await_peer(node: &ClusterNode, peer: &str) {
+    /// Poll until `node` reports `cond`. Handshake/gossip settle in well under a
+    /// millisecond on loopback; this only avoids a race.
+    async fn eventually(mut cond: impl FnMut() -> bool) {
         for _ in 0..500 {
-            if node.peers().iter().any(|p| p == peer) {
+            if cond() {
                 return;
             }
             tokio::time::sleep(Duration::from_millis(2)).await;
         }
-        panic!("node {:?} never connected to {peer:?}", node.name());
+        panic!("condition never became true");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -351,12 +550,11 @@ mod tests {
         let id = Identity::generate().unwrap();
 
         let rt_b = Runtime::new();
-        let rx = inbox(&rt_b, "inbox");
+        let (_, rx) = inbox(&rt_b, "inbox");
         let node_b = ClusterNode::bind("B", rt_b, localhost(), &id).unwrap();
         let addr_b = node_b.local_addr().unwrap();
 
-        let rt_a = Runtime::new();
-        let node_a = ClusterNode::bind("A", rt_a, localhost(), &id).unwrap();
+        let node_a = ClusterNode::bind("A", Runtime::new(), localhost(), &id).unwrap();
         let remote = node_a.connect(addr_b).await.unwrap();
 
         // The handshake taught each side the other's name.
@@ -375,14 +573,13 @@ mod tests {
         let id = Identity::generate().unwrap();
 
         let rt_b = Runtime::new();
-        let rx = inbox(&rt_b, "worker");
+        let (_, rx) = inbox(&rt_b, "worker");
         let node_b = ClusterNode::bind("beta", rt_b, localhost(), &id).unwrap();
         let addr_b = node_b.local_addr().unwrap();
 
         let node_a = ClusterNode::bind("alpha", Runtime::new(), localhost(), &id).unwrap();
         node_a.connect(addr_b).await.unwrap();
 
-        // Address the peer by node name rather than holding its handle.
         node_a.send("beta", "worker", b"by name").await.unwrap();
         assert_eq!(recv(rx).await, b"by name");
     }
@@ -392,19 +589,17 @@ mod tests {
         let id = Identity::generate().unwrap();
 
         let rt_a = Runtime::new();
-        let rx_a = inbox(&rt_a, "a-inbox");
+        let (_, rx_a) = inbox(&rt_a, "a-inbox");
         let node_a = ClusterNode::bind("A", rt_a, localhost(), &id).unwrap();
 
         let rt_b = Runtime::new();
-        let rx_b = inbox(&rt_b, "b-inbox");
+        let (_, rx_b) = inbox(&rt_b, "b-inbox");
         let node_b = ClusterNode::bind("B", rt_b, localhost(), &id).unwrap();
 
-        // A dials B once; that one link is usable in both directions.
         node_a.connect(node_b.local_addr().unwrap()).await.unwrap();
         node_a.send("B", "b-inbox", b"a->b").await.unwrap();
 
-        // B learns about A as the handshake settles on its side, then replies.
-        await_peer(&node_b, "A").await;
+        eventually(|| node_b.peers() == vec!["A".to_string()]).await;
         node_b.send("A", "a-inbox", b"b->a").await.unwrap();
 
         assert_eq!(recv(rx_b).await, b"a->b");
@@ -412,7 +607,44 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn sending_to_an_unknown_node_errors() {
+    async fn a_global_name_registered_before_connect_is_gossiped_on_handshake() {
+        let id = Identity::generate().unwrap();
+
+        let rt_b = Runtime::new();
+        let (pid, rx) = spawn_inbox(&rt_b);
+        let node_b = ClusterNode::bind("B", rt_b, localhost(), &id).unwrap();
+        assert!(node_b.register_global("svc", pid));
+
+        let node_a = ClusterNode::bind("A", Runtime::new(), localhost(), &id).unwrap();
+        node_a.connect(node_b.local_addr().unwrap()).await.unwrap();
+
+        // A learns where "svc" lives from B's bootstrap, then reaches it by name.
+        eventually(|| node_a.whereis_global("svc").as_deref() == Some("B")).await;
+        node_a.send_global("svc", b"global hello").await.unwrap();
+        assert_eq!(recv(rx).await, b"global hello");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_global_name_registered_after_connect_is_broadcast() {
+        let id = Identity::generate().unwrap();
+
+        let rt_b = Runtime::new();
+        let (pid, rx) = spawn_inbox(&rt_b);
+        let node_b = ClusterNode::bind("B", rt_b, localhost(), &id).unwrap();
+        let addr_b = node_b.local_addr().unwrap();
+
+        let node_a = ClusterNode::bind("A", Runtime::new(), localhost(), &id).unwrap();
+        node_a.connect(addr_b).await.unwrap();
+
+        // Register only after the link is up — A must hear about it via broadcast.
+        assert!(node_b.register_global("late", pid));
+        eventually(|| node_a.whereis_global("late").is_some()).await;
+        node_a.send_global("late", b"after connect").await.unwrap();
+        assert_eq!(recv(rx).await, b"after connect");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn send_global_delivers_to_a_locally_owned_name() {
         let node = ClusterNode::bind(
             "solo",
             Runtime::new(),
@@ -420,19 +652,55 @@ mod tests {
             &Identity::generate().unwrap(),
         )
         .unwrap();
-        let err = node.send("ghost", "inbox", b"x").await.unwrap_err();
-        assert!(err.to_string().contains("ghost"));
+        let (pid, rx) = spawn_inbox(node.runtime());
+        assert!(node.register_global("here", pid));
+
+        node.send_global("here", b"local path").await.unwrap();
+        assert_eq!(recv(rx).await, b"local path");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn sending_to_an_unknown_node_or_global_errors() {
+        let node = ClusterNode::bind(
+            "solo",
+            Runtime::new(),
+            localhost(),
+            &Identity::generate().unwrap(),
+        )
+        .unwrap();
+        assert!(node
+            .send("ghost", "inbox", b"x")
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("ghost"));
+        assert!(node
+            .send_global("nowhere", b"x")
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("nowhere"));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_wrong_certificate_is_rejected() {
-        let server_id = Identity::generate().unwrap();
-        let node_b = ClusterNode::bind("B", Runtime::new(), localhost(), &server_id).unwrap();
+        let node_b = ClusterNode::bind(
+            "B",
+            Runtime::new(),
+            localhost(),
+            &Identity::generate().unwrap(),
+        )
+        .unwrap();
         let addr_b = node_b.local_addr().unwrap();
 
         // A different identity → the pinned trust root won't match the peer's cert.
-        let other_id = Identity::generate().unwrap();
-        let node_a = ClusterNode::bind("A", Runtime::new(), localhost(), &other_id).unwrap();
+        let node_a = ClusterNode::bind(
+            "A",
+            Runtime::new(),
+            localhost(),
+            &Identity::generate().unwrap(),
+        )
+        .unwrap();
         assert!(node_a.connect(addr_b).await.is_err());
     }
 
