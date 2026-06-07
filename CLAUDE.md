@@ -32,20 +32,24 @@ lightweight processes: links, monitors, exit reasons, `trap_exit`, `spawn_link`,
 `exit/2`, exit cascades, a named **registry**, **timers** (`send_after`/`cancel`),
 graceful `shutdown`, **TCP** (`listen`/`connect`, one process per connection),
 process **introspection** (`list`/`info`/`set_label`), and **byte streams**
-(`Received::Stream`, Tokio-backpressured). Six benchmarks are live (release):
+(`Received::Stream`, Tokio-backpressured). Seven benchmarks are live (release):
 spawn-storm (~2.4M spawns/sec), ping-pong (~21M messages/sec, round-trip p50
 <1 µs), fault-recovery (~285k restarts/sec), fairness (bystanders at ~50M+
-ops/sec — past 400M on free cores — under tight-loop spinners), component-storm
-(~440k component spawns/sec), and connection-storm (thousands of concurrent
-connections; connect p50 sub-millisecond). Numbers are measured under everyday
-machine load and scale up with free CPU.
+ops/sec — past 400M on free cores — under tight-loop spinners), module-storm
+(~475k wasip1 core-module spawns/sec — the direct Lunatic head-to-head),
+component-storm (~440k component spawns/sec), and connection-storm (thousands of
+concurrent connections; connect p50 sub-millisecond). Numbers are measured under
+everyday machine load and scale up with free CPU.
 Each process keeps a single channel; exit signals ride the mailbox (a `Received`
 enum) and kill rides a `futures` abort handle (no second signal channel — we beat
 Lunatic's two). The registry is a sharded `DashMap`, timers use Tokio's timer
 wheel, and TCP is process-per-connection — the connection ceiling is the OS (fds,
 ports), not RUSM. Phase 0 (metrics, live observer, benchmark harness + WebSocket
-server, `rusm` CLI, React dashboard, examples) is done. Deferred follow-ons: the
-wasip1 bridge's full WASI + raw actor ABI, p3 cross-component `stream<u8>`, and
+server, `rusm` CLI, React dashboard, examples) is done. The **wasip1 bridge**
+(`bridges/wasip1.rs`) runs preview1 core modules as processes too — preview1 WASI,
+the same default-deny caps + `StoreLimiter`, the precomputed export index, and a
+raw `rusm::*` actor ABI over linear memory — RUSM on Lunatic's home turf
+(module-storm bench). Deferred follow-ons: p3 cross-component `stream<u8>` and
 `rusm dev` filesystem watch/reload. TLS folds into the Phase 9 secure cluster
 transport. See `docs/02-roadmap.md`.
 

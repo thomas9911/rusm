@@ -155,6 +155,14 @@ impl SyntheticSource {
                 latency_ns: (1_000, 20_000),
                 processes: (50, 100),
             },
+            // Real from Phase 6, so this synthetic profile is only a placeholder;
+            // shaped like the spawn storm (core-module instantiation throughput,
+            // faster than a component, slower than a bare task).
+            Scenario::ModuleStorm => Ranges {
+                ops: (400_000, 900_000),
+                latency_ns: (1_000, 15_000),
+                processes: (50, 100),
+            },
             Scenario::DistributedFanout => Ranges {
                 ops: (50_000, 150_000),
                 latency_ns: (200_000, 2_000_000),

@@ -8,6 +8,7 @@ mod connectionstorm;
 mod engine;
 mod fairness;
 mod faultrecovery;
+mod modulestorm;
 mod pingpong;
 mod profile;
 mod protocol;

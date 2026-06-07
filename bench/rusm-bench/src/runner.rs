@@ -6,6 +6,7 @@ use crate::connectionstorm::ConnectionStormEngine;
 use crate::engine::SpawnStormEngine;
 use crate::fairness::FairnessEngine;
 use crate::faultrecovery::FaultRecoveryEngine;
+use crate::modulestorm::ModuleStormEngine;
 use crate::pingpong::PingPongEngine;
 use crate::profile::ResourceProfile;
 use crate::protocol::Frame;
@@ -57,6 +58,7 @@ enum Engine {
     FaultRecovery(FaultRecoveryEngine),
     ConnectionStorm(ConnectionStormEngine),
     Fairness(FairnessEngine),
+    ModuleStorm(ModuleStormEngine),
     ComponentStorm(ComponentStormEngine),
 }
 
@@ -86,6 +88,10 @@ impl Engine {
                 config.spawn_workers,
                 config.scheduler_count,
             )),
+            Scenario::ModuleStorm => Engine::ModuleStorm(ModuleStormEngine::new(
+                config.spawn_workers,
+                config.scheduler_count,
+            )),
             Scenario::ComponentStorm => Engine::ComponentStorm(ComponentStormEngine::new(
                 config.spawn_workers,
                 config.scheduler_count,
@@ -107,6 +113,7 @@ impl Engine {
             Engine::FaultRecovery(engine) => engine.tick(),
             Engine::ConnectionStorm(engine) => engine.tick(),
             Engine::Fairness(engine) => engine.tick(),
+            Engine::ModuleStorm(engine) => engine.tick(),
             Engine::ComponentStorm(engine) => engine.tick(),
         }
     }
@@ -165,6 +172,7 @@ impl Runner {
             | Scenario::FaultRecovery
             | Scenario::ConnectionStorm
             | Scenario::Fairness
+            | Scenario::ModuleStorm
             | Scenario::ComponentStorm),
         ) = self.scenario()
         {

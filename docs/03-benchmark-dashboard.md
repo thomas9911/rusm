@@ -16,6 +16,8 @@ A menu of scenarios and a **Run** button. Each tick streams: throughput
 | Fault recovery | restarts/sec, recovery latency | phase 3 |
 | **Connection storm (300k/s proof)** | conns/sec, peak, latency | phase 5 (native), re-measured phase 6 |
 | Fairness under tight loop | bystanders keep progressing | phase 6 |
+| Module storm (wasip1, Lunatic head-to-head) | core-module spawns/sec | phase 6 |
+| Component storm | component spawns/sec | phase 7 |
 | Distributed fan-out | cross-node latency | phase 9 |
 
 ## Live observer view

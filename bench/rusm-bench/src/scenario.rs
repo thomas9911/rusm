@@ -18,6 +18,7 @@ pub enum Scenario {
     ConnectionStorm,
     ComponentStorm,
     DistributedFanout,
+    ModuleStorm,
 }
 
 /// Display metadata for a [`Scenario`], sent to the dashboard menu and the
@@ -41,12 +42,13 @@ impl Scenario {
     // Ordered by the phase each scenario goes live (the dashboard menu shows them
     // in this order). The enum discriminants are unchanged, so the synthetic
     // source stays deterministic.
-    pub const ALL: [Scenario; 7] = [
+    pub const ALL: [Scenario; 8] = [
         Scenario::SpawnStorm,        // phase 1
         Scenario::PingPong,          // phase 2
         Scenario::FaultRecovery,     // phase 3
         Scenario::ConnectionStorm,   // phase 5
         Scenario::Fairness,          // phase 6
+        Scenario::ModuleStorm,       // phase 6 — wasip1 core modules (Lunatic head-to-head)
         Scenario::ComponentStorm,    // phase 7
         Scenario::DistributedFanout, // phase 9
     ];
@@ -60,6 +62,7 @@ impl Scenario {
             Scenario::ConnectionStorm => "connection-storm",
             Scenario::ComponentStorm => "component-storm",
             Scenario::DistributedFanout => "distributed-fanout",
+            Scenario::ModuleStorm => "module-storm",
         }
     }
 
@@ -137,6 +140,17 @@ impl Scenario {
                     "Lunatic hosts only core modules with its own ABI — it has no component-model host at all; matching bare-process spawn economics while hosting real components is the bar we clear here.",
                 ],
                 7,
+            ),
+            Scenario::ModuleStorm => (
+                "Module storm",
+                "How fast can RUSM spawn raw wasip1 core modules — Lunatic's exact domain?",
+                vec![
+                    "What's unique here: like the spawn storm and component storm, but each process is a raw **wasip1 core module** — the exact artifact Lunatic hosts. It's the isolation tier *between* a bare task and a full component.",
+                    "Headline: core-module spawns/sec — measured ~475k/sec (instantiate from the pooling allocator + copy-on-write image + precomputed export index, then schedule + reap). Faster than a component (~440k, no component-model wiring), slower than a bare task (~2.4M, real Wasm isolation).",
+                    "Phase 6: REAL wasip1. The same lever set as the component path runs live — pooling allocator, CoW, per-module InstancePre, precomputed ModuleExport index, single runtime-handle clone, park-based backpressure.",
+                    "The direct Lunatic head-to-head: Lunatic spawns wasip1 core-module processes via on-demand allocation + per-instruction fuel; RUSM recycles pooled instances and preempts with epochs — and hosts components too.",
+                ],
+                6,
             ),
             Scenario::DistributedFanout => (
                 "Distributed fan-out",
@@ -228,6 +242,7 @@ mod tests {
                 "fault-recovery",
                 "connection-storm",
                 "fairness",
+                "module-storm",
                 "component-storm"
             ]
         );

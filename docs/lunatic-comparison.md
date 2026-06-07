@@ -30,6 +30,12 @@ sandbox, guest crate, clustering) are still *planned*. The value is in the
 > spawns/sec** live (component-storm). Lunatic ships on-demand allocation + fuel;
 > RUSM's spawn path is ahead by design.
 >
+> **The direct head-to-head** is the **module-storm** scenario: RUSM spawns the
+> *same artifact Lunatic hosts* — wasip1 core modules — at **~475k spawns/sec**
+> live, recycling pooled instances and preempting with epochs (vs Lunatic's
+> on-demand allocation + per-instruction fuel). The cost ladder it reveals: a bare
+> task ~2.4M/sec → a wasip1 core module ~475k/sec → a wasip2 component ~440k/sec.
+>
 > The **fairness** scenario runs on real Wasm — spinners saturate every core, yet
 > bystanders progress at ~50M+ ops/sec (past 400M on free cores), proving epoch
 > preemption live. What
