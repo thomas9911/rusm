@@ -37,6 +37,13 @@ killable, preemptible process — the BEAM model, for the component ecosystem.
    the Rust way: process env, then `.env`.
 6. **Lifetime superiority** — a component runs as long as it needs, stays killable
    and preemptible (epoch), supervised — **no wasmCloud-style execution timeout**.
+8. **Cross-process byte streams** (`bridges/wasip1.rs`) — RUSM's stream-passing
+   reaches guests: `stream_open(to)` hands a Tokio-backpressured `StreamHandle`'s
+   read end to another process (it rides the mailbox as `Received::Stream`, the
+   *same* primitive a native process gets) while the opener keeps the write end;
+   `stream_write`/`stream_close` and `stream_accept`/`stream_read` move chunks with
+   real back-pressure (a slow reader parks the writer's fiber, no busy-poll). This
+   is composition the RUSM way — message-passing, not WIT inter-component wiring.
 7. **The wasip1 bridge** (`bridges/wasip1.rs`) — RUSM on **Lunatic's home turf**:
    preview1 **core modules** run as processes too, with preview1 WASI, the same
    default-deny capabilities + `StoreLimiter`, the precomputed export index, and a
@@ -85,7 +92,10 @@ component, memory-cap deny → Crashed, the full actor ABI driven by a real
 component-storm live in the dashboard; workspace coverage ≥98%; the Wasm-free
 invariant holds (no `wasmtime` under `rusm-otp`).
 
-**Deferred follow-ons:** p3 cross-component `stream<u8>` and `rusm dev` filesystem
+**Deferred follow-ons:** cross-process byte streaming is live on the core-module
+path (actor-ABI `stream_open`/`write`/`read` over the Wasm-free `StreamHandle`);
+exposing the same ops through the component WIT world and a native p3-typed
+`stream<u8>` is the remaining ergonomic layer. Also `rusm dev` filesystem
 watch/reload.
 
 ## Next

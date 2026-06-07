@@ -14,10 +14,13 @@
 //! The shared engine/epoch/pooling levers live in [`crate`]; this file is only the
 //! core-module-specific glue (host type, raw ABI, prepare/spawn/run).
 
+use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
-use rusm_otp::{Context, ExitReason, Pid, ProcessHandle, Received, Runtime};
+use rusm_otp::{
+    stream, Context, ExitReason, Pid, ProcessHandle, Received, Runtime, StreamHandle, StreamWriter,
+};
 use wasmtime::Result;
 use wasmtime::{
     Caller, Engine, Extern, InstancePre, Linker, Memory, Module, ModuleExport, ResourceLimiter,
@@ -46,6 +49,14 @@ pub(crate) struct CoreHost {
     /// The process's mailbox, for `receive`. `None` only for a bare host built
     /// outside a spawned process (a direct-instantiation test).
     ctx: Option<Context>,
+    /// Byte streams this process is **writing** to other processes, keyed by a
+    /// per-process id handed back to the guest by `stream_open`.
+    out_streams: HashMap<u64, StreamWriter>,
+    /// Byte streams this process has **accepted** and is reading, keyed by the id
+    /// handed back by `stream_accept`.
+    in_streams: HashMap<u64, StreamHandle>,
+    /// Monotonic id source for this process's stream handles.
+    next_stream: u64,
 }
 
 impl ResourceLimiter for CoreHost {
@@ -237,6 +248,111 @@ pub(crate) fn build_linker(engine: &Engine) -> Result<Linker<CoreHost>> {
             })
         },
     )?;
+
+    // --- Byte streams: a process opens a Tokio-backpressured stream to another,
+    // writes chunks, and closes it; the recipient accepts and reads to EOF. The
+    // read end rides the mailbox as `Received::Stream` (the Wasm-free StreamHandle
+    // from rusm-otp), so this is the *same* primitive as a native stream — exposed
+    // to a core module through `(ptr, len)` chunks.
+
+    // stream_open(to) -> id (or -1 if the target is gone): create a stream, hand
+    // its read end to `to`, and keep the write end under the returned id.
+    linker.func_wrap(
+        "rusm",
+        "stream_open",
+        |mut caller: Caller<'_, CoreHost>, to: i64| -> i64 {
+            let (writer, reader) = stream();
+            let host = caller.data_mut();
+            if !host.rt.send_stream(Pid::from_raw(to as u64), reader) {
+                return -1;
+            }
+            let id = host.next_stream;
+            host.next_stream += 1;
+            host.out_streams.insert(id, writer);
+            id as i64
+        },
+    )?;
+    // stream_write(id, ptr, len) -> 0 on success, -1 if the stream is closed/unknown:
+    // **async** — parks on back-pressure when the reader is slow (no busy-poll).
+    linker.func_wrap_async(
+        "rusm",
+        "stream_write",
+        |mut caller: Caller<'_, CoreHost>, (id, ptr, len): (i64, i32, i32)| {
+            Box::new(async move {
+                let bytes = read_bytes(&mut caller, ptr, len)?;
+                // Clone the writer out so the await doesn't hold a borrow of the store.
+                let writer = caller.data().out_streams.get(&(id as u64)).cloned();
+                Ok(match writer {
+                    Some(w) => match w.write(bytes).await {
+                        Ok(()) => 0,
+                        Err(_) => -1, // the reader went away
+                    },
+                    None => -1, // unknown id
+                })
+            })
+        },
+    )?;
+    // stream_close(id): drop the write end, signalling end-of-stream to the reader.
+    linker.func_wrap(
+        "rusm",
+        "stream_close",
+        |mut caller: Caller<'_, CoreHost>, id: i64| {
+            caller.data_mut().out_streams.remove(&(id as u64));
+        },
+    )?;
+    // stream_accept() -> id: **async** — park until a stream arrives in the mailbox,
+    // then keep its read end under the returned id. (Like `receive`, plain messages
+    // are skipped here; a process consumes either messages or streams.)
+    linker.func_wrap_async(
+        "rusm",
+        "stream_accept",
+        |mut caller: Caller<'_, CoreHost>, _: ()| {
+            Box::new(async move {
+                let handle = {
+                    let ctx =
+                        caller.data_mut().ctx.as_mut().ok_or_else(|| {
+                            wasmtime::Error::msg("stream_accept requires a mailbox")
+                        })?;
+                    loop {
+                        if let Received::Stream(h) = ctx.recv().await {
+                            break h;
+                        }
+                    }
+                };
+                let host = caller.data_mut();
+                let id = host.next_stream;
+                host.next_stream += 1;
+                host.in_streams.insert(id, handle);
+                Ok(id as i64)
+            })
+        },
+    )?;
+    // stream_read(id, ptr, cap) -> len, or -1 at end-of-stream: **async** — parks
+    // until the next chunk arrives, then writes up to `cap` bytes and returns the
+    // chunk's true length.
+    linker.func_wrap_async(
+        "rusm",
+        "stream_read",
+        |mut caller: Caller<'_, CoreHost>, (id, ptr, cap): (i64, i32, i32)| {
+            Box::new(async move {
+                // Take the handle out so the await holds no borrow; re-insert unless EOF.
+                let mut handle = match caller.data_mut().in_streams.remove(&(id as u64)) {
+                    Some(h) => h,
+                    None => return Ok(-1),
+                };
+                match handle.read().await {
+                    Some(bytes) => {
+                        caller.data_mut().in_streams.insert(id as u64, handle);
+                        let n = bytes.len().min(cap.max(0) as usize);
+                        let mem = memory_of(&mut caller)?;
+                        mem.write(&mut caller, ptr as usize, &bytes[..n])?;
+                        Ok(bytes.len() as i32)
+                    }
+                    None => Ok(-1), // end of stream — handle dropped
+                }
+            })
+        },
+    )?;
     Ok(linker)
 }
 
@@ -304,6 +420,9 @@ async fn run(
         shared,
         rt,
         ctx: Some(ctx),
+        out_streams: HashMap::new(),
+        in_streams: HashMap::new(),
+        next_stream: 0,
     };
     let mut store = Store::new(&engine, host);
     // Enforce the per-process memory ceiling (CoreHost is the ResourceLimiter).
@@ -657,5 +776,110 @@ mod tests {
         let caps = Capabilities::nothing().preopen("/no/such/path/rusm-test", "/mnt", true);
         let guest = wr.spawn_with(&pre, caps);
         assert_eq!(exit_reason_of(&rt, &guest).await, ExitReason::Crashed);
+    }
+
+    // --- Cross-process byte streaming over the actor ABI (the StreamHandle).
+
+    // Receives a consumer pid, opens a stream to it, writes 3 chunks of "hello!"
+    // (18 bytes total) with back-pressure, then closes the stream.
+    const PRODUCER: &str = r#"(module
+        (import "rusm" "stream_open" (func $open (param i64) (result i64)))
+        (import "rusm" "stream_write" (func $write (param i64 i32 i32) (result i32)))
+        (import "rusm" "stream_close" (func $close (param i64)))
+        (import "rusm" "receive" (func $receive (param i32 i32) (result i32)))
+        (memory (export "memory") 1)
+        (data (i32.const 0) "hello!")
+        (func (export "run")
+            (local $consumer i64) (local $sid i64) (local $i i32)
+            (drop (call $receive (i32.const 8) (i32.const 8)))
+            (local.set $consumer (i64.load (i32.const 8)))
+            (local.set $sid (call $open (local.get $consumer)))
+            (block $done (loop $more
+                (br_if $done (i32.ge_s (local.get $i) (i32.const 3)))
+                (drop (call $write (local.get $sid) (i32.const 0) (i32.const 6)))
+                (local.set $i (i32.add (local.get $i) (i32.const 1)))
+                (br $more)))
+            (call $close (local.get $sid))))"#;
+
+    // Receives a collector pid, accepts a stream, reads chunks to end-of-stream
+    // summing their lengths, then reports the total to the collector.
+    const CONSUMER: &str = r#"(module
+        (import "rusm" "stream_accept" (func $accept (result i64)))
+        (import "rusm" "stream_read" (func $read (param i64 i32 i32) (result i32)))
+        (import "rusm" "send" (func $send (param i64 i32 i32)))
+        (import "rusm" "receive" (func $receive (param i32 i32) (result i32)))
+        (memory (export "memory") 1)
+        (func (export "run")
+            (local $collector i64) (local $sid i64) (local $n i32) (local $total i32)
+            (drop (call $receive (i32.const 0) (i32.const 8)))
+            (local.set $collector (i64.load (i32.const 0)))
+            (local.set $sid (call $accept))
+            (block $done (loop $more
+                (local.set $n (call $read (local.get $sid) (i32.const 100) (i32.const 64)))
+                (br_if $done (i32.lt_s (local.get $n) (i32.const 0)))
+                (local.set $total (i32.add (local.get $total) (local.get $n)))
+                (br $more)))
+            (i32.store (i32.const 200) (local.get $total))
+            (call $send (local.get $collector) (i32.const 200) (i32.const 4))))"#;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn one_core_module_streams_bytes_to_another() {
+        let rt = Runtime::new();
+        let wr = WasmRuntime::new(rt.clone()).unwrap();
+        let producer = wr.prepare(&wr.compile(PRODUCER).unwrap(), "run").unwrap();
+        let consumer = wr.prepare(&wr.compile(CONSUMER).unwrap(), "run").unwrap();
+
+        // Native collector receives the consumer's byte total.
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let collector = rt.spawn(move |mut ctx| async move {
+            let _ = tx.send(ctx.recv().await.message().unwrap());
+        });
+
+        let consumer = wr.spawn(&consumer);
+        let producer = wr.spawn(&producer);
+        // Wire the pids: consumer learns the collector, producer learns the consumer.
+        rt.send(consumer.pid(), collector.pid().raw().to_le_bytes().to_vec());
+        rt.send(producer.pid(), consumer.pid().raw().to_le_bytes().to_vec());
+
+        let total = rx.await.unwrap();
+        assert_eq!(
+            i32::from_le_bytes(total[..4].try_into().unwrap()),
+            18,
+            "consumer should read all 3x6 = 18 streamed bytes through to EOF"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn streaming_to_a_dead_target_reports_failure() {
+        // stream_open to a non-existent pid returns -1; writing an unknown id is -1.
+        const TRY_DEAD: &str = r#"(module
+            (import "rusm" "stream_open" (func $open (param i64) (result i64)))
+            (import "rusm" "stream_write" (func $write (param i64 i32 i32) (result i32)))
+            (import "rusm" "send" (func $send (param i64 i32 i32)))
+            (import "rusm" "receive" (func $receive (param i32 i32) (result i32)))
+            (memory (export "memory") 1)
+            (func (export "run")
+                (local $reply i64) (local $opened i64) (local $wrote i32)
+                (drop (call $receive (i32.const 0) (i32.const 8)))
+                (local.set $reply (i64.load (i32.const 0)))
+                ;; open to pid 999999 (dead) -> -1; write to bogus id 123 -> -1
+                (local.set $opened (call $open (i64.const 999999)))
+                (local.set $wrote (call $write (i64.const 123) (i32.const 0) (i32.const 4)))
+                (i32.store (i32.const 8) (i32.add
+                    (i32.mul (i32.wrap_i64 (local.get $opened)) (i32.const 1))
+                    (local.get $wrote)))
+                (call $send (local.get $reply) (i32.const 8) (i32.const 4))))"#;
+        let rt = Runtime::new();
+        let wr = WasmRuntime::new(rt.clone()).unwrap();
+        let pre = wr.prepare(&wr.compile(TRY_DEAD).unwrap(), "run").unwrap();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let collector = rt.spawn(move |mut ctx| async move {
+            let _ = tx.send(ctx.recv().await.message().unwrap());
+        });
+        let guest = wr.spawn(&pre);
+        rt.send(guest.pid(), collector.pid().raw().to_le_bytes().to_vec());
+        let reply = rx.await.unwrap();
+        // opened == -1 and wrote == -1, so the sum is -2.
+        assert_eq!(i32::from_le_bytes(reply[..4].try_into().unwrap()), -2);
     }
 }
