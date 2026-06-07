@@ -16,7 +16,16 @@ bounded mailboxes** (`Runtime::with_mailbox_capacity` — load-shed *user* messa
 never system signals), **mutual-TLS cluster security** (`ClusterCa` per-node certs,
 foreign-CA peers rejected), and **windowed supervisor restart-intensity** (both
 guests) — all with no spawn/message regression (~440k component spawns/s, ~21M
-msgs/s hold). The Wasm-free
+msgs/s hold). **Phase 11 (serving) is underway**: a component runs as a
+high-throughput **HTTP / WS / SSE** server, all in `rusm-wasm` (hyper +
+`tokio-tungstenite` + `wasi:http`; `rusm-otp` stays Wasm-free). `HttpServer`
+(instance-per-request `wasi:http` via `ProxyPre`, ~64.5k req/s lean), `WsServer` (one
+sandboxed **component process per connection** — inbound frame → mailbox message,
+replies via a Wasm-free writer process that owns the socket sink; ~192k echo
+round-trips/s, sandbox cost inside noise), and **SSE** (a `wasi:http` streaming body —
+~1.5M events/s across 128 held streams). Benches: `http_bench`/`ws_bench`/`sse_bench`.
+Still to land: `rusm serve` + `rusm.toml [[http]]`, serving TLS, ws-echo/sse-fanout
+dashboard scenarios. The Wasm-free
 **`rusm-cluster`** crate (over `rusm-otp`, never Wasmtime) connects nodes over
 **QUIC + TLS** (quinn + rustls/ring; **mutual TLS** — a `ClusterCa` issues per-node
 certs, or a shared self-signed `Identity`): a `ClusterNode`

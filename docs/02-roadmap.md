@@ -54,10 +54,20 @@ data to real measurements.
   opt-in bounded mailboxes (overload load-shed), per-node certs under a cluster CA
   + mutual TLS, and windowed supervisor restart-intensity — no spawn/message
   regression.
-- **Nine live dashboard benchmarks** — *every* scenario now runs on real data
+- **Phase 11 — serving (in progress):** run a component as a high-throughput
+  **HTTP / WS / SSE** server. The serving engine is **built and measured** —
+  `WasmRuntime::http_server` (instance-per-request `wasi:http`), `ws_server` (one
+  sandboxed component process per WebSocket connection, replies via a Wasm-free writer
+  process), and SSE (a `wasi:http` streaming body). See
+  [serving HTTP/WS/SSE](./serving-http-ws-sse.md) and the `http_bench` / `ws_bench` /
+  `sse_bench` examples (~64.5k req/s, ~192k WS round-trips/s, ~1.5M SSE events/s).
+  Still to land: `rusm serve` + `rusm.toml [[http]]`, serving TLS, and the ws-echo /
+  sse-fanout dashboard scenarios. `rusm-otp` stays Wasm-free (hyper/tungstenite/
+  `wasi:http` live only in `rusm-wasm`).
+- **Ten live dashboard benchmarks** — *every* scenario now runs on real data
   (spawn-storm, ping-pong, fault-recovery, connection-storm, fairness, module-storm,
-  component-storm, stream-pipe, distributed-fanout) + the standalone `cluster_fanout`
-  cross-node benchmark.
+  component-storm, stream-pipe, distributed-fanout, http-throughput) + the standalone
+  `cluster_fanout` / `http_bench` / `ws_bench` / `sse_bench` benchmarks.
 - TDD throughout; coverage ≥98% (mostly 100%); `cargo fmt` + Prettier clean.
 
 See the per-phase deep dives under [`phases/`](./phases/phase-00-foundation.md), and

@@ -1,10 +1,14 @@
 # Serving HTTP, WS & SSE from a component (Phase 11)
 
-> **Status: HTTP is built and measured; WS & SSE are design.** An RS (`wstd`) WASM
-> component is **served over real HTTP today** (`WasmRuntime::http_server`, the
-> [`http_bench`](../examples/http_bench/) benchmark — ~50k req/s instance-per-request
-> vs ~198k bare-hyper). The WS/SSE sections below are still design previews; their
-> code blocks are illustrative until those paths land.
+> **Status: HTTP, WS, and SSE are all built and measured.** A WASM component is served
+> over real **HTTP** (`WasmRuntime::http_server` — [`http_bench`](../examples/http_bench/):
+> lean ~64.5k req/s instance-per-request vs ~197k bare-hyper), real **WebSockets** with
+> *one component process per connection* (`WasmRuntime::ws_server` —
+> [`ws_bench`](../examples/ws_bench/): ~192k echo round-trips/s, 128/128 connections held,
+> the sandbox cost vs the bare transport inside noise), and real **SSE** (a `wasi:http`
+> streaming body — [`sse_bench`](../examples/sse_bench/): ~1.5M events/s across 128
+> long-lived streams, all held). The `rusm-otp` core stays Wasm-free throughout (hyper,
+> `tokio-tungstenite`, and `wasi:http` live only in `rusm-wasm`).
 
 RUSM's end goal is to run a component as a high-throughput **HTTP(S) / WS(S) / SSE
 server** — a sandboxed, supervised process answering requests. Phase 11 delivers
@@ -78,43 +82,54 @@ the same standard component; the choice is reversible and the developer's alone.
 ## RS source (`wasm32-wasip2`)
 
 **HTTP** — a standard `wasi:http` server via `wstd` (the Bytecode Alliance's
-ergonomic layer; the artifact is a plain wasi:http component RUSM hosts):
+ergonomic layer; the artifact is a plain wasi:http component RUSM hosts). This is the
+[`http-hello`](../crates/rusm-wasm/tests/fixtures/http-hello/) fixture verbatim:
 
 ```rust
-use wstd::http::{Body, IntoBody, Request, Response};
-use wstd::http::server::{Finished, Responder};
+use wstd::http::body::Body;
+use wstd::http::{Request, Response};
 
 #[wstd::http_server]
-async fn main(req: Request<impl Body>, res: Responder) -> Finished {
-    let who = req.uri().query().unwrap_or("world");
-    res.respond(Response::new(format!("hello, {who}\n").into_body())).await
+async fn main(_req: Request<Body>) -> anyhow::Result<Response<Body>> {
+    Ok(Response::new("hello from RUSM\n".to_owned().into()))
 }
 ```
 
-**SSE** — set the content type and write events to the streaming body over time:
+**SSE** — set `text/event-stream` and hand the body a stream of frames; the host
+flushes each one as the guest yields it. The [`sse-ticker`](../crates/rusm-wasm/tests/fixtures/sse-ticker/)
+fixture, condensed:
 
 ```rust
+use futures_lite::stream::unfold;
+use wstd::http::body::{Body, Bytes};
+
 #[wstd::http_server]
-async fn main(_req: Request<impl Body>, res: Responder) -> Finished {
-    let mut body = res.start(Response::builder()
+async fn main(_req: Request<Body>) -> Result<Response<Body>, Error> {
+    let events = unfold(0u32, |n| async move {
+        wstd::task::sleep(Duration::from_millis(50)).await;     // backpressured by the client
+        Some((Ok::<_, Infallible>(Bytes::from(format!("data: tick {n}\n\n"))), n + 1))
+    });
+    Ok(Response::builder()
         .header("content-type", "text/event-stream")
-        .body(()).unwrap());           // streaming response body
-    for i in 0.. {
-        body.write_all(format!("data: tick {i}\n\n").as_bytes()).await?;
-        wstd::task::sleep(Duration::from_secs(1)).await;   // backpressured by the client
-    }
+        .body(Body::from_try_stream(events))?)
 }
 ```
 
-**WS** — RUSM hands the upgraded connection to the component as a `rusm_rs::Stream`;
-the guest reads/writes frames (echo):
+**WS** — the component is a normal actor: the host owns the socket and delivers each
+inbound frame as a mailbox message; message 1 is the connection's **writer pid** (the
+process that owns the socket sink). Echo = send each frame back to the writer. This is
+the [`rs-ws-echo`](../crates/rusm-wasm/tests/fixtures/rs-ws-echo/) fixture:
 
 ```rust
-fn main() {
-    // The host completes the handshake and delivers the socket as a byte stream.
-    let mut socket: rusm_rs::Stream = rusm_rs::receive_stream();
-    while let Some(frame) = socket.read() {
-        socket.write(&frame);          // echo
+fn run() {
+    // Message 1: the writer pid to answer through (the host owns the socket).
+    let writer = rusm_rs::Pid(
+        String::from_utf8(rusm_rs::receive_bytes()).unwrap().parse().unwrap(),
+    );
+    // Every later message is one inbound WS frame — echo it straight back.
+    loop {
+        let frame = rusm_rs::receive_bytes();
+        rusm_rs::send_bytes(writer, &frame);
     }
 }
 ```
@@ -169,23 +184,26 @@ export default {
 Both guests stay sandboxed (a serving component gets only the capabilities its
 profile grants) and supervised (a crash restarts the handler, never the listener).
 
-## Benchmark plan
+## Benchmarks
 
-Three new dashboard scenarios, following the live-engine pattern of the existing
-nine. Each reports against a **bare-host baseline** (hyper with no Wasm) so the
-sandbox overhead is explicit — the honest number.
+Each serving topic has a runnable stress example reporting against a **bare-host
+baseline** (or the host transport ceiling) so the sandbox overhead is explicit — the
+honest, *earned* number. Representative loopback figures:
 
-| Scenario | Drives | Headline metrics |
+| Topic | Example | Earned (loopback) |
 | --- | --- | --- |
-| **http-throughput** ✅ *(live dashboard scenario + [`http_bench`](../examples/http_bench/))* | keep-alive clients hitting a 200-OK component, instance-per-request | **measured (64 clients): lean raw-`wasi:http` ~64.5k req/s, wstd ~51k, bare hyper ~197k.** Instantiate-only ~11µs (lean) — per-request isolation is cheap, so warm-pooling is **not** worth it. The guest library is a ~26% lever (wstd's reactor); the residual ~3× vs bare hyper is `wasi:http` component-model marshaling. |
-| **sse-fanout** | N concurrent SSE subscribers, each fed M events/sec from long-lived instances | sustained events/sec, concurrent streams held, per-event p50/p99 — stresses the long-lived-instance + overflow tier + stream backpressure |
-| **ws-echo** | N concurrent WS connections, echo round-trip | messages/sec, round-trip p50/p99, concurrent sockets |
+| **HTTP** | [`http_bench`](../examples/http_bench/) | lean raw-`wasi:http` **~64.5k req/s** instance-per-request, wstd ~51k, bare hyper ~197k. Instantiate-only ~11µs (lean) — per-request isolation is cheap, so warm-pooling is **not** worth it. The ~3× vs bare hyper is `wasi:http` component-model marshaling. |
+| **WS** | [`ws_bench`](../examples/ws_bench/) | **~192k echo round-trips/s, 128/128 connections held.** One sandboxed component process per connection; the per-message writer→component→writer mailbox hop costs ~nothing — the component path lands **inside noise** of the bare hyper+tungstenite transport. |
+| **SSE** | [`sse_bench`](../examples/sse_bench/) | **~1.5M events/s across 128 long-lived streams, all held.** Each stream is its own `wasi:http` instance; a dropped client tears down only its own instance. |
 
-What "good" looks like: http-throughput within a small multiple of bare hyper (the
-price of per-request memory isolation, paid once — like module-storm vs a bare
-task); sse-fanout/ws-echo holding **tens of thousands** of concurrent streams
-(bounded by RAM via the overflow tier, not a fixed cap), with latency flat under load
-because the streams are Tokio-backpressured.
+The **http-throughput** scenario is live in the dashboard; **ws-echo** and
+**sse-fanout** dashboard scenarios follow the same live-engine pattern (the standalone
+examples above are the source of truth for the numbers today).
+
+What "good" looks like, confirmed: HTTP within a small multiple of bare hyper (the
+price of per-request memory isolation, paid once — like module-storm vs a bare task);
+WS/SSE holding every connection open under load (bounded by RAM, not a fixed cap),
+latency flat because the streams are Tokio-backpressured.
 
 ## Battle-proven foundations (no reinvention)
 

@@ -79,6 +79,7 @@ phase, same themes, same order.
 | 8 | Guest crate | ✅ `rusm-rs` + `rusm-ts` (service macro / typed client, call/cast/stream/callbacks) | 🅛 `lunatic-rs` (Rust only) | 🔥 ahead — TS *and* Rust guests, one wire |
 | 9 | Distributed clusters + live attach | ✅ `rusm-cluster` (QUIC+TLS, cross-node send, gossiped global registry, remote spawn, live attach) | ✅ (QUIC + distributed registry) | ✅ at parity — secure cluster + global registry, one persistent conn/node, message-per-stream (no custom congestion layer) |
 | 10 ✅ | Scale & hardening | ✅ on-demand instance tier, bounded mailboxes, mutual-TLS cluster CA, windowed restart-intensity | ⚠️ OnDemand + fuel | 🔥 ahead — overflow tier *on top of* pooling, + secure cluster |
+| 11 ⏳ | **Serving** (HTTP / WS / SSE from a component) | ✅ engine built+measured — `http_server` (instance-per-request `wasi:http`, ~64.5k req/s), `ws_server` (one sandboxed component process per WS connection, ~192k echo round-trips/s), SSE streaming body (~1.5M events/s, 128 streams held); app-model wiring (`rusm serve`, TLS, dashboard) remaining | ❌ **no `wasi:http` host** (core modules only) | 🔥 **ahead — an axis Lunatic lacks** |
 | — | SQLite host API | ❌ | 🅛 | — n/a |
 
 > ¹ The perf column is an **architectural** assessment, not a head-to-head
