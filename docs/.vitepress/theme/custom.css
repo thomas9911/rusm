@@ -1,0 +1,100 @@
+/* .vitepress/theme/custom.css
+   RUSM brand theme — copper + cyan on warm ink. Light & dark.
+   Fonts are loaded via a <link rel="preconnect"> + stylesheet in
+   .vitepress/config.ts `head` (faster than a CSS @import). */
+
+/* ── LIGHT (default) ───────────────────────────────────────── */
+:root {
+  /* fonts */
+  --r-display: 'Bricolage Grotesque', ui-sans-serif, system-ui, sans-serif;
+  --r-mono: 'JetBrains Mono', ui-monospace, 'SFMono-Regular', monospace;
+  --vp-font-family-base: 'Hanken Grotesk', ui-sans-serif, system-ui, sans-serif;
+  --vp-font-family-mono: var(--r-mono);
+
+  /* RUSM home palette */
+  --r-bg: #faf7f0;
+  --r-surface: #ffffff;
+  --r-surface-2: #f1ebdf;
+  --r-field: #f2ece1;
+  --r-cell: #e4dccd;
+  --r-text: #221d17;
+  --r-text-2: #5e574c;
+  --r-text-3: #928a7b;
+  --r-line: rgba(34, 29, 23, .10);
+  --r-line-2: rgba(34, 29, 23, .17);
+  --r-copper: #c4641d;
+  --r-copper-soft: #dd8038;
+  --r-signal: #13a085;
+  --r-red: #cf4436;
+  --r-on-copper: #fff7ef;
+  --r-glow: rgba(196, 100, 29, .13);
+
+  /* map onto VitePress so nav / sidebar / search / doc pages match */
+  --vp-c-bg: var(--r-bg);
+  --vp-c-bg-alt: var(--r-surface-2);
+  --vp-c-bg-soft: #efe8db;
+  --vp-c-bg-elv: var(--r-surface);
+  --vp-c-text-1: var(--r-text);
+  --vp-c-text-2: var(--r-text-2);
+  --vp-c-text-3: var(--r-text-3);
+  --vp-c-divider: var(--r-line);
+  --vp-c-border: var(--r-line-2);
+  --vp-c-gutter: var(--r-line);
+
+  --vp-c-brand-1: #b35a1c;       /* links / accents (AA on light) */
+  --vp-c-brand-2: #c4641d;
+  --vp-c-brand-3: #d97a2f;       /* solid button bg */
+  --vp-c-brand-soft: rgba(196, 100, 29, .14);
+  --vp-c-brand-softer: rgba(196, 100, 29, .08);
+
+  --vp-home-hero-name-color: var(--r-copper);
+}
+
+/* ── DARK ──────────────────────────────────────────────────── */
+.dark {
+  --r-bg: #0c0b0a;
+  --r-surface: #17140f;
+  --r-surface-2: #131110;
+  --r-field: #131110;
+  --r-cell: #1f1a14;
+  --r-text: #f3ede4;
+  --r-text-2: #a59d92;
+  --r-text-3: #6f675e;
+  --r-line: rgba(243, 237, 228, .08);
+  --r-line-2: rgba(243, 237, 228, .15);
+  --r-copper: #e6803d;
+  --r-copper-soft: #f2a766;
+  --r-signal: #54cdb4;
+  --r-red: #e2564b;
+  --r-on-copper: #1a0e05;
+  --r-glow: rgba(230, 128, 61, .18);
+
+  --vp-c-bg: var(--r-bg);
+  --vp-c-bg-alt: var(--r-surface-2);
+  --vp-c-bg-soft: var(--r-surface);
+  --vp-c-bg-elv: var(--r-surface);
+  --vp-c-text-1: var(--r-text);
+  --vp-c-text-2: var(--r-text-2);
+  --vp-c-text-3: var(--r-text-3);
+  --vp-c-divider: var(--r-line);
+  --vp-c-border: var(--r-line-2);
+  --vp-c-gutter: #000;
+
+  --vp-c-brand-1: #f2a766;       /* links readable on ink */
+  --vp-c-brand-2: #e6803d;
+  --vp-c-brand-3: #e6803d;
+  --vp-c-brand-soft: rgba(230, 128, 61, .16);
+  --vp-c-brand-softer: rgba(230, 128, 61, .10);
+}
+
+/* ── polish ────────────────────────────────────────────────── */
+/* display font for nav title + doc headings */
+.VPNavBarTitle .title { font-family: var(--r-display); font-weight: 800; letter-spacing: -.02em; }
+.vp-doc h1, .vp-doc h2, .vp-doc h3, .vp-doc h4 { font-family: var(--r-display); letter-spacing: -.02em; }
+
+/* the default home page chrome — neutralise padding since we inject our own home */
+.VPHome { padding-bottom: 0 !important; margin-bottom: 0 !important; }
+
+/* let the search kbd shortcut + buttons inherit the palette nicely */
+.DocSearch-Button { border-radius: 9px; }
+:root { --vp-local-search-bg: var(--vp-c-bg-alt); }

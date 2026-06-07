@@ -67,6 +67,19 @@ export default defineConfig({
   title: 'RUSM',
   description: 'An Erlang-inspired WebAssembly runtime in Rust.',
   cleanUrls: true,
+  // The RUSM theme's fonts (display / base / mono), loaded with preconnect for
+  // performance rather than a CSS @import.
+  head: [
+    ['link', { rel: 'preconnect', href: 'https://fonts.googleapis.com' }],
+    ['link', { rel: 'preconnect', href: 'https://fonts.gstatic.com', crossorigin: '' }],
+    [
+      'link',
+      {
+        rel: 'stylesheet',
+        href: 'https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=Hanken+Grotesk:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap',
+      },
+    ],
+  ],
   themeConfig: {
     nav: sections,
     sidebar: sections,
