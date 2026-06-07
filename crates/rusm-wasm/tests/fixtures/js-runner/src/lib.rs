@@ -40,37 +40,11 @@ fn js_stream_read(ctx: Ctx<'_>, h: f64) -> Option<TypedArray<'_, u8>> {
     actor::stream_read(h as u64).map(|b| TypedArray::new(ctx, b).unwrap())
 }
 
-/// The `Process` + `Stream` API, defined in JS over the host primitives below.
-const PRELUDE: &str = r#"
-class Stream {
-  constructor(h) { this.handle = h; }
-  write(chunk) {
-    if (typeof chunk === "string") return __stream_write_text(this.handle, chunk);
-    return __stream_write(this.handle, chunk);          // Uint8Array
-  }
-  close() { __stream_close(this.handle); }
-  // Normalise the host's `undefined` (Rust None) to `null` so `read() !== null`
-  // works for end-of-stream.
-  read() { const c = __stream_read(this.handle); return c === undefined ? null : c; }  // Uint8Array | null (EOF)
-}
-globalThis.Process = {
-  self()        { return BigInt(__own_pid()); },
-  list()        { return __list().map(BigInt); },
-  send(to, msg) {
-    if (typeof msg === "string") __send_text(String(to), msg);
-    else __send(String(to), msg);                       // Uint8Array
-  },
-  receive()     { return __receive(); },                // Uint8Array
-  receiveText() { return __receive_text(); },           // string
-  register(n)   { return __register(n); },
-  whereis(n)    { const p = __whereis(n); return p === "" ? null : BigInt(p); },
-  isAlive(p)    { return __is_alive(String(p)); },
-  kill(p)       { return __kill(String(p)); },
-  setLabel(l)   { __set_label(l); },
-  openStream(to){ const h = __stream_open(String(to)); return h < 0 ? null : new Stream(h); },
-  acceptStream(){ return new Stream(__stream_accept()); },
-};
-"#;
+/// The guest JS environment, split by concern (see `bridge/`): Web API polyfills
+/// (standards-only) then the `Process`/`Stream` actor API (over the host `__*`
+/// primitives). Both are evaluated before the user's bundle.
+const WEBAPI_JS: &str = include_str!("../bridge/webapi.js");
+const PROCESS_JS: &str = include_str!("../bridge/process.js");
 
 impl Guest for Component {
     fn run() {
@@ -126,8 +100,13 @@ impl Guest for Component {
             def!("__stream_close", |h: f64| actor::stream_close(h as u64));
             def!("__stream_accept", || actor::stream_accept() as f64);
             def!("__stream_read", js_stream_read);
+            // console output → WASI stderr (shown only if the `inherit_stdio`
+            // capability is granted; discarded for a sandboxed guest).
+            def!("__print", |s: String| eprintln!("{s}"));
 
-            let _: () = ctx.eval(PRELUDE).unwrap();
+            // Web API polyfills, then the actor API, then the user's bundle.
+            let _: () = ctx.eval(WEBAPI_JS).unwrap();
+            let _: () = ctx.eval(PROCESS_JS).unwrap();
             let _: () = ctx.eval(bundle).unwrap();
         });
     }

@@ -296,6 +296,36 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_javascript_bundle_has_web_api_polyfills() {
+        // The runner installs Web API polyfills (webapi.js) before the bundle, so a
+        // TS guest gets URL/TextEncoder/etc. transparently — no host support needed.
+        const JS_RUNNER: &[u8] = include_bytes!("../../tests/fixtures/js_runner.wasm");
+        const BUNDLE: &str = r#"
+            const replyTo = Process.receiveText();
+            const u = new URL("https://example.io:8080/a?x=1");
+            const n = new TextEncoder().encode("héllo").length;   // é = 2 bytes → 6
+            Process.send(replyTo, u.hostname + "|" + u.port + "|" + n);
+        "#;
+        let rt = Runtime::new();
+        let wr = WasmRuntime::new(rt.clone()).unwrap();
+        let pre = wr
+            .prepare_component(&wr.compile_component(JS_RUNNER).unwrap(), "run")
+            .unwrap();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let collector = rt.spawn(move |mut ctx| async move {
+            let _ = tx.send(ctx.recv().await.message().unwrap());
+        });
+        let guest = wr.spawn_component(&pre);
+        rt.send(guest.pid(), BUNDLE.as_bytes().to_vec());
+        rt.send(guest.pid(), collector.pid().raw().to_string().into_bytes());
+        assert_eq!(
+            String::from_utf8(rx.await.unwrap()).unwrap(),
+            "example.io|8080|6",
+            "URL + TextEncoder polyfills work inside the guest"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_javascript_bundle_handles_binary_messages() {
         // JS receives a reply-to (text) and a binary message (Uint8Array), then
         // echoes the bytes back — proving binary marshalling both ways.
