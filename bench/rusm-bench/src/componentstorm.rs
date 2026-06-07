@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::time::Instant;
 
+use futures_util::stream::{FuturesUnordered, StreamExt};
 use rusm_otp::Runtime;
 use rusm_wasm::{PreparedComponent, WasmRuntime};
 use tokio::task::JoinHandle;
@@ -9,13 +10,11 @@ use crate::sample::Sample;
 
 /// Latency samples taken per tick (fresh, timed component spawns).
 const LATENCY_SAMPLE: usize = 64;
-/// Spawners yield this often to let instances instantiate, run and reap, and to
-/// re-check the live cap.
-const YIELD_EVERY: u32 = 64;
-/// Backpressure ceiling on live component instances — kept comfortably below the
-/// `rusm-wasm` pooling allocator's slot count so a spawn never exhausts the pool
-/// (which would crash that instance and inflate the rate). Holds the population
-/// bounded so we measure *sustainable* instantiate-and-reap throughput.
+/// Target total live component instances across all spawner workers — kept
+/// comfortably below the `rusm-wasm` pooling allocator's slot count so a spawn
+/// never exhausts the pool (which would crash that instance and inflate the
+/// rate). Bounds the population so we measure *sustainable* instantiate-and-reap
+/// throughput, and gives each worker its share of in-flight slots.
 const MAX_LIVE: usize = 100;
 
 /// A minimal but representative component: one page of linear memory (so each
@@ -52,24 +51,24 @@ impl ComponentStormEngine {
             .prepare_component(&wasm.compile_component(COMPONENT).expect("compile"), "run")
             .expect("prepare");
 
-        let workers = (0..workers.max(1))
+        // Each worker keeps a bounded set of in-flight components and **parks** on
+        // their completion (no busy-yield spin, no global counter polling) — the
+        // backpressure is the await itself, so workers sleep instead of burning a
+        // scheduler slot when at capacity.
+        let worker_count = workers.max(1);
+        let per_worker = (MAX_LIVE / worker_count).max(1);
+        let workers = (0..worker_count)
             .map(|_| {
                 let wasm = Arc::clone(&wasm);
-                let rt = runtime.clone();
                 let prepared = prepared.clone();
                 tokio::spawn(async move {
-                    let mut n: u32 = 0;
+                    let mut inflight = FuturesUnordered::new();
                     loop {
-                        let _ = wasm.spawn_component(&prepared);
-                        n = n.wrapping_add(1);
-                        if n % YIELD_EVERY == 0 {
-                            tokio::task::yield_now().await;
-                            // Backpressure: let live instances drain below the cap
-                            // so the pool is never exhausted (honest rate).
-                            while rt.process_count() > MAX_LIVE {
-                                tokio::task::yield_now().await;
-                            }
+                        while inflight.len() < per_worker {
+                            let handle = wasm.spawn_component(&prepared);
+                            inflight.push(async move { handle.join().await });
                         }
+                        inflight.next().await; // park until one finishes, then refill
                     }
                 })
             })
