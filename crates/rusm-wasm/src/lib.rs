@@ -21,23 +21,34 @@ use wasmtime::{
     PoolingAllocationConfig, Store,
 };
 
+mod actor;
+mod bridges;
+mod caps;
+
+pub use bridges::wasip2::PreparedComponent;
+pub use caps::{Capabilities, CapabilityProfile};
+
 /// How often the epoch is bumped. A guest runs at most this long before it must
 /// yield to the scheduler, so tight loops can't starve other processes.
 const EPOCH_TICK: Duration = Duration::from_millis(10);
 /// Pool slots: the most Wasm instances that may be live at once. The pooling
 /// allocator pre-reserves their memory slabs so a spawn is a slab reuse, not an
-/// mmap — the lever that makes instance-per-process cheap. Kept modest so the
-/// reservation (`MAX_INSTANCES` × `MAX_MEMORY`) stays small; raise for a busy node.
-const MAX_INSTANCES: u32 = 2048;
-/// Per-instance linear-memory reservation (virtual, copy-on-write committed).
-const MAX_MEMORY: usize = 256 << 10;
+/// mmap — the lever that makes instance-per-process cheap. The virtual reservation
+/// is `MAX_INSTANCES` × `MAX_MEMORY` (lazy, copy-on-write), so the two trade off:
+/// real components need MiBs of linear memory, so we keep the slot count modest.
+/// A busy node tunes these up (made configurable when the benchmark lands).
+const MAX_INSTANCES: u32 = 256;
+/// Per-instance linear-memory ceiling (virtual, copy-on-write). Sized for real
+/// components (a minimal Rust component already needs ~1 MiB); a per-process
+/// capability `StoreLimiter` caps usage *below* this.
+const MAX_MEMORY: usize = 16 << 20;
 
 /// Counters shared by every instance of one [`WasmRuntime`], so host functions
 /// can report aggregate activity (e.g. guest progress for the fairness scenario).
 #[derive(Default)]
-struct Counters {
+pub(crate) struct Counters {
     /// Total `notify` host-function calls across all guests.
-    notifications: AtomicU64,
+    pub(crate) notifications: AtomicU64,
 }
 
 /// Per-instance host state reachable from host functions via `Caller::data`.
@@ -56,6 +67,9 @@ pub struct WasmRuntime {
     /// Built once; host imports are resolved per *module* (into an [`InstancePre`]
     /// by [`prepare`](WasmRuntime::prepare)), never per spawn.
     linker: Linker<Host>,
+    /// The component-model counterpart of `linker`, with WASI wired in. Used by
+    /// the wasip2/p3 bridges to prepare and spawn components. Built once.
+    component_linker: wasmtime::component::Linker<bridges::WasiHost>,
     shared: Arc<Counters>,
     epoch_stop: Arc<AtomicBool>,
     epoch_ticker: Option<JoinHandle<()>>,
@@ -82,9 +96,14 @@ impl WasmRuntime {
         pool.total_memories(MAX_INSTANCES);
         pool.total_tables(MAX_INSTANCES);
         pool.max_memory_size(MAX_MEMORY);
+        // Component guests also draw a *component-instance* slot from the pool (on
+        // top of the core-instance/memory slots above); without this a component
+        // spawn can't use the pooling allocator.
+        pool.total_component_instances(MAX_INSTANCES);
         config.allocation_strategy(InstanceAllocationStrategy::Pooling(pool));
         let engine = Engine::new(&config)?;
         let linker = link_host(&engine)?;
+        let component_linker = bridges::wasip2::build_linker(&engine)?;
 
         // Bump the epoch on a cadence — on a **dedicated OS thread**, not a Tokio
         // task. The whole point is to preempt guests that are pinning the Tokio
@@ -104,6 +123,7 @@ impl WasmRuntime {
             engine,
             rt,
             linker,
+            component_linker,
             shared: Arc::new(Counters::default()),
             epoch_stop,
             epoch_ticker: Some(epoch_ticker),

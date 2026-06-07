@@ -1,0 +1,1 @@
+/Users/paul/Sources/rusm/crates/rusm-wasm/tests/fixtures/actor-echo/target/wasm32-wasip2/release/actor_echo.wasm: /Users/paul/Sources/rusm/crates/rusm-wasm/tests/fixtures/actor-echo/src/lib.rs /Users/paul/Sources/rusm/crates/rusm-wasm/tests/fixtures/actor-echo/wit/world.wit
