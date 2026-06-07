@@ -22,11 +22,13 @@
 //! its [global registry](ClusterNode::register_global) and routes there.
 //!
 //! ## Security
-//! Every link is QUIC, i.e. TLS 1.3 — encrypted and authenticated. For now a
-//! cluster shares one self-signed [`Identity`] (a *pre-shared cluster certificate*):
-//! a node only completes a handshake with a peer presenting the same cert, and the
-//! client pins that cert as its sole trust root. Per-node certificates signed by a
-//! cluster CA are a later refinement; the transport seam does not change.
+//! Every link is QUIC (TLS 1.3) and **mutually authenticated**: both ends present a
+//! certificate and verify the other against a trust anchor, so a peer without a
+//! trusted certificate is rejected at the handshake. Two trust models:
+//! - [`ClusterCa`] issues a **per-node** certificate under a shared CA — each node
+//!   holds its own key and is independently revocable (recommended);
+//! - [`Identity::generate`] makes a single self-signed certificate shared across a
+//!   small/trusted cluster (simpler, not per-node revocable).
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -36,6 +38,7 @@ use std::sync::{Arc, Mutex, Once, RwLock};
 use anyhow::{anyhow, Context as _, Result};
 use quinn::rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use quinn::{ClientConfig, Connection, Endpoint, RecvStream, SendStream, ServerConfig};
+use rcgen::{BasicConstraints, Certificate, CertificateParams, IsCa};
 use rusm_otp::{Pid, Runtime};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{oneshot, Mutex as AsyncMutex};
@@ -50,9 +53,11 @@ pub type Spawnable = Arc<dyn Fn(&Runtime, Vec<u8>) -> Pid + Send + Sync>;
 /// The outcome of a control-plane RPC: the op's reply bytes, or an error string.
 type RpcReply = Result<Vec<u8>, String>;
 
-/// The TLS server name presented and verified across a cluster. Connections pin
-/// the shared [`Identity`] as their trust root, so this is a fixed SAN, not a
-/// routable hostname (peers are reached by socket address).
+/// The TLS server name every node certificate carries as a SAN, presented and
+/// verified on each connection. A fixed cluster-wide name, not a routable hostname
+/// (peers are reached by socket address); peer trust comes from the mutual-TLS
+/// certificate check against the shared trust anchor, and the node's real name is
+/// exchanged in the handshake.
 const CLUSTER_SERVER_NAME: &str = "rusm-node";
 
 /// Largest cross-node message we will buffer off a single uni-stream (16 MiB).
@@ -69,39 +74,119 @@ fn ensure_crypto() {
     });
 }
 
-/// A self-signed node identity (certificate + private key). A whole cluster shares
-/// one `Identity` today — see the [module docs](crate#security).
+/// A **cluster certificate authority**: issues a per-node [`Identity`] signed by a
+/// shared CA. Unlike a single pre-shared cluster certificate, each node then holds
+/// its **own** private key, and a compromised node can be excluded by rotating the
+/// CA without re-keying every other node. Generate one CA per cluster and hand each
+/// node an identity from [`issue`](ClusterCa::issue).
+pub struct ClusterCa {
+    cert: Certificate,
+    cert_der: CertificateDer<'static>,
+}
+
+impl ClusterCa {
+    /// Generate a fresh cluster CA.
+    pub fn generate() -> Result<Self> {
+        let mut params = CertificateParams::new(vec!["rusm-cluster-ca".to_string()]);
+        params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+        let cert = Certificate::from_params(params).context("generating cluster CA")?;
+        let cert_der = CertificateDer::from(cert.serialize_der().context("serializing CA cert")?);
+        Ok(Self { cert, cert_der })
+    }
+
+    /// Issue a per-node identity: a fresh keypair plus a certificate for `node_name`
+    /// **signed by this CA**. Cluster membership is established by the CA signature;
+    /// the node name is embedded for traceability.
+    pub fn issue(&self, node_name: &str) -> Result<Identity> {
+        let params =
+            CertificateParams::new(vec![CLUSTER_SERVER_NAME.to_string(), node_name.to_string()]);
+        let node = Certificate::from_params(params).context("generating node certificate")?;
+        let cert = CertificateDer::from(
+            node.serialize_der_with_signer(&self.cert)
+                .context("signing node certificate")?,
+        );
+        Ok(Identity {
+            cert,
+            key_der: Arc::new(node.serialize_private_key_der()),
+            root: self.cert_der.clone(),
+        })
+    }
+}
+
+/// A node's TLS identity: its certificate, private key, and the trust anchor it
+/// checks peers against. Every cluster link is **mutually authenticated** — both
+/// ends present a certificate and verify the other against this root, so a peer
+/// without a trusted certificate is rejected at the handshake.
+///
+/// Two ways to create one:
+/// - [`ClusterCa::issue`] — a per-node certificate under a shared CA (recommended:
+///   each node has its own key and is independently revocable);
+/// - [`Identity::generate`] — a single self-signed certificate that is its own
+///   trust root, shared across a small/trusted cluster (simpler, not per-node
+///   revocable).
 #[derive(Clone)]
 pub struct Identity {
     cert: CertificateDer<'static>,
     key_der: Arc<Vec<u8>>,
+    /// The trust anchor peers are verified against — the CA (for an issued
+    /// identity) or the cert itself (for a self-signed one).
+    root: CertificateDer<'static>,
 }
 
 impl Identity {
-    /// Generate a fresh self-signed identity for the cluster.
+    /// Generate a single self-signed identity that is its own trust root — share one
+    /// across the cluster. For per-node certificates under a CA, use [`ClusterCa`].
     pub fn generate() -> Result<Self> {
         let cert = rcgen::generate_simple_self_signed(vec![CLUSTER_SERVER_NAME.to_string()])
             .context("generating self-signed cluster certificate")?;
-        let key_der = cert.serialize_private_key_der();
-        let cert_der = cert.serialize_der().context("serializing certificate")?;
+        let cert_der =
+            CertificateDer::from(cert.serialize_der().context("serializing certificate")?);
         Ok(Self {
-            cert: CertificateDer::from(cert_der),
-            key_der: Arc::new(key_der),
+            key_der: Arc::new(cert.serialize_private_key_der()),
+            root: cert_der.clone(),
+            cert: cert_der,
         })
     }
 
-    fn server_config(&self) -> Result<ServerConfig> {
-        let key = PrivateKeyDer::from(PrivatePkcs8KeyDer::from(self.key_der.as_ref().clone()));
-        ServerConfig::with_single_cert(vec![self.cert.clone()], key)
-            .context("building QUIC server config")
+    fn key(&self) -> PrivateKeyDer<'static> {
+        PrivateKeyDer::from(PrivatePkcs8KeyDer::from(self.key_der.as_ref().clone()))
     }
 
-    fn client_config(&self) -> Result<ClientConfig> {
+    fn root_store(&self) -> Result<Arc<quinn::rustls::RootCertStore>> {
         let mut roots = quinn::rustls::RootCertStore::empty();
         roots
-            .add(self.cert.clone())
-            .context("pinning cluster certificate as trust root")?;
-        ClientConfig::with_root_certificates(Arc::new(roots)).context("building QUIC client config")
+            .add(self.root.clone())
+            .context("adding cluster trust anchor")?;
+        Ok(Arc::new(roots))
+    }
+
+    /// A mutual-TLS server config: present our certificate and **require** the
+    /// connecting peer to present one signed by our trust anchor.
+    fn server_config(&self) -> Result<ServerConfig> {
+        let verifier = quinn::rustls::server::WebPkiClientVerifier::builder(self.root_store()?)
+            .build()
+            .context("building client-certificate verifier")?;
+        let crypto = quinn::rustls::ServerConfig::builder()
+            .with_client_cert_verifier(verifier)
+            .with_single_cert(vec![self.cert.clone()], self.key())
+            .context("building server TLS config")?;
+        Ok(ServerConfig::with_crypto(Arc::new(
+            quinn::crypto::rustls::QuicServerConfig::try_from(crypto)
+                .context("building QUIC server config")?,
+        )))
+    }
+
+    /// A mutual-TLS client config: present our certificate and verify the peer's
+    /// against our trust anchor.
+    fn client_config(&self) -> Result<ClientConfig> {
+        let crypto = quinn::rustls::ClientConfig::builder()
+            .with_root_certificates(self.root_store()?)
+            .with_client_auth_cert(vec![self.cert.clone()], self.key())
+            .context("building client TLS config")?;
+        Ok(ClientConfig::new(Arc::new(
+            quinn::crypto::rustls::QuicClientConfig::try_from(crypto)
+                .context("building QUIC client config")?,
+        )))
     }
 }
 
@@ -934,12 +1019,49 @@ mod tests {
         .unwrap();
         let addr_b = node_b.local_addr().unwrap();
 
-        // A different identity → the pinned trust root won't match the peer's cert.
+        // A different identity → neither side's mutual-TLS trust anchor matches.
         let node_a = ClusterNode::bind(
             "A",
             Runtime::new(),
             localhost(),
             &Identity::generate().unwrap(),
+        )
+        .unwrap();
+        assert!(node_a.connect(addr_b).await.is_err());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn nodes_issued_by_one_ca_form_a_cluster() {
+        let ca = ClusterCa::generate().unwrap();
+
+        let rt_b = Runtime::new();
+        let (_, rx) = inbox(&rt_b, "inbox");
+        let node_b = ClusterNode::bind("B", rt_b, localhost(), &ca.issue("B").unwrap()).unwrap();
+        let addr_b = node_b.local_addr().unwrap();
+
+        // A's per-node cert is signed by the same CA → mutual TLS succeeds.
+        let node_a =
+            ClusterNode::bind("A", Runtime::new(), localhost(), &ca.issue("A").unwrap()).unwrap();
+        let remote = node_a.connect(addr_b).await.unwrap();
+        remote.send("inbox", b"ca-signed hello").await.unwrap();
+        assert_eq!(recv(rx).await, b"ca-signed hello");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_node_from_a_foreign_ca_is_rejected() {
+        let ca = ClusterCa::generate().unwrap();
+        let foreign = ClusterCa::generate().unwrap();
+
+        let node_b =
+            ClusterNode::bind("B", Runtime::new(), localhost(), &ca.issue("B").unwrap()).unwrap();
+        let addr_b = node_b.local_addr().unwrap();
+
+        // An intruder issued by a *different* CA: neither side trusts the other.
+        let node_a = ClusterNode::bind(
+            "A",
+            Runtime::new(),
+            localhost(),
+            &foreign.issue("A").unwrap(),
         )
         .unwrap();
         assert!(node_a.connect(addr_b).await.is_err());
