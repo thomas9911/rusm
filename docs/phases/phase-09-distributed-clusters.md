@@ -84,10 +84,12 @@ listing of a peer's live pids, and wrong-certificate rejection — plus frame
 parse/round-trip. `cargo fmt` + clippy clean. The Wasm-free invariant holds:
 `rusm-cluster` depends on `rusm-otp`, never Wasmtime.
 
-**Note:** the dashboard's `distributed-fanout` scenario still shows synthetic data;
-the real numbers above come from the standalone `cluster_fanout` benchmark.
-Graduating the dashboard scenario entails retiring the synthetic test harness (all
-other scenarios are already real) and is tracked as follow-up wiring.
+The dashboard's `distributed-fanout` scenario was **graduated to this real engine**
+too (a hub + worker nodes, a sender pool keeping one round-trip in flight so latency
+stays representative): live, it does ~71k round-trips/sec at ~105µs p50 on the
+Balanced profile. With that, **every one of the nine dashboard scenarios now runs on
+real data — none remain synthetic.** (`Runner::start_synthetic` keeps a runtime-free
+deterministic preview mode for UI development.)
 
 ## Next
 

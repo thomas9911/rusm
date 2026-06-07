@@ -40,5 +40,6 @@ foundation on synthetic data, so every later phase has something to measure with
 Phases 1–5 made the OTP core real (processes, messaging, supervision, management,
 TCP); Phase 6 slotted in Wasmtime as the process backend; and by **Phase 7** a
 RUSM process is a real, supervised, sandboxed **WASM component** (or wasip1 core
-module) hosting WASI p1/p2/p3 — eight live benchmarks now run on real data. See
-the [roadmap](./02-roadmap.md) for where things stand.
+module) hosting WASI p1/p2/p3; by **Phase 9** nodes cluster over QUIC+TLS — and
+all nine dashboard benchmarks now run on real data. See the
+[roadmap](./02-roadmap.md) for where things stand.

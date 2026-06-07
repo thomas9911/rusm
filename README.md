@@ -29,15 +29,17 @@ Wasmtime does the isolation.
 > schedules, kills, messages, **supervises**, **manages**, and **connects** **real**
 > lightweight processes — links, monitors, `trap_exit`, exit cascades, a named
 > registry, timers, graceful shutdown, and **TCP** (one process per connection).
-> Eight benchmarks show real numbers (release): spawn-storm **~2.4M spawns/sec**,
+> Nine benchmarks show real numbers (release) — *every* dashboard scenario now runs
+> on live data: spawn-storm **~2.4M spawns/sec**,
 > ping-pong **~21M messages/sec** (round-trip p50 <1 µs), fault-recovery
 > **~285k restarts/sec**, fairness keeping bystanders at **~50M+ ops/sec**
 > (peaking past **400M** when cores are free) under tight-loop spinners,
 > module-storm **~475k wasip1 core-module spawns/sec** (the direct Lunatic
 > head-to-head), component-storm **~440k component spawns/sec**, stream-pipe
-> piping bytes between processes at **multiple GB/sec**, and connection-storm
+> piping bytes between processes at **multiple GB/sec**, connection-storm
 > holding **thousands of concurrent connections** (connect p50 sub-millisecond) —
-> the connection ceiling is the OS, not RUSM. These are measured under everyday
+> the connection ceiling is the OS, not RUSM — and distributed-fanout doing
+> **~550k cross-node messages/sec** over QUIC+TLS. These are measured under everyday
 > load and scale up with free CPU. **Distributed clusters (Phase 9):** the
 > Wasm-free `rusm-cluster` crate connects nodes over **QUIC + TLS** so processes
 > message across machines — cross-node `send`, a gossiped **global registry**,

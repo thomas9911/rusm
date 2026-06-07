@@ -17,8 +17,9 @@ stream**, and routes each message on its own **uni-stream**. It gives cross-node
 `send`, a **gossiped global registry** (`register_global`/`whereis_global`/
 `send_global`), **remote spawn** (named `Spawnable` factories), and **live attach**
 (`remote_pids`) over one request/reply control-plane RPC — ~550k cross-node msgs/s,
-~39µs p50 round-trip (the standalone `cluster_fanout` bench; the dashboard
-`distributed-fanout` scenario is still synthetic). The Wasmtime backend (`rusm-wasm`, the *only* crate that
+~39µs p50 round-trip (the standalone `cluster_fanout` bench). The live
+`distributed-fanout` dashboard scenario now runs on this real engine — **all nine
+dashboard scenarios are real; none remain synthetic**. The Wasmtime backend (`rusm-wasm`, the *only* crate that
 touches Wasmtime) runs each component instance-per-process via the **component
 model** (`wasmtime-wasi`; `bridges/{wasip1,wasip2,wasip3}.rs` over a shared core).
 The component linker wires **WASI p2 and p3** — both `@0.2.0` and `@0.3.0`
