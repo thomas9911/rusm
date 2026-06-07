@@ -28,6 +28,10 @@ socket2 = "0.5.7"
 # Runnable examples live in the repo-root `examples/<name>/` directories,
 # each with its own README.
 [[example]]
+name = "host_components"
+path = "../../examples/host_components/main.rs"
+
+[[example]]
 name = "headless_run"
 path = "../../examples/headless_run/main.rs"
 

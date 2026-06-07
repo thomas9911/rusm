@@ -12,6 +12,7 @@ shows, how to run it, and the output to expect). Run any from the repo root:
 
 | Example | Shows | Command |
 | --- | --- | --- |
+| [`host_components`](./host_components/) | **Host real WASM components** as isolated, introspectable, capability-sandboxed processes (Phase 7) — the heart of RUSM. | `cargo run -p rusm-bench --example host_components` |
 | [`headless_run`](./headless_run/) | Drive the benchmark runner directly (no network) and print sampled ticks. | `cargo run -p rusm-bench --example headless_run` |
 | [`synthetic_source`](./synthetic_source/) | The deterministic synthetic data source — reproducible per `(scenario, tick)`. | `cargo run -p rusm-bench --example synthetic_source` |
 | [`observer_overhead`](./observer_overhead/) | The observer's detail on/off switch (basis of the overhead proof). | `cargo run -p rusm-bench --example observer_overhead` |
