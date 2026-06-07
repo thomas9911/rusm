@@ -25,11 +25,18 @@ builds this itself on the control channel. The closest prior art,
 diagnostics over a gRPC endpoint — useful inspiration, but not a process-aware
 REPL you can spawn and message through.
 
-## Phase 0 today
+## Where it stands (Phase 9)
 
-The plumbing already exists in miniature: `rusm node start` serves a
-control/observer channel over WebSocket, and both the dashboard and `rusm attach`
-connect to it. The processes are synthetic for now; the transport, the protocol,
-and the two clients are real.
+Two layers are real:
 
-> Full cross-node attach lands in Phase 9; the local channel exists today.
+- **Local channel (Phase 0+):** `rusm node start` serves a control/observer channel
+  over WebSocket; the dashboard and `rusm attach` connect to it to run scenarios,
+  toggle observer detail, and watch live process samples.
+- **Cross-node primitive (Phase 9):** over the cluster transport, a node's
+  control-plane RPC answers `remote_pids(node)` — list the processes alive on a
+  *peer*. That's the building block behind attaching to a remote node; richer
+  remote introspection (per-process info, message/spawn-through) extends the same
+  RPC.
+
+> The transport, control channel, and remote listing are real; the full remote
+> `rusm attach <node>` REPL surface builds on this primitive.

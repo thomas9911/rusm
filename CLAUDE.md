@@ -8,8 +8,17 @@ distributed clusters you can hook into live. See `README.md` for the pitch and
 
 ## Status
 
-**Phase 8 of 11 — complete.** RUSM **hosts real WASM components** as isolated,
-supervised processes. The Wasmtime backend (`rusm-wasm`, the *only* crate that
+**Phase 9 of 11 — complete.** RUSM **hosts real WASM components** as isolated,
+supervised processes, and now **clusters across nodes**. The Wasm-free
+**`rusm-cluster`** crate (over `rusm-otp`, never Wasmtime) connects nodes over
+**QUIC + TLS** (quinn + rustls/ring; a pre-shared cluster cert): a `ClusterNode`
+wraps a `Runtime` with a QUIC endpoint, exchanges names on a per-peer **control
+stream**, and routes each message on its own **uni-stream**. It gives cross-node
+`send`, a **gossiped global registry** (`register_global`/`whereis_global`/
+`send_global`), **remote spawn** (named `Spawnable` factories), and **live attach**
+(`remote_pids`) over one request/reply control-plane RPC — ~550k cross-node msgs/s,
+~39µs p50 round-trip (the standalone `cluster_fanout` bench; the dashboard
+`distributed-fanout` scenario is still synthetic). The Wasmtime backend (`rusm-wasm`, the *only* crate that
 touches Wasmtime) runs each component instance-per-process via the **component
 model** (`wasmtime-wasi`; `bridges/{wasip1,wasip2,wasip3}.rs` over a shared core).
 The component linker wires **WASI p2 and p3** — both `@0.2.0` and `@0.3.0`
@@ -95,8 +104,10 @@ secure cluster transport. See
   weak tests, readability, DRY, and separation of concerns.
 - **Wasm-free core (hard boundary).** The Erlang/OTP core (`rusm-otp`:
   processes, messaging, supervision, registry, scheduler) must **never** depend on
-  or reference Wasmtime. All Wasm lives in `rusm-wasm` (Phase 6). Wasm must not
-  bleed into Wasm-irrelevant code; the dependency graph enforces it.
+  or reference Wasmtime. All Wasm lives in `rusm-wasm` (Phase 6). The distributed
+  transport (`rusm-cluster`, Phase 9) is likewise Wasm-free — it sits over
+  `rusm-otp` (quinn/rustls/rcgen, no Wasmtime). Wasm must not bleed into
+  Wasm-irrelevant code; the dependency graph enforces it.
 - **Total awareness on sweeping changes.** For any rename/renumber/API change,
   grep the *entire* repo, fix every hit, then re-grep to prove zero stragglers.
 
@@ -117,6 +128,7 @@ cd bench/dashboard && bun test --coverage             # dashboard tests
 
 ## Layout
 
+`crates/rusm-otp`, `crates/rusm-wasm`, `crates/rusm-cluster`,
 `crates/rusm-metrics`, `crates/rusm-observer`, `bench/rusm-bench` (lib+bin),
 `rusm-cli` (`rusm`), `bench/dashboard` (Bun/React), `examples/`, `docs/`.
 Per-crate purpose: see `README.md` → Crates.

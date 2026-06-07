@@ -53,7 +53,7 @@ in-guest `Supervisor` strategies — is shipped.)
 | 5 | DX/toolchain friction | **Largely a non-issue** — a TS dev needs only Bun (the `rusm` npm package + `rusm dev` watch/reload); wasi-sdk is a one-time *maintainer* build dep (the runner is prebuilt). Remaining nicety: a `rusm new` scaffold. |
 | 6 | TS guests lacked Web APIs | **Solved** — full Web API polyfills (`bridge/webapi.js`: TextEncoder/URL/Headers/ReadableStream/…), transparent to the dev. `fetch` awaits `wasi:http` (the one genuinely network-bound API). |
 | 7 | Selective receive is O(n) over the save queue | **Accepted** — inherent to selective-receive semantics (so is the BEAM's); the common `recv` path is O(1). |
-| 8 | Distribution is roadmap; `distributed-fanout` is synthetic | **Roadmap (Phase 9)** — QUIC+TLS cluster. |
+| 8 | Distribution is roadmap; `distributed-fanout` is synthetic | **Solved (Phase 9)** — the Wasm-free `rusm-cluster` QUIC+TLS transport: cross-node send, gossiped global registry, remote spawn, live attach (~550k cross-node msgs/s). The standalone `cluster_fanout` bench has real numbers; the *dashboard* `distributed-fanout` scenario is still synthetic (graduation pending). |
 
 ## Verdict
 

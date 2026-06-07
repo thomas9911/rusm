@@ -16,7 +16,9 @@ them as real **Wasm instances** behind three bridges (wasip1 core modules, wasip
 components, wasip3 `@0.3.0`), with default-deny capabilities, instance-per-process,
 pooling + CoW + epoch. All **eight** live scenarios run on real data — including
 **fairness**, where Wasm spinners saturate every core yet bystanders keep
-progressing. The later phases (guest crate, clustering) are still *planned*. The value is in the
+progressing. The **guest crate** (Phase 8: `rusm-rs` + `rusm-ts`) and **distributed
+clusters** (Phase 9: `rusm-cluster`, QUIC+TLS) are now built too; remaining phases
+are scale/hardening and the standard-WASI surface. The value is in the
 **efficiency playbook** below.
 
 > ### Does RUSM handle lightweight processes as efficiently as Lunatic — today?
@@ -75,7 +77,7 @@ phase, same themes, same order.
 | 7 ✅ | **Component hosting** (component model, WASI p2 + p3, capabilities, actor WIT ABI, app model) | ✅ done (~440k component spawns/s; default-deny caps + memory limits; component-storm live) | ❌ **no component-model host** (core modules only) | ⚡ **ahead — an axis Lunatic lacks** |
 | 7b | wasip1 bridge (full WASI + raw actor ABI + byte streams), wasip3 interfaces on the component linker | ✅ done | ✅ wasip1 | ⚡ ahead (p3 + components) |
 | 8 | Guest crate | ✅ `rusm-rs` + `rusm-ts` (service macro / typed client, call/cast/stream/callbacks) | 🅛 `lunatic-rs` (Rust only) | ⚡ ahead — TS *and* Rust guests, one wire |
-| 9 | Distributed clusters + live attach | ❌ | ✅ (Axum + Submillisecond) | — not built |
+| 9 | Distributed clusters + live attach | ✅ `rusm-cluster` (QUIC+TLS, cross-node send, gossiped global registry, remote spawn, live attach) | ✅ (QUIC + distributed registry) | ✅ at parity — secure cluster + global registry, one persistent conn/node, message-per-stream (no custom congestion layer) |
 | 10 | Performance (pooling + CoW + epoch) | ❌ | ⚠️ OnDemand + fuel | — TBD |
 | — | SQLite host API | ❌ | 🅛 | — n/a |
 

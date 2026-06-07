@@ -9,7 +9,7 @@ core** (pure Rust); **WebAssembly is the sandboxed execution backend** that late
 runs each process as an isolated instance. Rust + Tokio do the scheduling;
 Wasmtime does the isolation.
 
-> **Status: Phase 8 of 11 complete.** RUSM **hosts real WASM components** as
+> **Status: Phase 9 of 11 complete.** RUSM **hosts real WASM components** as
 > isolated, supervised processes. The Wasmtime backend (`rusm-wasm`) runs each
 > instance-per-process behind three bridges — **wasip1** (core modules + a raw
 > `rusm::*` actor ABI + cross-process byte streams), **wasip2** (components, the
@@ -38,8 +38,11 @@ Wasmtime does the isolation.
 > piping bytes between processes at **multiple GB/sec**, and connection-storm
 > holding **thousands of concurrent connections** (connect p50 sub-millisecond) —
 > the connection ceiling is the OS, not RUSM. These are measured under everyday
-> load and scale up with free CPU. Clustering comes in
-> later phases. See the [roadmap](docs/02-roadmap.md).
+> load and scale up with free CPU. **Distributed clusters (Phase 9):** the
+> Wasm-free `rusm-cluster` crate connects nodes over **QUIC + TLS** so processes
+> message across machines — cross-node `send`, a gossiped **global registry**,
+> **remote spawn**, and **live attach** — at **~550k cross-node messages/sec**
+> (~39µs p50 round-trip, loopback). See the [roadmap](docs/02-roadmap.md).
 
 ## Why
 
@@ -154,6 +157,7 @@ by construction** — Wasm lives only in the `rusm-wasm` backend.
 | --- | --- | --- |
 | `rusm-otp` | lib | **The Erlang/OTP core** — processes, scheduler, mailboxes & selective receive, links/monitors/supervision, registry, timers, TCP. Pure Rust, **no `wasmtime` dependency** (usable standalone). Built up across Phases 1–5. |
 | `rusm-wasm` | lib | **The Wasmtime backend** — the *only* crate that touches Wasmtime; runs each process as a sandboxed Wasm instance behind three bridges (`wasip1` core modules + raw actor ABI + byte streams, `wasip2` components + WIT actor world, `wasip3` `@0.3.0` interfaces), with default-deny capabilities, epoch preemption, pooling + CoW — all behind the same `rusm-otp` API. |
+| `rusm-cluster` | lib | **The distributed transport** (Phase 9) — connects nodes over QUIC + TLS for cross-node `send`, a gossiped global registry, remote spawn, and live attach. Over `rusm-otp`, **no `wasmtime` dependency**. |
 | `rusm-metrics` | lib | Counters, HdrHistogram-backed latency percentiles, ring-buffer time-series. |
 | `rusm-observer` | lib | Low-overhead live-observer snapshots — aggregate counters plus a sampled per-instance table, with a detail on/off toggle. |
 | `rusm-bench` | lib + bin | Scenarios, the synthetic data source, the eight real engines (spawn-storm, ping-pong, fault-recovery, connection-storm, fairness, module-storm, component-storm, stream-pipe), the run aggregator, the wire protocol, and the WebSocket server. Binary: `rusm-bench serve` / `run`. |

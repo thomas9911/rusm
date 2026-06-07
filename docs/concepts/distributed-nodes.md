@@ -1,35 +1,49 @@
 # Concept — distributed nodes
 
-A single RUSM node is a host process running many Wasm processes. A **cluster** is
+A single RUSM node is a host process running many processes. A **cluster** is
 several nodes — on different machines — connected so processes can spawn and
-message across them, exactly like distributed Erlang.
+message across them, exactly like distributed Erlang. This ships in the Wasm-free
+[`rusm-cluster`](https://github.com/archan937/rusm) crate over `rusm-otp`.
 
 ## Connecting
 
-Nodes connect over **QUIC** with **TLS** (think `Node.connect/1` + epmd, but
-secure by default). Each node has a name; the cluster tracks which names are
-reachable. Untrusted certificates are rejected.
+Nodes connect over **QUIC** with **TLS 1.3** (think `Node.connect/1`, but secure by
+default). Each node has a name; on connect, both ends exchange names over a
+dedicated control stream and remember the peer. A whole cluster shares one
+self-signed certificate (a *pre-shared cluster cert*) — a peer presenting the wrong
+certificate is rejected at the handshake. Per-node certs signed by a cluster CA are
+a later refinement.
 
 ## Location transparency
 
 Once connected:
 
-- **Remote spawn** — start a process on another node and get back a pid that
-  works like any local pid.
-- **Cross-node `send`** — the host routes a message to the right node's mailbox;
-  the sender doesn't care where the target lives.
-- **Distributed registry** — a `:global`-style name → pid map spanning the
-  cluster, so services can be found by name from any node.
+- **Cross-node `send`** — `node.send("london", "greeter", bytes)` routes to the
+  process registered as `greeter` on `london`; the sender doesn't open the socket
+  itself.
+- **Global registry** — `register_global(name, pid)` publishes a name cluster-wide
+  by gossiping it to every peer; `send_global(name, bytes)` resolves the owning
+  node and routes there, so a service is reachable by name from anywhere.
+- **Remote spawn** — a node registers spawnable factories by name; a peer calls
+  `spawn_remote(node, factory, args)` and gets back the pid spawned on that node.
+  (A closure can't cross the wire, so a node only spawns work it's been taught —
+  explicit and capability-friendly.)
+
+## Wire shape
+
+Each link multiplexes a single long-lived **control stream** (name exchange,
+registry gossip, the request/reply RPC behind remote spawn and live attach) and one
+**uni-stream per message** (so messages never head-of-line-block each other). On
+loopback the transport does ~550k cross-node messages/sec at ~39µs p50 round-trip —
+see the [`cluster_fanout`](https://github.com/archan937/rusm) benchmark.
 
 ## Testing it
 
-An `ex_united`-style harness boots several nodes in one test and connects them,
-so cross-node spawn/send and registry lookup are all TDD-able. (`ex_united` is the
-hex package the author wrote to do this for Elixir.)
+Tests boot several nodes in one process and connect them on loopback, so cross-node
+send, the global registry, remote spawn, and live-attach listing are all TDD-able
+with no external network.
 
 ## Hooking in
 
 You can also attach to any running node to inspect it live — see
 [live attach](./live-attach.md).
-
-> Planned for Phase 9.
