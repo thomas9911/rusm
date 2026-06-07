@@ -226,29 +226,50 @@ componentizes directly.
 TypeScript guests are **first-class, sandboxed RUSM processes** — the
 `genius-wasmcloud` model, **no jco**. RUSM ships one **js-runner** component: it
 embeds [rquickjs](https://github.com/DelSkayn/rquickjs) (QuickJS, compiled to
-`wasm32-wasip2`, ~658 KB) and runs your JS, exposing a `Process` global bridged to
-the actor world. You write TS, **Bun** bundles it to one `.js`, and the runner
+`wasm32-wasip2`, ~680 KB) and runs your JS, exposing a `Process` global bridged to
+the actor world. You write TS; **Bun** bundles it to one `.js`; the runner
 executes it inside the same sandbox (capabilities, memory cap, epoch preemption)
-as a Rust component:
+as a Rust component. A TS component is just a folder with an `index.ts`:
 
-```js
-// worker.ts → bundled by Bun → run by the js-runner
-const replyTo = Process.receive();          // block for a message
-Process.setLabel("ts-worker");
-Process.send(replyTo, "pong from " + Process.self());
+```
+components/worker/
+├── index.ts
+└── rusm.d.ts        # ambient types for the Process API (ships with the runner)
 ```
 
-Blocking JS "just works": `Process.receive()` suspends the whole instance's fiber
-until a message arrives — no async/await needed, exactly like a Rust guest. The
-full `Process` API (`self`/`list`/`send`/`receive`/`register`/`whereis`/`isAlive`/
-`kill`/`setLabel`) is bridged and proven by a test that drives it entirely from JS.
+```ts
+/// <reference path="./rusm.d.ts" />
+const replyTo = Process.receiveText();        // block for a message
+Process.setLabel("ts-worker");
+Process.send(replyTo, `pong from ${Process.self()}`);
+```
 
-> **Being formalised (Phase 8 polish).** The runtime is real; the ergonomic
-> packaging is in progress: `rusm build` auto-running **Bun** on TS components,
-> the `rusm.toml` app-model wiring a TS source to the runner, TS type
-> definitions, binary (non-string) message marshalling, and exposing the
-> [stream ops](#streaming-from-a-component) to JS. Also the **`rusm-rs`** Rust
-> guest crate (ergonomic spawn/Mailbox/Supervisor) — the other half of Phase 8.
+Declare it in `rusm.toml` next to your Rust components — same manifest, same
+capability profiles:
+
+```toml
+[[components]]
+name = "worker"
+capability = "sandboxed"
+```
+
+`rusm build` detects the `index.ts` and runs `bun build --format=iife` →
+`wasm/worker.js` (a Rust component builds to `wasm/<name>.wasm` instead). `rusm run`
+loads `.js` artifacts on the shared js-runner under their declared profile. Blocking
+JS "just works": `Process.receiveText()` suspends the whole instance's fiber until a
+message arrives — no async/await, exactly like a Rust guest. The full `Process` API
+(`self`/`list`/`send`/`receive`/`receiveText`/`register`/`whereis`/`isAlive`/`kill`/
+`setLabel`/`openStream`/`acceptStream`) is bridged and typed by `rusm.d.ts`; binary
+(`Uint8Array`) messages and [byte streams](#streaming-from-a-component) work from JS
+too, and the Web APIs the runner polyfills (`URL`, `TextEncoder`, `Headers`,
+`ReadableStream`, `console`) are simply present. See the runnable
+`host_ts_component` example.
+
+> **`fetch` is deferred.** It rejects with a clear error until RUSM hosts
+> `wasi:http` (roadmap) — it's not silently missing.
+
+> **The other half of Phase 8** is the **`rusm-rs`** Rust guest crate (ergonomic
+> spawn/Mailbox/AbstractProcess/Supervisor over the raw actor ABI) — not started.
 
 ## Process management from inside a component (Rust)
 
