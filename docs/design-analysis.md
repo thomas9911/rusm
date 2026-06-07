@@ -36,10 +36,11 @@ as lackings are closed.
 1. **HTTP(S)/WS(S)/SSE serving via `wasi:http`** — pairs with the GB/s streaming;
    also unlocks `fetch` in TS guests (Tokio HTTP client + fiber suspension).
 2. **Distributed cluster (Phase 9, QUIC+TLS)** — single-node → horizontal.
-3. **In-guest `Supervisor` strategies** for `rusm-rs`/`rusm-ts` (the guest crates,
-   service macros, and typed clients shipped in Phase 8).
-4. **A true head-to-head benchmark vs Lunatic.**
-5. **On-demand instance tier** above the pool (see #1).
+3. **A true head-to-head benchmark vs Lunatic.**
+4. **On-demand instance tier** above the pool (see #1).
+
+(Phase 8 — the `rusm-rs`/`rusm-ts` guest crates, service macros, typed clients, and
+in-guest `Supervisor` strategies — is shipped.)
 
 ## Lackings — status
 
@@ -48,8 +49,8 @@ as lackings are closed.
 | 1 | Wasm-instance concurrency ceiling | **Mitigated** — configurable via `WasmRuntime::with_limits`; default raised 256→1024 (lazy virtual reservation). A true "millions" tier needs an on-demand fallback above the pool — **roadmap (Phase 10)**. |
 | 2 | Actor ABI not capability-scoped (untrusted code could kill/enumerate any process) | **Solved** — default-deny `allow_process_control`; a sandboxed guest manages only itself. Enforced on both bridges, gate-tested. |
 | 3 | Unbounded mailboxes (a fast producer can grow a slow consumer's mailbox) | **Roadmap** — opt-in bounded mailbox (load-shed/back-pressure), reusing the opt-in depth counter. Erlang has the same default. |
-| 4 | Shallow supervision (links/monitors/restart-bool, not OTP strategies) | **Roadmap** — `one_for_one`/`one_for_all`/`rest_for_one` + restart intensity, with `rusm-rs`'s `Supervisor` (Phase 8). |
-| 5 | DX/toolchain friction | **Largely a non-issue** — a TS dev needs only Bun; wasi-sdk is a one-time *maintainer* build dep (the runner is prebuilt). Remaining: a `rusm new` scaffold + finishing rusm-ts packaging — **roadmap (Phase 8)**. |
+| 4 | Shallow supervision (links/monitors/restart-bool, not OTP strategies) | **Solved (in-guest)** — Phase 8 ships an in-guest `Supervisor` (`one_for_one`/`one_for_all`/`rest_for_one` + `max_restarts`) over a `monitor` ABI, in both `rusm-rs` and `rusm-ts`. |
+| 5 | DX/toolchain friction | **Largely a non-issue** — a TS dev needs only Bun (the `rusm` npm package + `rusm dev` watch/reload); wasi-sdk is a one-time *maintainer* build dep (the runner is prebuilt). Remaining nicety: a `rusm new` scaffold. |
 | 6 | TS guests lacked Web APIs | **Solved** — full Web API polyfills (`bridge/webapi.js`: TextEncoder/URL/Headers/ReadableStream/…), transparent to the dev. `fetch` awaits `wasi:http` (the one genuinely network-bound API). |
 | 7 | Selective receive is O(n) over the save queue | **Accepted** — inherent to selective-receive semantics (so is the BEAM's); the common `recv` path is O(1). |
 | 8 | Distribution is roadmap; `distributed-fanout` is synthetic | **Roadmap (Phase 9)** — QUIC+TLS cluster. |

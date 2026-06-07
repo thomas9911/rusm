@@ -8,7 +8,7 @@ distributed clusters you can hook into live. See `README.md` for the pitch and
 
 ## Status
 
-**Phase 7 of 10 — complete.** RUSM **hosts real WASM components** as isolated,
+**Phase 8 of 11 — complete.** RUSM **hosts real WASM components** as isolated,
 supervised processes. The Wasmtime backend (`rusm-wasm`, the *only* crate that
 touches Wasmtime) runs each component instance-per-process via the **component
 model** (`wasmtime-wasi`; `bridges/{wasip1,wasip2,wasip3}.rs` over a shared core).
@@ -58,20 +58,23 @@ modules (raw ABI) and **components** (the `rusm:runtime` WIT world:
 (Phase 8, rusm-ts core): the **js-runner** component embeds rquickjs (QuickJS →
 `wasm32-wasip2`, ~658 KB, built with wasi-sdk) and runs a Bun-bundled JS file,
 bridging a `Process` global to the actor world — a JS guest is a first-class
-sandboxed process (proven by test). **Phase 8 (in progress) — the guest crates are
-done**: **rusm-ts** (service components = exported functions; a worker =
-`export default`; the concealed typed client `spawn<typeof Svc>("svc")` with call /
-`for await` streaming / callbacks / `.cast`; `rusm build` Bun→cjs; app-model loader;
-the importable **`rusm` npm package** for `Process`/`spawn`/types; custom capability
+sandboxed process (proven by test). **Phase 8 (guest ergonomics) is complete**:
+**rusm-ts** (service components = exported functions; a worker = `export default`;
+the concealed typed client `spawn<typeof Svc>("svc")` with call / `for await`
+streaming / callbacks / `.cast`; `rusm build` Bun→cjs; app-model loader; the
+importable **`rusm` npm package** for `Process`/`spawn`/types; custom capability
 profiles) and **rusm-rs** (the Rust twin — `Pid`/`send`/`receive` (serde JSON) /
 `spawn` / registry / `Stream` over the wit-bindgen library/binary split, plus a
 `#[rusm_rs::service]` macro → dispatch loop + typed `Client` with
 call/cast/streaming/callbacks, same JSON wire — Rust and TS guests interoperate).
+Both guests get an in-guest **`Supervisor`** (one-for-one / one-for-all /
+rest-for-one over a `monitor` ABI; a dead child arrives as a `__down` message — no
+polling), and **`rusm dev`** watches `./components` and rebuilds + reloads on edit.
 Spawn-from-guest is a capability-gated, non-escalating actor-ABI op (the runner
 wraps each bundle in a CommonJS scope so its top-level vars can't clobber the
-runtime globals). **Phase 8 still open:** in-guest `Supervisor` strategies, `rusm
-dev` filesystem watch/reload, and a native p3-typed `stream<u8>` WIT signature. TLS
-folds into the Phase 9 secure cluster transport. See
+runtime globals). Deferred to Phase 11: a native p3-typed `stream<u8>` WIT
+signature (byte streams already work over a handle ABI). TLS folds into the Phase 9
+secure cluster transport. See
 `docs/02-roadmap.md`.
 
 ## Tech stack

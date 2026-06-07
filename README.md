@@ -9,15 +9,20 @@ core** (pure Rust); **WebAssembly is the sandboxed execution backend** that late
 runs each process as an isolated instance. Rust + Tokio do the scheduling;
 Wasmtime does the isolation.
 
-> **Status: Phase 7 of 10 complete.** RUSM now **hosts real WASM components** as
+> **Status: Phase 8 of 11 complete.** RUSM **hosts real WASM components** as
 > isolated, supervised processes. The Wasmtime backend (`rusm-wasm`) runs each
 > instance-per-process behind three bridges — **wasip1** (core modules + a raw
 > `rusm::*` actor ABI + cross-process byte streams), **wasip2** (components, the
-> `rusm:runtime` **WIT actor world** — `self`/`send`/`receive`/`list`/`info`/`kill`/
-> `register`, the Erlang `Process` API in any language), and **wasip3** (the
-> `@0.3.0` async WASI interfaces). **Default-deny capability profiles**
-> (fs/net/env/memory), epoch preemption, and a spawn path tuned to **~440k
-> component spawns/sec**. An **app model** lets you
+> `rusm:runtime` **WIT actor world** — `self`/`spawn`/`monitor`/`send`/`receive`/
+> `list`/`info`/`kill`/`register`, the Erlang `Process` API in any language), and
+> **wasip3** (the `@0.3.0` async WASI interfaces). **Default-deny capability
+> profiles** (fs/net/env/memory/spawn), epoch preemption, and a spawn path tuned to
+> **~440k component spawns/sec**. **Guest ergonomics (Phase 8):** write components
+> in **TypeScript** (the `rusm` npm package) or **Rust** (the `rusm-rs` crate) — a
+> service is just exported functions, called from another component through a
+> concealed **typed client** (`spawn<typeof Svc>("svc")` → `await svc.method(...)`,
+> with streaming + callbacks), with an in-guest **`Supervisor`** (one/all/rest-for-one)
+> and `rusm dev` watch+reload. An **app model** lets you
 > `rusm dev` a project: `rusm.toml` `[[components]]`, source under `components/`,
 > built to `./wasm/`, spawned under their capabilities — env the Rust way (process
 > env, then `.env`). Underneath, the Wasm-free OTP core (`rusm-otp`) spawns,

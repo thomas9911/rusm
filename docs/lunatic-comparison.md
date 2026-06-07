@@ -198,7 +198,7 @@ a true head-to-head benchmark to put numbers on the delta.
 
 | Borrow from Lunatic | Why it helps | RUSM plan |
 | --- | --- | --- |
-| `lunatic-rs` API shape — spawn / `Mailbox` / `AbstractProcess` / `Supervisor` (separate repo) | a familiar, ergonomic guest API | ✅ `rusm-rs` ships `Pid`/`send`/`receive`/`spawn`/`Stream` + a `#[service]` macro (typed `Client`); in-guest `Supervisor` strategies remain |
+| `lunatic-rs` API shape — spawn / `Mailbox` / `AbstractProcess` / `Supervisor` (separate repo) | a familiar, ergonomic guest API | ✅ `rusm-rs` *and* `rusm-ts` ship `Pid`/`send`/`receive`/`spawn`/`Stream`, a `#[service]` macro (typed `Client`), and an in-guest `Supervisor` (one-for-one / one-for-all / rest-for-one) |
 
 ## Phase 9 — Distributed clusters + live attach
 

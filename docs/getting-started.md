@@ -230,15 +230,12 @@ Build and run the whole app:
 ```sh
 rusm build        # cargo build --target wasm32-wasip2 per components/* → ./wasm/
 rusm run          # spawn them per rusm.toml
-rusm dev          # build, then run (one step)
+rusm dev          # build + run, then watch ./components and reload on edit
 ```
 
 One toolchain, no jco, no cargo-component — `cargo build --target wasm32-wasip2`
-componentizes directly.
-
-> **Roadmap.** `rusm dev` builds then runs today; **automatic rebuild + reload on
-> file change** (true watch mode) is a follow-on. For now, re-run `rusm dev` after
-> editing a component.
+componentizes directly. **`rusm dev`** keeps running: edit a component and save,
+and it rebuilds + reloads it automatically (a dependency-free mtime watch).
 
 ## 5. A TS / JS WASM component (source only)
 
