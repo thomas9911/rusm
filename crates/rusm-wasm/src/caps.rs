@@ -10,6 +10,7 @@
 
 use std::path::PathBuf;
 
+use wasmtime_wasi::p1::WasiP1Ctx;
 use wasmtime_wasi::{DirPerms, FilePerms, WasiCtx, WasiCtxBuilder};
 
 /// Intended per-profile memory ceilings (logical caps enforced by a
@@ -148,8 +149,9 @@ impl Capabilities {
         self.max_memory
     }
 
-    /// Builds the WASI context these capabilities describe.
-    pub(crate) fn build_wasi(&self) -> anyhow::Result<WasiCtx> {
+    /// Builds the WASI builder these grants describe — the single source of truth
+    /// shared by the component (`build_wasi`) and core-module (`build_wasi_p1`) paths.
+    fn configure(&self) -> anyhow::Result<WasiCtxBuilder> {
         let mut builder = WasiCtxBuilder::new();
         if self.inherit_stdio {
             builder.inherit_stdio();
@@ -164,7 +166,18 @@ impl Capabilities {
             builder.inherit_network();
             builder.allow_tcp(true);
         }
-        Ok(builder.build())
+        Ok(builder)
+    }
+
+    /// Builds the WASI **component** (p2/p3) context these capabilities describe.
+    pub(crate) fn build_wasi(&self) -> anyhow::Result<WasiCtx> {
+        Ok(self.configure()?.build())
+    }
+
+    /// Builds the WASI **preview1** (core-module) context — the same grants, wired
+    /// for the `wasi_snapshot_preview1` import surface a core module links against.
+    pub(crate) fn build_wasi_p1(&self) -> anyhow::Result<WasiP1Ctx> {
+        Ok(self.configure()?.build_p1())
     }
 }
 
@@ -225,6 +238,21 @@ mod tests {
             .allow_network(true)
             .inherit_stdio(true)
             .build_wasi()
+            .is_ok());
+    }
+
+    #[test]
+    fn build_wasi_p1_shares_the_same_grants() {
+        // The preview1 context is built from the same configuration as the
+        // component one — both paths must accept the full grant set.
+        assert!(Capabilities::nothing().build_wasi_p1().is_ok());
+        let tmp = std::env::temp_dir();
+        assert!(Capabilities::nothing()
+            .preopen(&tmp, "/ro", true)
+            .env("A", "B")
+            .allow_network(true)
+            .inherit_stdio(true)
+            .build_wasi_p1()
             .is_ok());
     }
 }

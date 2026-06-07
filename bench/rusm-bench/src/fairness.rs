@@ -47,15 +47,15 @@ impl FairnessEngine {
 
         let spinner = wasm.compile(SPINNER).expect("compile spinner");
         let bystander = wasm.compile(BYSTANDER).expect("compile bystander");
-        let spinner = wasm.prepare(&spinner).expect("prepare spinner");
-        let bystander = wasm.prepare(&bystander).expect("prepare bystander");
+        let spinner = wasm.prepare(&spinner, "run").expect("prepare spinner");
+        let bystander = wasm.prepare(&bystander, "run").expect("prepare bystander");
 
         let mut processes = Vec::with_capacity(spinners + bystanders);
         for _ in 0..spinners {
-            processes.push(wasm.spawn(&spinner, "run"));
+            processes.push(wasm.spawn(&spinner));
         }
         for _ in 0..bystanders {
-            processes.push(wasm.spawn(&bystander, "run"));
+            processes.push(wasm.spawn(&bystander));
         }
 
         Self {
