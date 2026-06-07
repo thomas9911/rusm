@@ -123,9 +123,15 @@ impl Guest for Component {
             let _: () = ctx
                 .eval("globalThis.module={exports:{}};globalThis.exports=module.exports;")
                 .unwrap();
-            // The user's bundle: a bare script runs now; a service/worker only
-            // registers its exports here, for __rusm_entry to drive.
-            let _: () = ctx.eval(bundle).unwrap();
+            // The user's bundle, in a CommonJS module scope: wrapping it in a
+            // function keeps its top-level `var`s (e.g. a bundled `var spawn` from
+            // the `rusm` package) out of the global object, where a classic eval
+            // would leak them and clobber the runner's globals (Process/spawn/…).
+            // A bare script runs now; a service/worker registers its exports for
+            // __rusm_entry to drive.
+            let wrapped =
+                format!("(function(module,exports){{\n{bundle}\n}})(globalThis.module,globalThis.module.exports);");
+            let _: () = ctx.eval(wrapped).unwrap();
             // Drive the entry point (service dispatch / worker `default`) to
             // completion. finish() pumps the QuickJS job queue; a long-running
             // service blocks here (each receive suspends the fiber) until killed.

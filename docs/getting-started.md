@@ -255,7 +255,6 @@ runs the receive→dispatch→reply loop around them:
 
 ```ts
 // components/calc/index.ts
-/// <reference path="./rusm.d.ts" />
 export function add(a: number, b: number): number { return a + b; }
 export async function greet({ name }: { name: string }) { return `hi ${name}`; }
 ```
@@ -266,7 +265,7 @@ whose calls are real cross-process messages, hidden behind `await`:
 
 ```ts
 // components/commander/index.ts
-/// <reference path="./rusm.d.ts" />
+import { spawn } from "rusm";
 import type * as Calc from "../calc/index";
 
 export default async function () {
@@ -298,10 +297,17 @@ name = "commander"
 capability = "orchestrator"
 ```
 
-`rusm build` detects each `index.ts` and runs `bun build --format=cjs` →
-`wasm/<name>.js` (a Rust component builds to `wasm/<name>.wasm` instead — same
-manifest, same loader). `rusm run` loads `.js` artifacts on the shared js-runner and
-prints:
+The `Process` API and `spawn` come from the **`rusm` package** — add it to your
+app's `package.json` (by relative path until it's published):
+
+```json
+{ "dependencies": { "rusm": "file:../../packages/rusm" } }
+```
+
+`rusm build` runs `bun install` (if needed), then detects each `index.ts` and runs
+`bun build --format=cjs` → `wasm/<name>.js` (a Rust component builds to
+`wasm/<name>.wasm` instead — same manifest, same loader). `rusm run` loads `.js`
+artifacts on the shared js-runner and prints:
 
 ```
 2 + 3 = 5
@@ -314,11 +320,11 @@ composes with Promises. The full `Process` API (`self`/`list`/`spawn`/`send`/
 `receive`/`receiveText`/`register`/`whereis`/`isAlive`/`kill`/`setLabel`/
 `openStream`/`acceptStream`), the `spawn<T>()` typed client (call / `for await`
 stream / callback args / `.cast` / `.stop()`), binary (`Uint8Array`) messages, and
-[byte streams](#streaming-from-a-component) are all typed by `rusm.d.ts`. The Web
-APIs the runner polyfills (`URL`, `TextEncoder`, `Headers`, `ReadableStream`,
-`console`) are typed by the standard `DOM` lib — add it to your `tsconfig.json`
-(`"lib": ["ES2022", "DOM"]`). See the runnable `ts-app` example (Bun-built service +
-commander, with streaming + a callback) and `host_ts_component`.
+[byte streams](#streaming-from-a-component) are all typed by the **`rusm` package**.
+The Web APIs the runner polyfills (`URL`, `TextEncoder`, `Headers`,
+`ReadableStream`, `console`) are typed by the standard `DOM` lib — add it to your
+`tsconfig.json` (`"lib": ["ES2022", "DOM"]`). See the runnable `ts-app` example
+(Bun-built service + commander, with streaming + a callback) and `host_ts_component`.
 
 > **`fetch` is deferred.** It rejects with a clear error until RUSM hosts
 > `wasi:http` (roadmap) — it's not silently missing.

@@ -26,13 +26,14 @@ my-app/
 ```
 
 ```ts
-/// <reference path="./rusm.d.ts" />
-const replyTo = Process.receiveText();
+import { Process } from "rusm";
+const replyTo = await Process.receiveText();
 Process.setLabel("ts-worker");
 Process.send(replyTo, `pong from ${Process.self()}`);
 ```
 
-`rusm build` detects the `index.ts`, runs `bun build --format=iife` → `wasm/worker.js`,
-and `rusm run` loads `.js` artifacts on the js-runner under the declared capability
-profile. (A Rust component builds to `wasm/<name>.wasm` instead — same manifest,
-same loader.) The `Process` global is typed by `rusm.d.ts` (shipped with the runner).
+`rusm build` runs `bun install` then bundles the `index.ts` with `bun build
+--format=cjs` → `wasm/worker.js`, and `rusm run` loads `.js` artifacts on the
+js-runner under the declared capability profile. (A Rust component builds to
+`wasm/<name>.wasm` instead — same manifest, same loader.) `Process`/`spawn` and the
+types come from the [`rusm`](../../packages/rusm) package. See the full `ts-app` example.

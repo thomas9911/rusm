@@ -43,5 +43,7 @@ artifact runs on the shared rquickjs **js-runner**.
 service is registered by name so the commander can spawn its own instance on demand;
 the spawned child never exceeds the spawner's capabilities.
 
-The `Process` actor API and the `spawn<T>()` typed client are typed by `rusm.d.ts`
-(copied here from the runner). See `components/*/index.ts`.
+The `Process` actor API and the `spawn<T>()` typed client come from the
+[`rusm`](../../packages/rusm) package — `import { Process, spawn } from "rusm"` —
+depended on by relative path in `package.json`; `rusm build` runs `bun install`
+for you. See `components/*/index.ts`.

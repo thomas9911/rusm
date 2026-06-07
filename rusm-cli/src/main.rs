@@ -140,6 +140,19 @@ fn build_components(dir: &Path) -> anyhow::Result<Vec<String>> {
     let wasm_dir = dir.join("wasm");
     std::fs::create_dir_all(&wasm_dir)?;
 
+    // If the app declares JS dependencies (e.g. the `rusm` package), make sure
+    // they're installed so a TS component's `import` resolves during bundling.
+    if dir.join("package.json").is_file() && !dir.join("node_modules").is_dir() {
+        let status = Command::new("bun")
+            .arg("install")
+            .current_dir(dir)
+            .status()
+            .with_context(|| "running bun install (is Bun installed? https://bun.sh)")?;
+        if !status.success() {
+            return Err(anyhow!("`bun install` failed"));
+        }
+    }
+
     let mut entries: Vec<_> = std::fs::read_dir(&components_dir)
         .with_context(|| format!("reading {}", components_dir.display()))?
         .filter_map(|e| e.ok())

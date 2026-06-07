@@ -58,18 +58,20 @@ modules (raw ABI) and **components** (the `rusm:runtime` WIT world:
 (Phase 8, rusm-ts core): the **js-runner** component embeds rquickjs (QuickJS →
 `wasm32-wasip2`, ~658 KB, built with wasi-sdk) and runs a Bun-bundled JS file,
 bridging a `Process` global to the actor world — a JS guest is a first-class
-sandboxed process (proven by test). **Phase 8 guest ergonomics are complete**:
-**rusm-ts** (service components = exported functions; a worker = `export default`;
-the concealed typed client `spawn<typeof Svc>("svc")` with call / `for await`
-streaming / callbacks / `.cast`; `rusm build` Bun→cjs; app-model loader;
-`rusm.d.ts`; custom capability profiles) and **rusm-rs** (the Rust twin —
-`Pid`/`send`/`receive` (serde JSON) / `spawn` / registry / `Stream` over the
-wit-bindgen library/binary split, plus a `#[rusm_rs::service]` macro → dispatch
-loop + typed `Client` with call/cast/streaming/callbacks, same wire). Spawn-from-
-guest is a capability-gated, non-escalating actor-ABI op. Deferred: a native
-p3-typed `stream<u8>` WIT signature, `rusm dev` filesystem watch/reload, in-guest
-`Supervisor` strategies, and shipping `rusm-ts` types as an importable `rusm` npm
-package. TLS folds into the Phase 9 secure cluster transport. See
+sandboxed process (proven by test). **Phase 8 (in progress) — the guest crates are
+done**: **rusm-ts** (service components = exported functions; a worker =
+`export default`; the concealed typed client `spawn<typeof Svc>("svc")` with call /
+`for await` streaming / callbacks / `.cast`; `rusm build` Bun→cjs; app-model loader;
+the importable **`rusm` npm package** for `Process`/`spawn`/types; custom capability
+profiles) and **rusm-rs** (the Rust twin — `Pid`/`send`/`receive` (serde JSON) /
+`spawn` / registry / `Stream` over the wit-bindgen library/binary split, plus a
+`#[rusm_rs::service]` macro → dispatch loop + typed `Client` with
+call/cast/streaming/callbacks, same JSON wire — Rust and TS guests interoperate).
+Spawn-from-guest is a capability-gated, non-escalating actor-ABI op (the runner
+wraps each bundle in a CommonJS scope so its top-level vars can't clobber the
+runtime globals). **Phase 8 still open:** in-guest `Supervisor` strategies, `rusm
+dev` filesystem watch/reload, and a native p3-typed `stream<u8>` WIT signature. TLS
+folds into the Phase 9 secure cluster transport. See
 `docs/02-roadmap.md`.
 
 ## Tech stack

@@ -1,4 +1,4 @@
-/// <reference path="../../rusm.d.ts" />
+import { spawn } from "rusm";
 import type * as Calc from "../calc/index";
 
 // A RUSM **worker** component: RUSM runs `default` once. It spawns the `calc`
