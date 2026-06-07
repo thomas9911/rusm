@@ -693,6 +693,30 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_rust_guest_uses_the_rusm_rs_api() {
+        // A component written with the ergonomic `rusm-rs` crate (the Rust guest
+        // API + the wit-bindgen library/binary split): it receives a reply-to pid,
+        // labels itself, and answers — all via `rusm_rs::*`.
+        const RS_GUEST: &[u8] = include_bytes!("../../tests/fixtures/rs_guest.wasm");
+        let rt = Runtime::new();
+        let wr = WasmRuntime::new(rt.clone()).unwrap();
+        let pre = wr
+            .prepare_component(&wr.compile_component(RS_GUEST).unwrap(), "run")
+            .unwrap();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let collector = rt.spawn(move |mut ctx| async move {
+            let _ = tx.send(ctx.recv().await.message().unwrap());
+        });
+        let guest = wr.spawn_component(&pre);
+        rt.send(guest.pid(), collector.pid().raw().to_string().into_bytes());
+        assert_eq!(
+            String::from_utf8(rx.await.unwrap()).unwrap(),
+            format!("hello from {}", guest.pid().raw()),
+            "the Rust guest drove the actor API through rusm-rs"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn component_stream_errors_are_reported_not_fatal() {
         // role 2: open to a dead pid, write/read bogus handles — each must return
         // none/false cleanly (flags 0b111), never trap.

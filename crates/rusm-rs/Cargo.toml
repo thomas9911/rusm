@@ -1,0 +1,15 @@
+# rusm-rs — the ergonomic Rust *guest* crate: write a RUSM component (or service)
+# in Rust over the `rusm:runtime` actor ABI — the Rust twin of rusm-ts. A guest
+# crate depends on this via path, implements `rusm_rs::Guest` (or, later, a
+# `#[rusm::service]` module), and `rusm_rs::export!`s its component. Built for
+# wasm32-wasip2; excluded from the host workspace (wasm-only).
+[package]
+name = "rusm-rs"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+wit-bindgen = "0.46"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

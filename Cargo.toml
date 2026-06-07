@@ -15,8 +15,9 @@ members = [
     "rusm-cli",
 ]
 # Guest test fixtures are wasm-only crates built separately for wasm32-wasip2 and
-# checked in as prebuilt .wasm; they must not build for the host target.
-exclude = ["crates/rusm-wasm/tests/fixtures"]
+# checked in as prebuilt .wasm; they must not build for the host target. `rusm-rs`
+# is the wasm-only Rust *guest* crate (depended on by guests, not the host).
+exclude = ["crates/rusm-wasm/tests/fixtures", "crates/rusm-rs"]
 
 [workspace.package]
 version = "0.0.0"
