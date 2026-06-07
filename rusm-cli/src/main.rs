@@ -70,20 +70,16 @@ async fn main() {
                 std::process::exit(1);
             }
         }
-    } else if command == Some("run") || command == Some("dev") {
-        // `dev` auto-builds first (write source, RUSM compiles); both then run the
-        // app's components from ./wasm per the rusm.toml manifest.
-        if command == Some("dev") {
-            match build_components(Path::new(".")) {
-                Ok(built) => println!("built: {}", built.join(", ")),
-                Err(error) => {
-                    eprintln!("build failed: {error}");
-                    std::process::exit(1);
-                }
-            }
-        }
+    } else if command == Some("run") {
+        // Run the app's components from ./wasm per the rusm.toml manifest.
         if let Err(error) = run_app(&args).await {
             eprintln!("run failed: {error}");
+            std::process::exit(1);
+        }
+    } else if command == Some("dev") {
+        // Build, run, and watch: edit a component and RUSM rebuilds + reloads it.
+        if let Err(error) = dev(&args).await {
+            eprintln!("dev failed: {error}");
             std::process::exit(1);
         }
     } else {
@@ -95,7 +91,7 @@ async fn main() {
         eprintln!(
             "  rusm run                   run ./wasm components per rusm.toml [[components]]"
         );
-        eprintln!("  rusm dev                   build, then run (write source, RUSM compiles)");
+        eprintln!("  rusm dev                   build + run, then watch & reload on edits");
         eprintln!("  rusm attach [<host | host:port | ws-url>]   (defaults to 127.0.0.1:4000)");
         std::process::exit(2);
     }
@@ -126,6 +122,90 @@ async fn run_app(args: &[String]) -> anyhow::Result<()> {
     tokio::signal::ctrl_c().await?;
     println!("\nstopping {} component(s)…", rt.shutdown());
     Ok(())
+}
+
+/// `rusm dev`: build, spawn, and **watch** `./components` — on any source change,
+/// rebuild and reload the components (kill + respawn). Ctrl-C stops. Watching is a
+/// dependency-free mtime poll (a ~400 ms scan, skipping build output).
+async fn dev(args: &[String]) -> anyhow::Result<()> {
+    dotenvy::dotenv().ok();
+    let cfg = load_node_config(args);
+    let rt = Runtime::new();
+    let wasm = WasmRuntime::new(rt.clone())?;
+    let root = Path::new(".");
+
+    build_components(root)?;
+    let mut handles = spawn_components(root, &wasm, &cfg.components, &cfg.capabilities)?;
+    if handles.is_empty() {
+        println!("no [[components]] in rusm.toml — nothing to run");
+        return Ok(());
+    }
+    println!(
+        "running {} component(s); watching ./components — edit to reload, Ctrl-C to stop",
+        handles.len()
+    );
+
+    let components = root.join("components");
+    let mut fingerprint = source_fingerprint(&components);
+    loop {
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => break,
+            _ = tokio::time::sleep(std::time::Duration::from_millis(400)) => {
+                let next = source_fingerprint(&components);
+                if next == fingerprint {
+                    continue;
+                }
+                fingerprint = next;
+                println!("change detected — rebuilding…");
+                for (_, handle) in &handles {
+                    handle.kill();
+                }
+                if let Err(error) = build_components(root) {
+                    eprintln!("build failed: {error}");
+                    continue;
+                }
+                match spawn_components(root, &wasm, &cfg.components, &cfg.capabilities) {
+                    Ok(reloaded) => {
+                        handles = reloaded;
+                        println!("reloaded {} component(s)", handles.len());
+                    }
+                    Err(error) => eprintln!("reload failed: {error}"),
+                }
+            }
+        }
+    }
+    println!("\nstopping {} component(s)…", rt.shutdown());
+    Ok(())
+}
+
+/// A fingerprint of the source files under `dir` (sorted path + mtime pairs),
+/// skipping build output (`target/`, `node_modules/`). Any source edit changes it.
+fn source_fingerprint(dir: &Path) -> Vec<(std::path::PathBuf, std::time::SystemTime)> {
+    fn walk(dir: &Path, out: &mut Vec<(std::path::PathBuf, std::time::SystemTime)>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                let name = entry.file_name();
+                if name != "target" && name != "node_modules" {
+                    walk(&path, out);
+                }
+            } else if matches!(
+                path.extension().and_then(|e| e.to_str()),
+                Some("ts" | "rs" | "toml" | "js" | "json" | "wit")
+            ) {
+                if let Ok(modified) = entry.metadata().and_then(|m| m.modified()) {
+                    out.push((path, modified));
+                }
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(dir, &mut out);
+    out.sort();
+    out
 }
 
 /// Builds every component under `<dir>/components/<name>/` into `<dir>/wasm/`.
