@@ -217,6 +217,10 @@ rusm dev          # build, then run (one step)
 One toolchain, no jco, no cargo-component — `cargo build --target wasm32-wasip2`
 componentizes directly.
 
+> **Roadmap.** `rusm dev` builds then runs today; **automatic rebuild + reload on
+> file change** (true watch mode) is a follow-on. For now, re-run `rusm dev` after
+> editing a component.
+
 ## 5. A TS WASM component (source only) — Roadmap (Phase 8)
 
 > **Not built yet.** TypeScript guests are [Phase 8](./02-roadmap.md) (the
