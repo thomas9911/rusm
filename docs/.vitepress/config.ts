@@ -61,6 +61,7 @@ const sections = [
       { text: 'Phase 7 — Component hosting', link: '/phases/phase-07-components' },
       { text: 'Phase 8 — Guest ergonomics', link: '/phases/phase-08-guest-ergonomics' },
       { text: 'Phase 9 — Distributed clusters', link: '/phases/phase-09-distributed-clusters' },
+      { text: 'Phase 10 — Scale & hardening', link: '/phases/phase-10-scale-hardening' },
     ],
   },
 ];

@@ -8,8 +8,15 @@ distributed clusters you can hook into live. See `README.md` for the pitch and
 
 ## Status
 
-**Phase 9 of 11 — complete.** RUSM **hosts real WASM components** as isolated,
-supervised processes, and now **clusters across nodes**. The Wasm-free
+**Phase 10 of 11 — complete.** RUSM **hosts real WASM components** as isolated,
+supervised processes, **clusters across nodes**, and is **hardened for scale**:
+an opt-in **on-demand instance tier** (`WasmRuntime::with_overflow` — spawn past the
+pooled cap onto an on-demand engine, bounded by memory not a fixed size), **opt-in
+bounded mailboxes** (`Runtime::with_mailbox_capacity` — load-shed *user* messages,
+never system signals), **mutual-TLS cluster security** (`ClusterCa` per-node certs,
+foreign-CA peers rejected), and **windowed supervisor restart-intensity** (both
+guests) — all with no spawn/message regression (~440k component spawns/s, ~21M
+msgs/s hold). The Wasm-free
 **`rusm-cluster`** crate (over `rusm-otp`, never Wasmtime) connects nodes over
 **QUIC + TLS** (quinn + rustls/ring; **mutual TLS** — a `ClusterCa` issues per-node
 certs, or a shared self-signed `Identity`): a `ClusterNode`

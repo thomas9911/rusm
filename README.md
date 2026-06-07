@@ -9,7 +9,7 @@ core** (pure Rust); **WebAssembly is the sandboxed execution backend** that late
 runs each process as an isolated instance. Rust + Tokio do the scheduling;
 Wasmtime does the isolation.
 
-> **Status: Phase 9 of 11 complete.** RUSM **hosts real WASM components** as
+> **Status: Phase 10 of 11 complete.** RUSM **hosts real WASM components** as
 > isolated, supervised processes. The Wasmtime backend (`rusm-wasm`) runs each
 > instance-per-process behind three bridges — **wasip1** (core modules + a raw
 > `rusm::*` actor ABI + cross-process byte streams), **wasip2** (components, the
@@ -44,7 +44,11 @@ Wasmtime does the isolation.
 > Wasm-free `rusm-cluster` crate connects nodes over **QUIC + TLS** so processes
 > message across machines — cross-node `send`, a gossiped **global registry**,
 > **remote spawn**, and **live attach** — at **~550k cross-node messages/sec**
-> (~39µs p50 round-trip, loopback). See the [roadmap](docs/02-roadmap.md).
+> (~39µs p50 round-trip, loopback). **Hardened for scale (Phase 10):** an on-demand
+> instance tier (live count bounded by RAM, not a fixed pool), opt-in bounded
+> mailboxes (overload load-shed), per-node certs under a cluster CA + mutual TLS,
+> and windowed supervisor restart-intensity — with no spawn/message regression. See
+> the [roadmap](docs/02-roadmap.md).
 
 ## Why
 

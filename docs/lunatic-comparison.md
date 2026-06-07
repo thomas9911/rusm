@@ -10,7 +10,7 @@
 
 ## How to read this
 
-This is not apples-to-apples. RUSM has **Phases 1–9 complete**: the OTP core spawns, messages, supervises,
+This is not apples-to-apples. RUSM has **Phases 1–10 complete**: the OTP core spawns, messages, supervises,
 manages, and connects real processes over TCP, and the `rusm-wasm` backend runs
 them as real **Wasm instances** behind three bridges (wasip1 core modules, wasip2
 components, wasip3 `@0.3.0`), with default-deny capabilities, instance-per-process,
@@ -51,7 +51,7 @@ are scale/hardening and the standard-WASI surface. The value is in the
 
 | | RUSM (today) | Lunatic |
 | --- | --- | --- |
-| Status | Active, Phases 1-9 complete | Dormant since 2023 (v0.13.0) |
+| Status | Active, Phases 1-10 complete | Dormant since 2023 (v0.13.0) |
 | Rust LOC | ~5,350 (6 crates) + ~790 TS | ~15,150 (20 crates) |
 | Tests | ~164 Rust + 21 TS, ~99% cov | ~26 test annotations |
 | Wasmtime | v45 (instance-per-process) | v8 (2023) |
@@ -78,7 +78,7 @@ phase, same themes, same order.
 | 7b | wasip1 bridge (full WASI + raw actor ABI + byte streams), wasip3 interfaces on the component linker | ✅ done | ✅ wasip1 | 🔥 ahead (p3 + components) |
 | 8 | Guest crate | ✅ `rusm-rs` + `rusm-ts` (service macro / typed client, call/cast/stream/callbacks) | 🅛 `lunatic-rs` (Rust only) | 🔥 ahead — TS *and* Rust guests, one wire |
 | 9 | Distributed clusters + live attach | ✅ `rusm-cluster` (QUIC+TLS, cross-node send, gossiped global registry, remote spawn, live attach) | ✅ (QUIC + distributed registry) | ✅ at parity — secure cluster + global registry, one persistent conn/node, message-per-stream (no custom congestion layer) |
-| 10 | Scale & hardening (on-demand instance tier, bounded mailboxes) | ❌ not yet (raw perf already shipped in P6) | ⚠️ OnDemand + fuel | — TBD |
+| 10 ✅ | Scale & hardening | ✅ on-demand instance tier, bounded mailboxes, mutual-TLS cluster CA, windowed restart-intensity | ⚠️ OnDemand + fuel | 🔥 ahead — overflow tier *on top of* pooling, + secure cluster |
 | — | SQLite host API | ❌ | 🅛 | — n/a |
 
 > ¹ The perf column is an **architectural** assessment, not a head-to-head
