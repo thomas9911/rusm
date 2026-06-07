@@ -115,6 +115,9 @@ async fn run(
         pid: pid.raw(),
         rt,
         ctx: Some(ctx),
+        out_streams: std::collections::HashMap::new(),
+        in_streams: std::collections::HashMap::new(),
+        next_stream: 0,
     };
     let mut store = Store::new(&engine, host);
     // Enforce the per-process memory ceiling (WasiHost is the ResourceLimiter).
@@ -215,6 +218,72 @@ mod tests {
         // Instance 2 → caller: calls the responder (21 -> doubled -> 42).
         let _caller = wr.spawn_component(&pre);
         assert_eq!(rx.await.unwrap(), vec![42]);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn one_component_streams_bytes_to_another() {
+        // Two instances of one component: a producer opens a byte stream to a
+        // consumer and writes 3x "hello!" (18 bytes); the consumer accepts it,
+        // reads to EOF, and reports the total — cross-process streaming through the
+        // actor world, Tokio-backpressured.
+        const PIPE: &[u8] = include_bytes!("../../tests/fixtures/stream_pipe.wasm");
+        let rt = Runtime::new();
+        let wr = WasmRuntime::new(rt.clone()).unwrap();
+        let pre = wr
+            .prepare_component(&wr.compile_component(PIPE).unwrap(), "run")
+            .unwrap();
+
+        // Native collector receives the consumer's byte total.
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let collector = rt.spawn(move |mut ctx| async move {
+            let _ = tx.send(ctx.recv().await.message().unwrap());
+        });
+
+        let consumer = wr.spawn_component(&pre);
+        let producer = wr.spawn_component(&pre);
+        // consumer: [role 1][collector pid] — accept, read, report to collector.
+        let mut cmsg = vec![1u8];
+        cmsg.extend_from_slice(&collector.pid().raw().to_le_bytes());
+        rt.send(consumer.pid(), cmsg);
+        // producer: [role 0][consumer pid] — open, write, close.
+        let mut pmsg = vec![0u8];
+        pmsg.extend_from_slice(&consumer.pid().raw().to_le_bytes());
+        rt.send(producer.pid(), pmsg);
+
+        let total = rx.await.unwrap();
+        assert_eq!(
+            u32::from_le_bytes(total[..4].try_into().unwrap()),
+            18,
+            "consumer should read all 3x6 = 18 streamed bytes through to EOF"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn component_stream_errors_are_reported_not_fatal() {
+        // role 2: open to a dead pid, write/read bogus handles — each must return
+        // none/false cleanly (flags 0b111), never trap.
+        const PIPE: &[u8] = include_bytes!("../../tests/fixtures/stream_pipe.wasm");
+        let rt = Runtime::new();
+        let wr = WasmRuntime::new(rt.clone()).unwrap();
+        let pre = wr
+            .prepare_component(&wr.compile_component(PIPE).unwrap(), "run")
+            .unwrap();
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let collector = rt.spawn(move |mut ctx| async move {
+            let _ = tx.send(ctx.recv().await.message().unwrap());
+        });
+        let guest = wr.spawn_component(&pre);
+        let mut msg = vec![2u8];
+        msg.extend_from_slice(&collector.pid().raw().to_le_bytes());
+        rt.send(guest.pid(), msg);
+
+        let flags = rx.await.unwrap();
+        assert_eq!(
+            u32::from_le_bytes(flags[..4].try_into().unwrap()),
+            0b111,
+            "open-to-dead/write-bogus/read-bogus should each fail gracefully"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

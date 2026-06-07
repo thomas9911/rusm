@@ -6,11 +6,18 @@ export default defineConfig({
   cleanUrls: true,
   themeConfig: {
     nav: [
-      { text: 'Get started', link: '/getting-started' },
       {
-        text: 'Guide',
+        text: 'Get started',
         items: [
-          { text: 'Vision — why RUSM', link: '/00-vision' },
+          { text: 'Overview', link: '/getting-started' },
+          { text: 'Install', link: '/getting-started#install' },
+          { text: 'Quick start', link: '/getting-started#quick-start' },
+        ],
+      },
+      {
+        text: 'About RUSM',
+        items: [
+          { text: 'Why RUSM?', link: '/00-vision' },
           { text: 'Architecture', link: '/01-architecture' },
           { text: 'Roadmap', link: '/02-roadmap' },
           { text: 'Development', link: '/06-development' },
@@ -26,10 +33,17 @@ export default defineConfig({
     // the per-phase log.
     sidebar: [
       {
-        text: 'Introduction',
+        text: 'Get started',
         items: [
-          { text: 'Get started', link: '/getting-started' },
-          { text: 'Vision — why RUSM', link: '/00-vision' },
+          { text: 'Overview', link: '/getting-started' },
+          { text: 'Install', link: '/getting-started#install' },
+          { text: 'Quick start', link: '/getting-started#quick-start' },
+        ],
+      },
+      {
+        text: 'About RUSM',
+        items: [
+          { text: 'Why RUSM?', link: '/00-vision' },
           { text: 'Architecture', link: '/01-architecture' },
           { text: 'Roadmap', link: '/02-roadmap' },
         ],

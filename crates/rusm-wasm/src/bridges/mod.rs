@@ -10,7 +10,9 @@ pub(crate) mod wasip1;
 pub(crate) mod wasip2;
 pub(crate) mod wasip3;
 
-use rusm_otp::{Context, Runtime};
+use std::collections::HashMap;
+
+use rusm_otp::{Context, Runtime, StreamHandle, StreamWriter};
 use wasmtime::ResourceLimiter;
 use wasmtime_wasi::{ResourceTable, WasiCtx, WasiCtxView, WasiView};
 
@@ -32,6 +34,14 @@ pub(crate) struct WasiHost {
     /// outside a spawned process (e.g. direct inspection in a test); a running
     /// guest always has one.
     pub(crate) ctx: Option<Context>,
+    /// Byte streams this process is **writing** to others, keyed by the handle
+    /// returned to the guest by `stream-open`.
+    pub(crate) out_streams: HashMap<u64, StreamWriter>,
+    /// Byte streams this process has **accepted** and is reading, keyed by the
+    /// handle returned by `stream-accept`.
+    pub(crate) in_streams: HashMap<u64, StreamHandle>,
+    /// Monotonic handle source for this process's streams.
+    pub(crate) next_stream: u64,
 }
 
 impl WasiView for WasiHost {
@@ -80,6 +90,9 @@ mod tests {
             pid: 0,
             rt: Runtime::new(),
             ctx: None,
+            out_streams: HashMap::new(),
+            in_streams: HashMap::new(),
+            next_stream: 0,
         };
         // The table reached through the view is the real one: a pushed resource
         // round-trips through it.

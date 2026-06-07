@@ -52,8 +52,10 @@ the same default-deny caps + `StoreLimiter`, the precomputed export index, and a
 raw `rusm::*` actor ABI over linear memory, including **cross-process byte
 streaming** (`stream_open`/`write`/`close`/`accept`/`read` over the Wasm-free
 `StreamHandle`, real Tokio back-pressure) — RUSM on Lunatic's home turf
-(module-storm bench). Deferred follow-ons: the same stream ops through the
-component WIT world + a native p3-typed `stream<u8>`, and `rusm dev` filesystem
+(module-storm bench). Cross-process **byte streaming** works from both core
+modules (raw ABI) and **components** (the `rusm:runtime` WIT world:
+`stream-open`/`write`/`close`/`accept`/`read`, handle-based). Deferred follow-ons:
+a native p3-typed `stream<u8>` WIT signature, and `rusm dev` filesystem
 watch/reload. TLS folds into the Phase 9 secure cluster transport. See
 `docs/02-roadmap.md`.
 

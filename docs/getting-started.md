@@ -260,18 +260,37 @@ from inside a real component.
 > **TS toggle — Roadmap (Phase 8).** The same calls will be available to TS guests
 > via `rusm-ts` (e.g. `Process.self()`, `Process.list()`, `send`, `receive`).
 
-## Streaming
+## Streaming (from a component)
 
 Cross-process **byte streams** are Tokio-backpressured and ride the mailbox as
-`Received::Stream` — see [byte streams](./concepts/byte-streams.md). Today the
-guest-facing stream ABI (`stream_open` / `stream_write` / `stream_close` /
-`stream_accept` / `stream_read`) is available to **wasip1 core modules** (the raw
-`rusm::*` ABI), and the **stream-pipe** benchmark drives it at multiple GB/s.
+`Received::Stream` — see [byte streams](./concepts/byte-streams.md). A component
+opens a stream to another process, writes chunks (the write parks under
+back-pressure when the reader is slow), and closes it; the other side accepts and
+reads to end-of-stream:
 
-> **From components — Roadmap.** Exposing the same stream ops through the component
-> WIT world (and a native p3-typed `stream<u8>`) is a follow-on. The underlying
-> primitive (`rusm-otp`'s `StreamHandle`) and the host bridging already exist; it's
-> the WIT surface that's pending.
+```rust
+use rusm::runtime::actor;
+
+// Producer: open a stream to `peer`, write chunks, then close.
+if let Some(id) = actor::stream_open(peer) {
+    actor::stream_write(id, b"hello!");   // false if the reader is gone
+    actor::stream_close(id);              // signals end-of-stream
+}
+
+// Consumer: accept the next incoming stream, read to EOF.
+let id = actor::stream_accept();          // blocks until a stream arrives
+while let Some(chunk) = actor::stream_read(id) {
+    // …handle chunk (Vec<u8>)…           // None == end-of-stream
+}
+```
+
+The same ops are available to **wasip1 core modules** through the raw `rusm::*`
+ABI, and the **stream-pipe** benchmark drives the underlying `StreamHandle` at
+multiple GB/s.
+
+> **Roadmap.** A native p3-typed `stream<u8>` in the WIT signature (instead of the
+> handle-based ops above) is a future ergonomic layer; the handle-based API is the
+> real, working one today.
 
 ## Capabilities & sandboxing
 

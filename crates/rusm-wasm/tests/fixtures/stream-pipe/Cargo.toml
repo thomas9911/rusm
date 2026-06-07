@@ -1,0 +1,20 @@
+# Guest fixture: one component, two roles. On `run` it reads `[role][peer pid]`;
+# a producer opens a byte stream to the peer and writes chunks, a consumer accepts
+# the stream and reads to EOF — proving cross-process byte streaming through the
+# `rusm:runtime` actor world. Built for wasm32-wasip2 and checked in; regenerate:
+#   cargo build --target wasm32-wasip2 --release
+#   cp target/wasm32-wasip2/release/stream_pipe.wasm ../stream_pipe.wasm
+[workspace]
+
+[package]
+name = "stream-pipe"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+name = "stream_pipe"
+
+[dependencies]
+wit-bindgen = "0.46"

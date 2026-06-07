@@ -98,11 +98,13 @@ component, memory-cap deny → Crashed, the full actor ABI driven by a real
 component-storm live in the dashboard; workspace coverage ≥98%; the Wasm-free
 invariant holds (no `wasmtime` under `rusm-otp`).
 
-**Deferred follow-ons:** cross-process byte streaming is live on the core-module
-path (actor-ABI `stream_open`/`write`/`read` over the Wasm-free `StreamHandle`);
-exposing the same ops through the component WIT world and a native p3-typed
-`stream<u8>` is the remaining ergonomic layer. Also `rusm dev` filesystem
-watch/reload.
+Cross-process byte streaming is live on **both** paths — wasip1 core modules (the
+raw `rusm::*` ABI) and **components** (the `rusm:runtime` WIT world:
+`stream-open`/`write`/`close`/`accept`/`read`, handle-based) — over the Wasm-free
+`StreamHandle`.
+
+**Deferred follow-ons:** a native p3-typed `stream<u8>` WIT signature (instead of
+the handle-based ops), and `rusm dev` filesystem watch/reload.
 
 ## Next
 
