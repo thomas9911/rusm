@@ -30,11 +30,21 @@ data to real measurements.
 | 9 | **Distributed clusters + live attach** — QUIC+TLS, remote spawn, global registry | **distributed-fanout** |
 | 10 | **Performance & hardening** — pooling alloc + CoW + epoch toward 300k/s, hot reload | — |
 
-## Phase 0 deliverables (done)
+## What's shipped so far (Phases 0–7)
 
-- `rusm-metrics`, `rusm-observer`, `rusm-bench` (+ WebSocket server), `rusm-cli`.
-- React dashboard (benchmark + live observer) on synthetic data.
-- Runnable examples; this docs set + the VitePress site.
+- **Phase 0 — observability & harness:** `rusm-metrics`, `rusm-observer`,
+  `rusm-bench` (+ WebSocket server), `rusm-cli`, the React dashboard, and this
+  docs/VitePress site.
+- **Phases 1–5 — the Wasm-free OTP core (`rusm-otp`):** process & scheduler core,
+  mailboxes & message passing, links/monitors/supervision, the named registry +
+  timers + graceful shutdown, and TCP (process-per-connection).
+- **Phase 6 — Wasmtime backend (`rusm-wasm`):** instance-per-process, host ABI,
+  epoch preemption, pooling + CoW + `InstancePre`.
+- **Phase 7 — component hosting:** the component model (WASI **p2 + p3**) via
+  `bridges/{wasip1,wasip2,wasip3}`, the `rusm:runtime` WIT actor world, default-deny
+  capabilities, cross-process byte streaming, and the `rusm.toml` app model.
+- **Eight live benchmarks** (spawn-storm, ping-pong, fault-recovery,
+  connection-storm, fairness, module-storm, component-storm, stream-pipe).
 - TDD throughout; coverage ≥98% (mostly 100%); `cargo fmt` + Prettier clean.
 
 See the per-phase deep dives under [`phases/`](./phases/phase-00-foundation.md), and
