@@ -1,14 +1,26 @@
 # Serving HTTP, WS & SSE from a component (Phase 11)
 
-> **Status: HTTP, WS, and SSE are all built and measured.** A WASM component is served
-> over real **HTTP** (`WasmRuntime::http_server` — [`http_bench`](../examples/http_bench/):
-> lean ~64.5k req/s instance-per-request vs ~197k bare-hyper), real **WebSockets** with
-> *one component process per connection* (`WasmRuntime::ws_server` —
-> [`ws_bench`](../examples/ws_bench/): ~192k echo round-trips/s, 128/128 connections held,
-> the sandbox cost vs the bare transport inside noise), and real **SSE** (a `wasi:http`
-> streaming body — [`sse_bench`](../examples/sse_bench/): ~1.5M events/s across 128
-> long-lived streams, all held). The `rusm-otp` core stays Wasm-free throughout (hyper,
-> `tokio-tungstenite`, and `wasi:http` live only in `rusm-wasm`).
+> **Status: HTTP, WS, and SSE all work — from both RS and TS components.** A WASM
+> component is served over real **HTTP** (`WasmRuntime::http_server` —
+> [`http_bench`](../examples/http_bench/): lean ~64.5k req/s instance-per-request vs
+> ~197k bare-hyper), real **WebSockets** with *one component process per connection*
+> (`WasmRuntime::ws_server` — [`ws_bench`](../examples/ws_bench/): ~192k echo
+> round-trips/s, 128/128 held, sandbox cost inside noise), and real **SSE** (a
+> `wasi:http` streaming body — [`sse_bench`](../examples/sse_bench/): ~1.5M events/s
+> across 128 long-lived streams).
+>
+> **Both guest languages serve all three.** RS components compile straight to
+> `wasi:http` (via `wstd`) / the actor world. TS components run on the embedded
+> rquickjs runners: `http_server_js` + the **js-http-runner** (a raw-`wasi:http`
+> component that runs `export default { fetch }`, including pull-based streaming for
+> SSE), and `ws_server_js` (a TS worker on the js-runner, one process per connection).
+> The `rusm-otp` core stays Wasm-free throughout (hyper, `tokio-tungstenite`, and
+> `wasi:http` live only in `rusm-wasm`).
+>
+> | | HTTP | WS | SSE |
+> |---|---|---|---|
+> | **Rust** | ✅ `wstd` / lean `wasi:http` | ✅ `rusm-rs` worker | ✅ `wstd` streaming body |
+> | **TypeScript** | ✅ `export default { fetch }` | ✅ `export default` worker | ✅ `Response(ReadableStream)` |
 
 RUSM's end goal is to run a component as a high-throughput **HTTP(S) / WS(S) / SSE
 server** — a sandboxed, supervised process answering requests. Phase 11 delivers
@@ -134,31 +146,38 @@ fn run() {
 }
 ```
 
-## TS source (Bun-bundled → the js-runner)
+## TS source (Bun-bundled → the rquickjs runners)
 
-**HTTP** — the familiar Service-Worker / Deno / Workers `fetch` shape. RUSM maps
-`wasi:http/incoming-handler` → this `default.fetch`; `Request`/`Response`/`URL` are
-the Web types already polyfilled in Phase 8:
+A TS component is a Bun-bundled `.js` run on an embedded rquickjs runner — no jco.
+`http_server_js` / `ws_server_js` deliver the bundle; the standard Web types
+(`Request`/`Response`/`URL`/`ReadableStream`) are polyfilled. These are the checked-in
+fixtures verbatim.
+
+**HTTP** — the Service-Worker / Deno / Workers `fetch` shape. The js-http-runner builds
+a `Request` from the wasi:http request (URL reconstructed from `Host` + path, so
+`new URL(req.url).searchParams` works) and marshals the `Response` back:
 
 ```ts
 export default {
-  async fetch(req: Request): Promise<Response> {
+  fetch(req: Request): Response {
     const who = new URL(req.url).searchParams.get("who") ?? "world";
-    return new Response(`hello, ${who}\n`);
+    return new Response(`hello, ${who}\n`, { headers: { "content-type": "text/plain" } });
   },
 };
 ```
 
-**SSE** — return a `Response` whose body is a `ReadableStream` (already polyfilled):
+**SSE** — return a `Response` whose body is a `ReadableStream`; the runner pulls each
+chunk and flushes it incrementally (chunked, truly streamed — not buffered):
 
 ```ts
 export default {
-  async fetch(_req: Request): Promise<Response> {
-    let i = 0;
+  fetch(): Response {
+    let n = 0;
+    const enc = new TextEncoder();
     const body = new ReadableStream({
-      async pull(c) {
-        c.enqueue(`data: tick ${i++}\n\n`);
-        await sleep(1000);            // backpressured by the client
+      pull(c) {
+        if (n >= 5) return c.close();
+        c.enqueue(enc.encode(`data: tick ${n++}\n\n`));
       },
     });
     return new Response(body, { headers: { "content-type": "text/event-stream" } });
@@ -166,19 +185,18 @@ export default {
 };
 ```
 
-**WS** — the Deno-style `upgradeWebSocket` (RUSM does the handshake, the socket is a
-view over its stream primitive):
+**WS** — a TS **worker** (`export default` an async fn), one process per connection.
+Its first message is the writer pid (the host owns the socket); echo = send each frame
+back. Same actor shape as the Rust fixture:
 
 ```ts
-export default {
-  async fetch(req: Request): Promise<Response> {
-    if (req.headers.get("upgrade") !== "websocket")
-      return new Response("expected websocket", { status: 426 });
-    const { socket, response } = Process.upgradeWebSocket(req);
-    socket.onmessage = (e) => socket.send(e.data);   // echo
-    return response;
-  },
-};
+export default async function () {
+  const writer = BigInt(await Process.receiveText());  // msg 1: the writer pid
+  for (;;) {
+    const frame = await Process.receive();             // each inbound WS frame
+    Process.send(writer, frame);                        // echo
+  }
+}
 ```
 
 Both guests stay sandboxed (a serving component gets only the capabilities its
