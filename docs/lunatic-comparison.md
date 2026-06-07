@@ -10,7 +10,7 @@
 
 ## How to read this
 
-This is not apples-to-apples. RUSM has **Phases 1–7 complete**: the OTP core spawns, messages, supervises,
+This is not apples-to-apples. RUSM has **Phases 1–9 complete**: the OTP core spawns, messages, supervises,
 manages, and connects real processes over TCP, and the `rusm-wasm` backend runs
 them as real **Wasm instances** behind three bridges (wasip1 core modules, wasip2
 components, wasip3 `@0.3.0`), with default-deny capabilities, instance-per-process,
@@ -51,7 +51,7 @@ are scale/hardening and the standard-WASI surface. The value is in the
 
 | | RUSM (today) | Lunatic |
 | --- | --- | --- |
-| Status | Active, Phases 1-7 complete | Dormant since 2023 (v0.13.0) |
+| Status | Active, Phases 1-9 complete | Dormant since 2023 (v0.13.0) |
 | Rust LOC | ~5,350 (6 crates) + ~790 TS | ~15,150 (20 crates) |
 | Tests | ~164 Rust + 21 TS, ~99% cov | ~26 test annotations |
 | Wasmtime | v45 (instance-per-process) | v8 (2023) |
@@ -61,7 +61,7 @@ are scale/hardening and the standard-WASI surface. The value is in the
 ## Capability matrix
 
 Implementation: ✅ done · ⚠️ partial/synthetic · ❌ not yet · 🅛 Lunatic-only · 🅡 RUSM-only
-Perf/efficiency vs Lunatic: ✅ on par · ⚡ ahead by design¹ · — not built yet
+Perf/efficiency vs Lunatic: ✅ on par · 🔥 ahead by design¹ · — not built yet
 
 This mirrors the [roadmap](./02-roadmap.md) **phase-for-phase** — one row per
 phase, same themes, same order.
@@ -69,16 +69,16 @@ phase, same themes, same order.
 | Phase | Capability | RUSM | Lunatic | On par? (perf/efficiency) |
 | --- | --- | :---: | --- | --- |
 | 1 ✅ | Process & scheduler core | ✅ done (`rusm-otp`) | ✅ `WasmProcess` | ✅ on par |
-| 2 ✅ | Mailboxes & message passing | ✅ done (one channel + selective receive) | ✅ selective-receive | ⚡ ahead |
-| 3 ✅ | Links, monitors, supervision, fault tolerance | ✅ done (links/monitors/trap/exit) | ✅ `Signal` enum | ⚡ ahead |
-| 4 ✅ | Process management (registry, timers, lifecycle) | ✅ done (sharded registry, Tokio timers) | ✅ | ⚡ ahead |
-| 5 ✅ | Connectivity — TCP | ✅ done (TCP, process-per-conn; TLS → P9) | ✅ TCP/UDP/DNS/TLS | ✅ on par |
-| 6 ✅ | Wasmtime backend (instance-per-process, preemption) | ✅ done (pooling+CoW+epoch; fairness live) | ✅ (fuel) | ⚡ ahead by design |
-| 7 ✅ | **Component hosting** (component model, WASI p2 + p3, capabilities, actor WIT ABI, app model) | ✅ done (~440k component spawns/s; default-deny caps + memory limits; component-storm live) | ❌ **no component-model host** (core modules only) | ⚡ **ahead — an axis Lunatic lacks** |
-| 7b | wasip1 bridge (full WASI + raw actor ABI + byte streams), wasip3 interfaces on the component linker | ✅ done | ✅ wasip1 | ⚡ ahead (p3 + components) |
-| 8 | Guest crate | ✅ `rusm-rs` + `rusm-ts` (service macro / typed client, call/cast/stream/callbacks) | 🅛 `lunatic-rs` (Rust only) | ⚡ ahead — TS *and* Rust guests, one wire |
+| 2 ✅ | Mailboxes & message passing | ✅ done (one channel + selective receive) | ✅ selective-receive | 🔥 ahead |
+| 3 ✅ | Links, monitors, supervision, fault tolerance | ✅ done (links/monitors/trap/exit) | ✅ `Signal` enum | 🔥 ahead |
+| 4 ✅ | Process management (registry, timers, lifecycle) | ✅ done (sharded registry, Tokio timers) | ✅ | 🔥 ahead |
+| 5 ✅ | Connectivity — TCP | ✅ done (TCP, process-per-conn; TLS shipped in P9 via QUIC) | ✅ TCP/UDP/DNS/TLS | ✅ on par |
+| 6 ✅ | Wasmtime backend (instance-per-process, preemption) | ✅ done (pooling+CoW+epoch; fairness live) | ✅ (fuel) | 🔥 ahead by design |
+| 7 ✅ | **Component hosting** (component model, WASI p2 + p3, capabilities, actor WIT ABI, app model) | ✅ done (~440k component spawns/s; default-deny caps + memory limits; component-storm live) | ❌ **no component-model host** (core modules only) | 🔥 **ahead — an axis Lunatic lacks** |
+| 7b | wasip1 bridge (full WASI + raw actor ABI + byte streams), wasip3 interfaces on the component linker | ✅ done | ✅ wasip1 | 🔥 ahead (p3 + components) |
+| 8 | Guest crate | ✅ `rusm-rs` + `rusm-ts` (service macro / typed client, call/cast/stream/callbacks) | 🅛 `lunatic-rs` (Rust only) | 🔥 ahead — TS *and* Rust guests, one wire |
 | 9 | Distributed clusters + live attach | ✅ `rusm-cluster` (QUIC+TLS, cross-node send, gossiped global registry, remote spawn, live attach) | ✅ (QUIC + distributed registry) | ✅ at parity — secure cluster + global registry, one persistent conn/node, message-per-stream (no custom congestion layer) |
-| 10 | Performance (pooling + CoW + epoch) | ❌ | ⚠️ OnDemand + fuel | — TBD |
+| 10 | Scale & hardening (on-demand instance tier, bounded mailboxes) | ❌ not yet (raw perf already shipped in P6) | ⚠️ OnDemand + fuel | — TBD |
 | — | SQLite host API | ❌ | 🅛 | — n/a |
 
 > ¹ The perf column is an **architectural** assessment, not a head-to-head
