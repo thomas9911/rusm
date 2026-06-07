@@ -61,6 +61,8 @@ export interface ScenarioMeta {
   real: boolean;
   /** How to format the throughput headline: a plain count or a byte rate. */
   unit: 'count' | 'bytes';
+  /** The engine's implementation source (Rust), for the "how it's built" panel. */
+  source?: string | null;
 }
 
 export interface ResourceProfileMeta {

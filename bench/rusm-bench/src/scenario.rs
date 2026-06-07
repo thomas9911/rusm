@@ -50,6 +50,10 @@ pub struct ScenarioMeta {
     pub real: bool,
     /// How to read/format the throughput headline (count vs byte rate).
     pub unit: MetricUnit,
+    /// The engine's implementation source (Rust), so the dashboard can show how the
+    /// scenario is built. `None` for synthetic scenarios. Single source of truth:
+    /// this is the actual compiled file via `include_str!`.
+    pub source: Option<String>,
 }
 
 impl Scenario {
@@ -93,6 +97,36 @@ impl Scenario {
             Scenario::StreamPipe => MetricUnit::Bytes,
             _ => MetricUnit::Count,
         }
+    }
+
+    /// The **engine source file** backing this scenario, embedded at compile time
+    /// (`include_str!`) so the dashboard can show the *real* code that produced the
+    /// numbers — single source of truth, never a hand-copied snippet. `None` for
+    /// scenarios still on synthetic data (no engine yet).
+    fn engine_source(self) -> Option<&'static str> {
+        Some(match self {
+            Scenario::SpawnStorm => include_str!("engine.rs"),
+            Scenario::PingPong => include_str!("pingpong.rs"),
+            Scenario::FaultRecovery => include_str!("faultrecovery.rs"),
+            Scenario::ConnectionStorm => include_str!("connectionstorm.rs"),
+            Scenario::Fairness => include_str!("fairness.rs"),
+            Scenario::ModuleStorm => include_str!("modulestorm.rs"),
+            Scenario::ComponentStorm => include_str!("componentstorm.rs"),
+            Scenario::StreamPipe => include_str!("streampipe.rs"),
+            Scenario::DistributedFanout => return None,
+        })
+    }
+
+    /// The engine's implementation source (the file above its `#[cfg(test)]`
+    /// module), trimmed — the "essential benchmark code" for the dashboard panel.
+    fn engine_impl_source(self) -> Option<String> {
+        self.engine_source().map(|src| {
+            src.split("\n#[cfg(test)]")
+                .next()
+                .unwrap_or(src)
+                .trim_end()
+                .to_string()
+        })
     }
 
     pub fn meta(self) -> ScenarioMeta {
@@ -210,6 +244,7 @@ impl Scenario {
             real_after_phase,
             real: real_after_phase <= CURRENT_PHASE,
             unit: self.metric_unit(),
+            source: self.engine_impl_source(),
         }
     }
 
@@ -247,6 +282,24 @@ mod tests {
         }
         // The unit travels in the meta the dashboard receives.
         assert_eq!(Scenario::StreamPipe.meta().unit, MetricUnit::Bytes);
+    }
+
+    #[test]
+    fn live_scenarios_carry_their_engine_source() {
+        // Single source of truth: the meta ships the real engine file (impl only,
+        // no test module); synthetic scenarios ship none.
+        let spawn = Scenario::SpawnStorm.meta().source.unwrap();
+        assert!(spawn.contains("struct SpawnStormEngine"));
+        assert!(
+            !spawn.contains("#[cfg(test)]"),
+            "tests are stripped from the panel"
+        );
+        assert!(Scenario::StreamPipe
+            .meta()
+            .source
+            .unwrap()
+            .contains("StreamPipeEngine"));
+        assert_eq!(Scenario::DistributedFanout.meta().source, None);
     }
 
     #[test]

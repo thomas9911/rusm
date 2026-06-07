@@ -29,6 +29,14 @@ export function ScenarioInfo({ scenario }: ScenarioInfoProps) {
           <li key={i}>{detail}</li>
         ))}
       </ul>
+      {scenario.source && (
+        <details className="scenario-code">
+          <summary>How it's built — the engine code</summary>
+          <pre>
+            <code>{scenario.source}</code>
+          </pre>
+        </details>
+      )}
     </section>
   );
 }

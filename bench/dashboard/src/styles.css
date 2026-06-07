@@ -224,6 +224,28 @@ body {
 .scenario-info-details li::marker {
   color: var(--accent);
 }
+.scenario-code {
+  margin-top: 12px;
+}
+.scenario-code summary {
+  cursor: pointer;
+  color: var(--accent);
+  font-size: 13px;
+  user-select: none;
+}
+.scenario-code pre {
+  margin: 10px 0 0;
+  padding: 12px 14px;
+  background: var(--bg);
+  border: 1px solid var(--panel);
+  border-radius: 8px;
+  max-height: 420px;
+  overflow: auto;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--text);
+}
 .metrics-bar {
   display: flex;
   justify-content: space-between;
