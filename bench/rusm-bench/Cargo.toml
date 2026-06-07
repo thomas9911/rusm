@@ -71,3 +71,7 @@ path = "../../examples/http_bench/main.rs"
 [[example]]
 name = "ws_bench"
 path = "../../examples/ws_bench/main.rs"
+
+[[example]]
+name = "sse_bench"
+path = "../../examples/sse_bench/main.rs"

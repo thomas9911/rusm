@@ -1,0 +1,19 @@
+# A wasi:http SSE component (via wstd) that streams events as fast as the client
+# reads — the stress fixture for the sse_bench. Built for wasm32-wasip2 and checked in:
+#   cargo build --target wasm32-wasip2 --release
+#   cp target/wasm32-wasip2/release/sse_firehose.wasm ../sse_firehose.wasm
+[package]
+name = "sse-firehose"
+version = "0.0.0"
+edition = "2021"
+
+[dependencies]
+wstd = "0.6.6"
+futures-lite = "2"
+anyhow = "1"
+
+[[bin]]
+name = "sse_firehose"
+path = "src/main.rs"
+
+[workspace]
