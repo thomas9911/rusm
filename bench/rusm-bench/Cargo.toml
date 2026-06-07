@@ -32,6 +32,10 @@ name = "host_components"
 path = "../../examples/host_components/main.rs"
 
 [[example]]
+name = "host_ts_component"
+path = "../../examples/host_ts_component/main.rs"
+
+[[example]]
 name = "headless_run"
 path = "../../examples/headless_run/main.rs"
 

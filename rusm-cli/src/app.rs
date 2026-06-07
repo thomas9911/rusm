@@ -2,9 +2,12 @@
 //!
 //! A RUSM app is a directory with `rusm.toml` (`[[components]]`), a `components/`
 //! tree of source crates, and a `wasm/` dir of built artifacts. `rusm build`
-//! compiles each `components/<name>/` to `wasm/<name>.wasm`; the loader then
-//! spawns each declared component as a supervised process under its capability
-//! profile. Env vars are the Rust way: process env first, then `.env`.
+//! compiles each `components/<name>/` to either `wasm/<name>.wasm` (a Rust
+//! component) or `wasm/<name>.js` (a TypeScript bundle, Bun-built); the loader
+//! resolves whichever exists and spawns each declared component as a supervised
+//! process under its capability profile. A `.js` artifact runs on the shared
+//! rquickjs js-runner via [`WasmRuntime::spawn_js`]; a `.wasm` artifact is a
+//! component instance. Env vars are the Rust way: process env first, then `.env`.
 
 use std::path::Path;
 
@@ -21,10 +24,12 @@ pub fn capabilities_for(id: &str) -> Capabilities {
         .capabilities()
 }
 
-/// Loads each manifest component from `<dir>/wasm/<name>.wasm` and spawns it as a
-/// process under its capability profile. Returns the live `(name, handle)` pairs
-/// (hold them to keep the processes alive). Errors if an artifact is missing or
-/// won't compile — a clear signal to run `rusm build` first.
+/// Loads each manifest component from `<dir>/wasm/` and spawns it as a process
+/// under its capability profile. A `<name>.js` artifact (a TypeScript bundle)
+/// takes precedence and runs on the shared js-runner; otherwise `<name>.wasm` is
+/// loaded as a component instance. Returns the live `(name, handle)` pairs (hold
+/// them to keep the processes alive). Errors if no artifact exists or it won't
+/// compile — a clear signal to run `rusm build` first.
 pub fn spawn_components(
     dir: &Path,
     wasm: &WasmRuntime,
@@ -33,14 +38,23 @@ pub fn spawn_components(
     let wasm_dir = dir.join("wasm");
     let mut handles = Vec::with_capacity(specs.len());
     for spec in specs {
-        let path = wasm_dir.join(format!("{}.wasm", spec.name));
-        let bytes = std::fs::read(&path)
-            .with_context(|| format!("reading {} (run `rusm build`?)", path.display()))?;
-        let component = wasm
-            .compile_component(&bytes)
-            .with_context(|| format!("compiling component `{}`", spec.name))?;
-        let prepared = wasm.prepare_component(&component, "run")?;
-        let handle = wasm.spawn_component_with(&prepared, capabilities_for(&spec.capability));
+        let caps = capabilities_for(&spec.capability);
+        let js_path = wasm_dir.join(format!("{}.js", spec.name));
+        let handle = if js_path.is_file() {
+            // TypeScript component: a Bun-built bundle run on the shared js-runner.
+            let bundle = std::fs::read(&js_path)
+                .with_context(|| format!("reading {}", js_path.display()))?;
+            wasm.spawn_js_with(bundle, caps)
+        } else {
+            let path = wasm_dir.join(format!("{}.wasm", spec.name));
+            let bytes = std::fs::read(&path)
+                .with_context(|| format!("reading {} (run `rusm build`?)", path.display()))?;
+            let component = wasm
+                .compile_component(&bytes)
+                .with_context(|| format!("compiling component `{}`", spec.name))?;
+            let prepared = wasm.prepare_component(&component, "run")?;
+            wasm.spawn_component_with(&prepared, caps)
+        };
         handles.push((spec.name.clone(), handle));
     }
     Ok(handles)
@@ -85,6 +99,33 @@ mod tests {
         let (_name, handle) = handles.into_iter().next().unwrap();
         handle.join().await;
         assert_eq!(rt.finished(), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_typescript_js_bundle_runs_on_the_js_runner() {
+        // A `wasm/<name>.js` artifact is a TS component: it runs on the shared
+        // js-runner via spawn_js, not the component path. The bundle drives the
+        // Process API and exits, finishing as a real process.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("wasm")).unwrap();
+        std::fs::write(
+            dir.path().join("wasm/greeter.js"),
+            "Process.setLabel('ts-greeter');",
+        )
+        .unwrap();
+
+        let rt = Runtime::new();
+        let wasm = WasmRuntime::new(rt.clone()).unwrap();
+        let specs = vec![ComponentSpec {
+            name: "greeter".to_string(),
+            capability: "sandboxed".to_string(),
+            restart: false,
+        }];
+        let handles = spawn_components(dir.path(), &wasm, &specs).unwrap();
+        assert_eq!(handles.len(), 1);
+        let (_name, handle) = handles.into_iter().next().unwrap();
+        handle.join().await;
+        assert_eq!(rt.finished(), 1, "the TS bundle ran to completion");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

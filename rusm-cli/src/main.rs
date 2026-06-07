@@ -128,11 +128,13 @@ async fn run_app(args: &[String]) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Builds every component crate under `<dir>/components/<name>/` to a
-/// `wasm32-wasip2` component and copies it to `<dir>/wasm/<name>.wasm`. One
-/// toolchain — `cargo build --target wasm32-wasip2 --release` — so a TS component
-/// is just a Rust crate whose `build.rs` bundles TS via Bun (no jco). Returns the
-/// built component names. (Shell-orchestration glue, hence it lives in `main`.)
+/// Builds every component under `<dir>/components/<name>/` into `<dir>/wasm/`.
+/// Two kinds, auto-detected, one toolchain each (no jco, no cargo-component):
+/// a **Rust** component (has `Cargo.toml`) builds with `cargo build --target
+/// wasm32-wasip2 --release` → `wasm/<name>.wasm`; a **TypeScript** component
+/// (has `index.ts`/`src/index.ts`) bundles with `bun build` → `wasm/<name>.js`,
+/// run on the shared rquickjs js-runner. Returns the built component names.
+/// (Shell-orchestration glue, hence it lives in `main`.)
 fn build_components(dir: &Path) -> anyhow::Result<Vec<String>> {
     let components_dir = dir.join("components");
     let wasm_dir = dir.join("wasm");
@@ -141,7 +143,7 @@ fn build_components(dir: &Path) -> anyhow::Result<Vec<String>> {
     let mut entries: Vec<_> = std::fs::read_dir(&components_dir)
         .with_context(|| format!("reading {}", components_dir.display()))?
         .filter_map(|e| e.ok())
-        .filter(|e| e.path().join("Cargo.toml").is_file())
+        .filter(|e| e.path().is_dir())
         .collect();
     entries.sort_by_key(|e| e.file_name());
 
@@ -149,24 +151,61 @@ fn build_components(dir: &Path) -> anyhow::Result<Vec<String>> {
     for entry in entries {
         let crate_dir = entry.path();
         let name = entry.file_name().to_string_lossy().to_string();
-        let status = Command::new("cargo")
-            .args(["build", "--target", "wasm32-wasip2", "--release"])
-            .current_dir(&crate_dir)
-            .status()
-            .with_context(|| "running cargo (is the wasm32-wasip2 target installed?)")?;
-        if !status.success() {
-            return Err(anyhow!("`cargo build` failed for component `{name}`"));
+        if crate_dir.join("Cargo.toml").is_file() {
+            build_rust_component(&crate_dir, &name, &wasm_dir)?;
+            built.push(name);
+        } else if let Some(ts_entry) = ts_entrypoint(&crate_dir) {
+            build_ts_component(&ts_entry, &name, &wasm_dir)?;
+            built.push(name);
         }
-        // Cargo names the artifact after the crate (dashes become underscores).
-        let artifact = crate_dir
-            .join("target/wasm32-wasip2/release")
-            .join(format!("{}.wasm", name.replace('-', "_")));
-        let dest = wasm_dir.join(format!("{name}.wasm"));
-        std::fs::copy(&artifact, &dest)
-            .with_context(|| format!("copying {} -> {}", artifact.display(), dest.display()))?;
-        built.push(name);
+        // A dir that is neither a Rust crate nor a TS component is skipped.
     }
     Ok(built)
+}
+
+/// Builds one Rust component crate to `wasm/<name>.wasm` via `cargo build
+/// --target wasm32-wasip2 --release` (which componentizes).
+fn build_rust_component(crate_dir: &Path, name: &str, wasm_dir: &Path) -> anyhow::Result<()> {
+    let status = Command::new("cargo")
+        .args(["build", "--target", "wasm32-wasip2", "--release"])
+        .current_dir(crate_dir)
+        .status()
+        .with_context(|| "running cargo (is the wasm32-wasip2 target installed?)")?;
+    if !status.success() {
+        return Err(anyhow!("`cargo build` failed for component `{name}`"));
+    }
+    // Cargo names the artifact after the crate (dashes become underscores).
+    let artifact = crate_dir
+        .join("target/wasm32-wasip2/release")
+        .join(format!("{}.wasm", name.replace('-', "_")));
+    let dest = wasm_dir.join(format!("{name}.wasm"));
+    std::fs::copy(&artifact, &dest)
+        .with_context(|| format!("copying {} -> {}", artifact.display(), dest.display()))?;
+    Ok(())
+}
+
+/// The TS entrypoint of a component dir, if any: `index.ts` or `src/index.ts`.
+fn ts_entrypoint(crate_dir: &Path) -> Option<std::path::PathBuf> {
+    [crate_dir.join("index.ts"), crate_dir.join("src/index.ts")]
+        .into_iter()
+        .find(|p| p.is_file())
+}
+
+/// Bundles one TS component to `wasm/<name>.js` with `bun build`. The bundle is a
+/// self-contained IIFE (no ESM import/export to leak) targeting `browser` (no
+/// node/bun globals assumed) — exactly what the js-runner's classic `eval` runs.
+fn build_ts_component(entry: &Path, name: &str, wasm_dir: &Path) -> anyhow::Result<()> {
+    let dest = wasm_dir.join(format!("{name}.js"));
+    let status = Command::new("bun")
+        .args(["build", "--target=browser", "--format=iife", "--outfile"])
+        .arg(&dest)
+        .arg(entry)
+        .status()
+        .with_context(|| "running bun (is Bun installed? https://bun.sh)")?;
+    if !status.success() {
+        return Err(anyhow!("`bun build` failed for component `{name}`"));
+    }
+    Ok(())
 }
 
 fn flag(args: &[String], name: &str) -> Option<String> {

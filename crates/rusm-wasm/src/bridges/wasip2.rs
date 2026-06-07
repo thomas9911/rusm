@@ -291,6 +291,27 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn console_log_tolerates_bigint_pids() {
+        // Pids surface as bigint; `console.log(Process.self())` must not throw
+        // (JSON.stringify can't serialise bigint). If `fmt` threw, the bundle would
+        // trap before replying — so a reply proves console handled the pid.
+        const BUNDLE: &str = r#"
+            const replyTo = Process.receiveText();
+            console.log("my pid is", Process.self(), undefined);
+            Process.send(replyTo, "logged ok");
+        "#;
+        let rt = Runtime::new();
+        let wr = WasmRuntime::new(rt.clone()).unwrap();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let collector = rt.spawn(move |mut ctx| async move {
+            let _ = tx.send(ctx.recv().await.message().unwrap());
+        });
+        let guest = wr.spawn_js(BUNDLE.as_bytes());
+        rt.send(guest.pid(), collector.pid().raw().to_string().into_bytes());
+        assert_eq!(String::from_utf8(rx.await.unwrap()).unwrap(), "logged ok");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_javascript_bundle_has_web_api_polyfills() {
         // The runner installs Web API polyfills (webapi.js) before the bundle, so a
         // TS guest gets URL/TextEncoder/etc. transparently — no host support needed.

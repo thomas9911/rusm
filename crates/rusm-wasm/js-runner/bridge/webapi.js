@@ -18,7 +18,12 @@
   // console → optional host __print (set by the runner; no-op if absent).
   if (!G.console) {
     const print = G.__print ?? (() => {});
-    const fmt = (...a) => a.map((x) => (typeof x === "string" ? x : JSON.stringify(x))).join(" ");
+    // bigint (pids!) and undefined have no JSON form — String() them; JSON the rest.
+    const show = (x) =>
+      typeof x === "string" ? x
+      : typeof x === "bigint" || x === undefined ? String(x)
+      : JSON.stringify(x);
+    const fmt = (...a) => a.map(show).join(" ");
     G.console = {
       log: (...a) => print(fmt(...a)),
       info: (...a) => print(fmt(...a)),
