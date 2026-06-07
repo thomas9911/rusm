@@ -1,0 +1,29 @@
+# The rusm-ts "js-runner": a component that embeds rquickjs and runs a JS bundle,
+# bridging a `Process` global to the rusm:runtime actor world. A TS app is just a
+# Bun-bundled .js the runner executes — one shared, sandboxed runner per process.
+# Built for wasm32-wasip2 (needs wasi-sdk for QuickJS's C); checked in. Regenerate:
+#   CC_wasm32_wasip2=$HOME/.wasi-sdk/bin/clang \
+#   AR_wasm32_wasip2=$HOME/.wasi-sdk/bin/llvm-ar \
+#   CFLAGS_wasm32_wasip2=--sysroot=$HOME/.wasi-sdk/share/wasi-sysroot \
+#   cargo build --target wasm32-wasip2 --release
+#   cp target/wasm32-wasip2/release/js_runner.wasm ../js_runner.wasm
+[workspace]
+
+[package]
+name = "js-runner"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+name = "js_runner"
+
+[profile.release]
+opt-level = "z"
+lto = true
+strip = true
+
+[dependencies]
+wit-bindgen = "0.46"
+rquickjs = "0.9"
