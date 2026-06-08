@@ -114,8 +114,7 @@ async fn ticker(node: Arc<Node>, tx: broadcast::Sender<ServerMessage>) {
     let mut interval = tokio::time::interval(node.tick_period());
     // Broadcast every tick while a scenario runs (the live chart needs it), plus the
     // single running→idle frame the moment it stops. An idle node is then **silent** —
-    // no stream at all; a freshly-connected client gets a one-shot snapshot instead
-    // (see `handle_connection`).
+    // no stream at all (a client renders the idle state from no frame).
     let mut was_running = false;
     loop {
         interval.tick().await;
