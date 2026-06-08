@@ -13,6 +13,7 @@ members = [
     "crates/rusm-metrics",
     "crates/rusm-observer",
     "bench/rusm-bench",
+    "bench/rusm-loadtest",
     "rusm-cli",
     "xtask",
 ]

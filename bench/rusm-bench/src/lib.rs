@@ -9,7 +9,6 @@ mod connectionstorm;
 mod distributedfanout;
 mod fairness;
 mod faultrecovery;
-mod httpthroughput;
 mod modulestorm;
 mod pingpong;
 mod profile;
@@ -20,12 +19,12 @@ mod sample;
 mod scenario;
 mod server;
 mod spawnstorm;
-mod ssefanout;
 mod streampipe;
 mod synthetic;
-mod wsecho;
 
-pub use config::{CapabilitySpec, ComponentSpec, NodeConfig, PreopenSpec};
+pub use config::{
+    CapabilitySpec, ComponentSpec, NodeConfig, PreopenSpec, ServeProtocol, ServeSpec,
+};
 pub use profile::{ResourceProfile, ResourceProfileMeta};
 pub use protocol::{ClientCommand, Frame, ServerMessage};
 pub use report::summarize_frame;
@@ -34,9 +33,3 @@ pub use sample::Sample;
 pub use scenario::{MetricUnit, Scenario, ScenarioMeta};
 pub use server::{serve, serve_on, Node};
 pub use synthetic::SyntheticSource;
-
-/// Serializes the heavy serving/restart tests. Each spins a real server with
-/// hundreds of live connections and a full Wasm instance pool; run in parallel they
-/// exhaust fds / CPU / pool reservations and flake. Acquire it first in such a test.
-#[cfg(test)]
-pub(crate) static SERVING_TEST_GUARD: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());

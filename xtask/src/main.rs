@@ -54,8 +54,7 @@ fn deploy_docs() -> Result<(), String> {
 
     // `.nojekyll` stops GitHub Pages from dropping VitePress's `_`-prefixed asset
     // directories.
-    std::fs::write(dist.join(".nojekyll"), [])
-        .map_err(|e| format!("writing .nojekyll: {e}"))?;
+    std::fs::write(dist.join(".nojekyll"), []).map_err(|e| format!("writing .nojekyll: {e}"))?;
 
     let origin = capture("git", &["remote", "get-url", "origin"], &repo_root)?;
     let origin = origin.trim();
@@ -73,7 +72,8 @@ fn deploy_docs() -> Result<(), String> {
         &["push", "-f", origin, &format!("HEAD:{GH_PAGES_BRANCH}")],
         &dist,
     )?;
-    std::fs::remove_dir_all(&git_dir).map_err(|e| format!("cleaning up {}: {e}", git_dir.display()))?;
+    std::fs::remove_dir_all(&git_dir)
+        .map_err(|e| format!("cleaning up {}: {e}", git_dir.display()))?;
 
     println!("\n==> Done. Live (once Pages serves the gh-pages branch):");
     println!("    https://archan937.github.io/rusm/");
@@ -97,7 +97,10 @@ fn run(program: &str, args: &[&str], dir: &Path) -> Result<(), String> {
     if status.success() {
         Ok(())
     } else {
-        Err(format!("`{program} {}` exited with {status}", args.join(" ")))
+        Err(format!(
+            "`{program} {}` exited with {status}",
+            args.join(" ")
+        ))
     }
 }
 

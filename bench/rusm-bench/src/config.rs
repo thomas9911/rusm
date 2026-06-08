@@ -22,6 +22,11 @@ pub struct NodeConfig {
     /// Components to run as an app, declared as `[[components]]` tables. Each is
     /// loaded from `./wasm/<name>.wasm` and spawned under its capability profile.
     pub components: Vec<ComponentSpec>,
+    /// Servers to host, declared as `[[serve]]` tables. Each loads a component
+    /// from `./wasm/<name>.{wasm,js}` and serves it on a real TCP port over HTTP
+    /// (also SSE) or WebSocket — what `rusm serve` runs and a load driver hits.
+    #[serde(default)]
+    pub serve: Vec<ServeSpec>,
     /// Custom capability profiles, declared as `[capabilities.<name>]` tables. A
     /// component's `capability = "<name>"` resolves to one of these first, then to
     /// the built-in profiles (`sandboxed` / `network-client` / `trusted`).
@@ -126,6 +131,45 @@ fn default_capability() -> String {
     "sandboxed".to_string()
 }
 
+/// The wire protocol a `[[serve]]` entry is hosted over.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ServeProtocol {
+    /// Request/response HTTP/1.1 — a `wasi:http` component, one instance per request.
+    Http,
+    /// Server-Sent Events: an HTTP component that streams a `text/event-stream`
+    /// body. Served identically to [`Http`](Self::Http); the tag documents intent
+    /// and lets a load driver pick the streaming scenario.
+    Sse,
+    /// WebSocket — one sandboxed component process per connection.
+    Ws,
+}
+
+impl ServeProtocol {
+    /// Whether this protocol is hosted by the HTTP server (`http_server`). Both
+    /// plain HTTP and SSE are; only WebSocket uses a different server.
+    pub fn is_http(self) -> bool {
+        matches!(self, Self::Http | Self::Sse)
+    }
+}
+
+/// One `[[serve]]` entry: a component to host as a network server on its own port.
+/// Loaded from `./wasm/<name>.{wasm,js}` and run under a capability profile —
+/// HTTP/SSE via `http_server`, WebSocket via `ws_server`.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ServeSpec {
+    /// Component name; resolves to `./wasm/<name>.wasm` (or `<name>.js`).
+    pub name: String,
+    /// Wire protocol to host over (`http` / `sse` / `ws`).
+    pub protocol: ServeProtocol,
+    /// TCP address to bind, e.g. `"127.0.0.1:8080"` (the real serving port).
+    pub listen: String,
+    /// Capability profile id (`sandboxed` / `network-client` / `trusted` / custom).
+    #[serde(default = "default_capability")]
+    pub capability: String,
+}
+
 impl Default for NodeConfig {
     fn default() -> Self {
         Self {
@@ -133,6 +177,7 @@ impl Default for NodeConfig {
             profile: ResourceProfile::default(),
             ticks_per_second: 20,
             components: Vec::new(),
+            serve: Vec::new(),
             capabilities: HashMap::new(),
         }
     }
@@ -290,5 +335,64 @@ mod tests {
     #[test]
     fn unknown_capability_field_is_an_error() {
         assert!(NodeConfig::from_toml("[capabilities.x]\nnope = true\n").is_err());
+    }
+
+    #[test]
+    fn parses_serve_manifest_with_defaults() {
+        let cfg = NodeConfig::from_toml(
+            r#"
+            [[serve]]
+            name = "api"
+            protocol = "http"
+            listen = "127.0.0.1:8080"
+            capability = "trusted"
+
+            [[serve]]
+            name = "echo"
+            protocol = "ws"
+            listen = "0.0.0.0:8081"
+
+            [[serve]]
+            name = "ticker"
+            protocol = "sse"
+            listen = "127.0.0.1:8082"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(cfg.serve.len(), 3);
+        assert_eq!(cfg.serve[0].name, "api");
+        assert_eq!(cfg.serve[0].protocol, ServeProtocol::Http);
+        assert_eq!(cfg.serve[0].listen, "127.0.0.1:8080");
+        assert_eq!(cfg.serve[0].capability, "trusted");
+        // protocol parsed; capability defaults to sandboxed.
+        assert_eq!(cfg.serve[1].protocol, ServeProtocol::Ws);
+        assert_eq!(cfg.serve[1].capability, "sandboxed");
+        // SSE is an HTTP-hosted server; WS is not.
+        assert_eq!(cfg.serve[2].protocol, ServeProtocol::Sse);
+        assert!(cfg.serve[0].protocol.is_http() && cfg.serve[2].protocol.is_http());
+        assert!(!cfg.serve[1].protocol.is_http());
+    }
+
+    #[test]
+    fn no_servers_by_default() {
+        assert!(NodeConfig::from_toml("").unwrap().serve.is_empty());
+    }
+
+    #[test]
+    fn unknown_serve_protocol_is_an_error() {
+        let toml = "[[serve]]\nname = \"x\"\nprotocol = \"grpc\"\nlisten = \"127.0.0.1:1\"\n";
+        assert!(NodeConfig::from_toml(toml).is_err());
+    }
+
+    #[test]
+    fn serve_requires_a_listen_address() {
+        let toml = "[[serve]]\nname = \"x\"\nprotocol = \"http\"\n";
+        assert!(NodeConfig::from_toml(toml).is_err());
+    }
+
+    #[test]
+    fn unknown_serve_field_is_an_error() {
+        let toml = "[[serve]]\nname = \"x\"\nprotocol = \"http\"\nlisten = \"a:1\"\nnope = 1\n";
+        assert!(NodeConfig::from_toml(toml).is_err());
     }
 }

@@ -58,16 +58,20 @@ data to real measurements.
   **HTTP / WS / SSE** server. The serving engine is **built and measured** —
   `WasmRuntime::http_server` (instance-per-request `wasi:http`), `ws_server` (one
   sandboxed component process per WebSocket connection, replies via a Wasm-free writer
-  process), and SSE (a `wasi:http` streaming body). See
-  [serving HTTP/WS/SSE](./serving-http-ws-sse.md) and the `http_bench` / `ws_bench` /
-  `sse_bench` examples (~64.5k req/s, ~192k WS round-trips/s, ~1.5M SSE events/s).
-  Still to land: `rusm serve` + `rusm.toml [[http]]`, serving TLS, and the ws-echo /
-  sse-fanout dashboard scenarios. `rusm-otp` stays Wasm-free (hyper/tungstenite/
-  `wasi:http` live only in `rusm-wasm`).
+  process), and SSE (a `wasi:http` streaming body). **`rusm serve`** now hosts
+  `rusm.toml [[serve]]` entries (`name`, `protocol` = `http`|`sse`|`ws`, `listen`,
+  `capability`) on real TCP ports, loading `wasm/<name>.{wasm,js}` (HTTP/SSE via the
+  `http_server` path, WS via `ws_server`); **`rusm new <name>`** scaffolds a
+  ready-to-serve TS HTTP app. Serving is benchmarked **out-of-process** by the
+  `rusm-loadtest` binary against a live `rusm serve` port — loopback: HTTP ~46k req/s
+  (0% errors), WS ~146k round-trips/s (256 held), SSE ~609k events/s (256 held). See
+  [serving HTTP/WS/SSE](./serving-http-ws-sse.md). Still to land: serving TLS.
+  `rusm-otp` stays Wasm-free (hyper/tungstenite/`wasi:http` live only in `rusm-wasm`).
 - **Ten live dashboard benchmarks** — *every* scenario now runs on real data
-  (spawn-storm, ping-pong, fault-recovery, connection-storm, fairness, module-storm,
-  component-storm, stream-pipe, distributed-fanout, http-throughput) + the standalone
-  `cluster_fanout` / `http_bench` / `ws_bench` / `sse_bench` benchmarks.
+  (spawn-storm, ping-pong, fault-recovery, connection-storm, connection-scale,
+  fairness, module-storm, component-storm, stream-pipe, distributed-fanout) + the
+  standalone `cluster_fanout` benchmark. Serving throughput is measured separately by
+  `rusm-loadtest` (out-of-process, vs a live `rusm serve` port), not in the dashboard.
 - TDD throughout; coverage ≥98% (mostly 100%); `cargo fmt` + Prettier clean.
 
 See the per-phase deep dives under [`phases/`](./phases/phase-00-foundation.md), and

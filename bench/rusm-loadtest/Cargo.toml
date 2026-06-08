@@ -1,0 +1,21 @@
+[package]
+name = "rusm-loadtest"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Out-of-process load driver for a `rusm serve` node (balter saturation testing)."
+
+[[bin]]
+name = "rusm-loadtest"
+path = "src/main.rs"
+
+[dependencies]
+balter = "0.8"
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.12", default-features = false, features = ["stream"] }
+tokio-tungstenite = "0.24"
+futures-util = "0.3"
+anyhow.workspace = true

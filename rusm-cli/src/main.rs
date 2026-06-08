@@ -5,7 +5,8 @@ use anyhow::{anyhow, Context};
 use futures_util::{SinkExt, StreamExt};
 use rusm_bench::{serve, ClientCommand, Node, NodeConfig, ResourceProfile};
 use rusm_cli::{
-    normalize_target, parse, render_message, spawn_components, ReplInput, DEFAULT_HOST, HELP,
+    normalize_target, parse, render_message, scaffold, serve_apps, spawn_components, ReplInput,
+    DEFAULT_HOST, HELP,
 };
 use rusm_otp::Runtime;
 use rusm_wasm::WasmRuntime;
@@ -54,6 +55,27 @@ async fn main() {
             eprintln!("attach failed: {error}");
             std::process::exit(1);
         }
+    } else if command == Some("new") {
+        // Scaffold a new RUSM app in ./<name>.
+        match subcommand {
+            Some(name) => match scaffold(Path::new("."), name) {
+                Ok(_) => {
+                    println!("created {name}/");
+                    println!("\nnext:");
+                    println!("  cd {name}");
+                    println!("  rusm build      # bundle components/ -> wasm/");
+                    println!("  rusm serve      # http://127.0.0.1:8080");
+                }
+                Err(error) => {
+                    eprintln!("new failed: {error}");
+                    std::process::exit(1);
+                }
+            },
+            None => {
+                eprintln!("usage: rusm new <name>");
+                std::process::exit(2);
+            }
+        }
     } else if command == Some("build") {
         // Compile components/<name>/ -> wasm/<name>.wasm (one toolchain, no jco).
         match build_components(Path::new(".")) {
@@ -76,6 +98,13 @@ async fn main() {
             eprintln!("run failed: {error}");
             std::process::exit(1);
         }
+    } else if command == Some("serve") {
+        // Host the app's [[serve]] components as real HTTP/WS/SSE servers on their
+        // own ports — what an out-of-process load driver (rusm-loadtest) hits.
+        if let Err(error) = serve_app(&args).await {
+            eprintln!("serve failed: {error}");
+            std::process::exit(1);
+        }
     } else if command == Some("dev") {
         // Build, run, and watch: edit a component and RUSM rebuilds + reloads it.
         if let Err(error) = dev(&args).await {
@@ -84,6 +113,7 @@ async fn main() {
         }
     } else {
         eprintln!("usage:");
+        eprintln!("  rusm new <name>            scaffold a new RUSM app in ./<name>");
         eprintln!(
             "  rusm node start [--config <file>] [--listen <addr>] [--profile light|balanced|max]"
         );
@@ -92,6 +122,9 @@ async fn main() {
             "  rusm run                   run ./wasm components per rusm.toml [[components]]"
         );
         eprintln!("  rusm dev                   build + run, then watch & reload on edits");
+        eprintln!(
+            "  rusm serve                 host ./wasm components as HTTP/WS/SSE servers per rusm.toml [[serve]]"
+        );
         eprintln!("  rusm attach [<host | host:port | ws-url>]   (defaults to 127.0.0.1:4000)");
         std::process::exit(2);
     }
@@ -121,6 +154,33 @@ async fn run_app(args: &[String]) -> anyhow::Result<()> {
     println!("press Ctrl-C to stop");
     tokio::signal::ctrl_c().await?;
     println!("\nstopping {} component(s)…", rt.shutdown());
+    Ok(())
+}
+
+/// `rusm serve`: host each `[[serve]]` component as a real network server on its
+/// own port (HTTP/SSE or WebSocket), then wait for Ctrl-C. The bound runtime + the
+/// accept-loop tasks keep the servers up. This is the *server* side of a fair
+/// benchmark: the node only serves; load is driven out-of-process (`rusm-loadtest`).
+async fn serve_app(args: &[String]) -> anyhow::Result<()> {
+    // Env the Rust way: process env first, then ./.env.
+    dotenvy::dotenv().ok();
+
+    let cfg = load_node_config(args);
+    let rt = Runtime::new();
+    let wasm = WasmRuntime::new(rt.clone())?;
+    let endpoints = serve_apps(Path::new("."), &wasm, &cfg.serve, &cfg.capabilities).await?;
+    if endpoints.is_empty() {
+        println!("no [[serve]] entries in rusm.toml — nothing to serve");
+        return Ok(());
+    }
+    println!("serving {} endpoint(s):", endpoints.len());
+    for ep in &endpoints {
+        let scheme = if ep.protocol.is_http() { "http" } else { "ws" };
+        println!("  {:<16} {scheme}://{}", ep.name, ep.addr);
+    }
+    println!("press Ctrl-C to stop");
+    tokio::signal::ctrl_c().await?;
+    println!("\nstopping {} process(es)…", rt.shutdown());
     Ok(())
 }
 

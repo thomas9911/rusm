@@ -1,13 +1,16 @@
 # Serving HTTP, WS & SSE from a component (Phase 11)
 
-> **Status: HTTP, WS, and SSE all work — from both RS and TS components.** A WASM
-> component is served over real **HTTP** (`WasmRuntime::http_server` —
-> [`http_bench`](https://github.com/archan937/rusm/tree/main/examples/http_bench): lean ~64.5k req/s instance-per-request vs
-> ~197k bare-hyper), real **WebSockets** with *one component process per connection*
-> (`WasmRuntime::ws_server` — [`ws_bench`](https://github.com/archan937/rusm/tree/main/examples/ws_bench): ~192k echo
-> round-trips/s, 128/128 held, sandbox cost inside noise), and real **SSE** (a
-> `wasi:http` streaming body — [`sse_bench`](https://github.com/archan937/rusm/tree/main/examples/sse_bench): ~1.5M events/s
-> across 128 long-lived streams).
+> **Status: HTTP, WS, and SSE all work — from both RS and TS components, served on
+> real ports by `rusm serve`.** A WASM component is served over real **HTTP**
+> (`WasmRuntime::http_server`), real **WebSockets** with *one component process per
+> connection* (`WasmRuntime::ws_server`), and real **SSE** (a `wasi:http` streaming
+> body). Measured **out-of-process** by [`rusm-loadtest`](https://github.com/archan937/rusm/tree/main/bench/rusm-loadtest)
+> against a live `rusm serve` port (loopback): HTTP **~46k req/s** at 0% errors, WS
+> **~146k round-trips/s** across 256 held connections, SSE **~609k events/s** across
+> 256 held streams. (The in-process `http_bench` / `ws_bench` / `sse_bench` examples
+> still exist to measure the engine against the bare-host ceiling, but they share the
+> server's CPU and hide the network behind loopback — `rusm-loadtest` is the fair,
+> served number.)
 >
 > **Both guest languages serve all three.** RS components compile straight to
 > `wasi:http` (via `wstd`) / the actor world. TS components run on the embedded
@@ -71,9 +74,25 @@ The hardening phase was the groundwork for serving at scale.
 
 ### How you run it
 
-`rusm.toml` gains an `[[http]]` block (address, the component to serve, capability
-profile, TLS cert), and `rusm serve` / `rusm dev` bind it — the same app model and
-supervision as any other component.
+`rusm.toml` declares one or more **`[[serve]]`** entries — `name`, `protocol`
+(`http` | `sse` | `ws`), `listen` (e.g. `"127.0.0.1:8080"`), and `capability`
+(defaults to `sandboxed`). **`rusm serve`** binds each on its real TCP port, loading
+the component from `wasm/<name>.{wasm,js}` (HTTP and SSE via the `http_server` path,
+WS via `ws_server`) — the same app model and supervision as any other component. The
+node only serves; it never generates load. Start from scratch with
+**`rusm new <name>`**, which scaffolds a zero-dependency TS HTTP component
+(`components/api/index.ts`, a default `Request`→`Response` handler), a `rusm.toml`
+with a `[[serve]]` entry, `.gitignore`, and a README:
+
+```sh
+rusm new hello && cd hello
+rusm build
+rusm serve
+curl http://127.0.0.1:8080/
+```
+
+(Serving TLS is still to land; HTTPS/WSS terminate with the same rustls stack as the
+cluster once wired.)
 
 ## Which Rust API? (`wasi:http` vs `wstd` — not a real choice)
 
@@ -204,24 +223,43 @@ profile grants) and supervised (a crash restarts the handler, never the listener
 
 ## Benchmarks
 
-Each serving topic has a runnable stress example reporting against a **bare-host
-baseline** (or the host transport ceiling) so the sandbox overhead is explicit — the
-honest, *earned* number. Representative loopback figures:
+Serving is benchmarked the **fair** way: **out-of-process**, by the
+[`rusm-loadtest`](https://github.com/archan937/rusm/tree/main/bench/rusm-loadtest)
+binary driven against a real `rusm serve` port. The load generator runs in a separate
+process — so it never shares the server's CPU — and crosses a real socket.
 
-| Topic | Example | Earned (loopback) |
+- **HTTP** uses the **balter** crate (a Tokio-native load-testing framework) as a
+  **fixed-rate sweep**: drive increasing target req/s and, at each level, measure
+  achieved throughput + tail latency + error rate; climb until the SLA breaks or
+  throughput plateaus, and report the max the server genuinely sustained. (balter's
+  auto-saturation control loop is too cautious in the sub-millisecond loopback regime,
+  so we use its reliable constant-rate controller and sweep ourselves — every number
+  is a direct measurement, none extrapolated.)
+- **WS & SSE** use a tokio-native **connection-capacity harness** (held connections
+  sustaining echo round-trips / draining events), because these are
+  connection-capacity workloads, not request-rate — reported as concurrency +
+  sustained ops/sec + p50/p99.
+
+Measured live (out-of-process, loopback):
+
+| Topic | Method | Measured |
 | --- | --- | --- |
-| **HTTP** | [`http_bench`](https://github.com/archan937/rusm/tree/main/examples/http_bench) | lean raw-`wasi:http` **~64.5k req/s** instance-per-request, wstd ~51k, bare hyper ~197k. Instantiate-only ~11µs (lean) — per-request isolation is cheap, so warm-pooling is **not** worth it. The ~3× vs bare hyper is `wasi:http` component-model marshaling. |
-| **WS** | [`ws_bench`](https://github.com/archan937/rusm/tree/main/examples/ws_bench) | **~192k echo round-trips/s, 128/128 connections held.** One sandboxed component process per connection; the per-message writer→component→writer mailbox hop costs ~nothing — the component path lands **inside noise** of the bare hyper+tungstenite transport. |
-| **SSE** | [`sse_bench`](https://github.com/archan937/rusm/tree/main/examples/sse_bench) | **~1.5M events/s across 128 long-lived streams, all held.** Each stream is its own `wasi:http` instance; a dropped client tears down only its own instance. |
+| **HTTP** | balter fixed-rate sweep | **~46k req/s at 0% errors.** |
+| **WS** | connection-capacity harness | **~146k round-trips/s across 256 held connections.** One sandboxed component process per connection; the per-message writer→component→writer mailbox hop costs ~nothing. |
+| **SSE** | connection-capacity harness | **~609k events/s across 256 held streams.** Each stream is its own `wasi:http` instance; a dropped client tears down only its own instance. |
 
-The **http-throughput** scenario is live in the dashboard; **ws-echo** and
-**sse-fanout** dashboard scenarios follow the same live-engine pattern (the standalone
-examples above are the source of truth for the numbers today).
+The in-process `http_bench` / `ws_bench` / `sse_bench` examples still exist to measure
+the **engine** against the bare-host transport ceiling (so sandbox overhead is
+explicit), but they share the server's CPU and hide the network behind loopback — so
+the `rusm-loadtest` figures above are the source of truth for *served* throughput.
+(The earlier in-process dashboard serving scenarios — `http-throughput`, `ws-echo`,
+`sse-fanout` and their `*-ts` twins — were removed for the same reason: an in-process
+load generator sharing the server's CPU is not a fair benchmark.)
 
-What "good" looks like, confirmed: HTTP within a small multiple of bare hyper (the
-price of per-request memory isolation, paid once — like module-storm vs a bare task);
-WS/SSE holding every connection open under load (bounded by RAM, not a fixed cap),
-latency flat because the streams are Tokio-backpressured.
+What "good" looks like, confirmed: HTTP serving thousands of isolated
+instance-per-request handlers a second over a real socket at zero errors; WS/SSE
+holding every connection open under load (bounded by RAM, not a fixed cap), latency
+flat because the streams are Tokio-backpressured.
 
 ## Battle-proven foundations (no reinvention)
 

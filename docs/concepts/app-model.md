@@ -8,6 +8,7 @@ build, load, supervise, and run them — so you write *source*, not glue.
 ```
 my-app/
 ├── rusm.toml          # node config + [[components]] (name, capability, restart)
+│                       #   and/or [[serve]] (name, protocol, listen, capability)
 ├── components/        # SOURCE — a cargo workspace, one crate per component
 │   └── <name>/        # Rust (and TS via Bun + rquickjs, embedded — no jco)
 └── wasm/              # BUILT, ready-to-run .wasm (also drop 3rd-party .wasm here)
@@ -18,13 +19,24 @@ load directory.
 
 ## Commands
 
+- **`rusm new <name>`** — scaffolds a new app: a zero-dependency TypeScript HTTP
+  component (`components/api/index.ts`, a default `Request`→`Response` handler), a
+  `rusm.toml` with a `[[serve]]` entry, `.gitignore`, and a README. `rusm new hello
+  && cd hello && rusm build && rusm serve` then `curl http://127.0.0.1:8080/` works
+  end to end.
 - **`rusm build`** — discovers `components/<name>/`, builds each with one
   toolchain (`cargo build --target wasm32-wasip2`, which componentizes — no jco,
   no cargo-component), and emits `./wasm/<name>.wasm`.
 - **`rusm run`** — loads each manifest component, spawns it under its capability
   profile, and supervises it per its restart policy. Code can also spawn
   dynamically — both work together.
-- **`rusm dev`** — build, then run (filesystem watch/reload is a follow-on).
+- **`rusm dev`** — build, then run, then watch `./components` and rebuild + reload
+  on edit.
+- **`rusm serve`** — hosts the `rusm.toml` **`[[serve]]`** entries (`name`,
+  `protocol` = `http` | `sse` | `ws`, `listen`, `capability` — defaults to
+  `sandboxed`) on real TCP ports, loading each component from
+  `wasm/<name>.{wasm,js}` (HTTP and SSE via the `http_server` path, WS via
+  `ws_server`). The node only serves; it never generates load.
 
 ## Environment — KISS, the Rust way
 

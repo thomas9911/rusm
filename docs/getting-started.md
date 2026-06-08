@@ -170,6 +170,28 @@ restart = true           # supervise: restart if it exits
 rusm run          # load every [[components]] from ./wasm/, spawn under its profile
 ```
 
+**Serving on a real port.** To run a component as an HTTP / WS / SSE server, declare
+a `[[serve]]` entry and run `rusm serve` — it binds each on its TCP `listen` address,
+loading the component from `wasm/<name>.{wasm,js}` (HTTP and SSE via the `http_server`
+path, WS via `ws_server`). The fastest way in is **`rusm new <name>`**, which
+scaffolds a ready-to-serve app (a zero-dependency TS HTTP component, a `rusm.toml`
+with a `[[serve]]` entry, `.gitignore`, README):
+
+```toml
+[[serve]]
+name = "api"              # loaded from ./wasm/api.{wasm,js}
+protocol = "http"         # "http" | "sse" | "ws"
+listen = "127.0.0.1:8080"
+capability = "sandboxed"  # defaults to sandboxed
+```
+
+```sh
+rusm new hello && cd hello
+rusm build
+rusm serve
+curl http://127.0.0.1:8080/
+```
+
 **Custom capability profiles.** Beyond the three built-ins (`sandboxed` /
 `network-client` / `trusted`), you can define your own — like Cargo's
 `[profile.<name>]`. A profile `inherits` a built-in base (default `sandboxed`,

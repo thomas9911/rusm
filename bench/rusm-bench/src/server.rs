@@ -233,53 +233,8 @@ mod tests {
         assert_eq!(frame.scenario.as_deref(), Some("distributed-fanout"));
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-    async fn node_serves_http_throughput_over_the_websocket() {
-        let _serial = crate::SERVING_TEST_GUARD.lock().await;
-        // The EXACT dashboard path: serve_on + ticker + a WebSocket client sending
-        // Run and reading frames. Reproduces what `make dashboard` does, end to end.
-        let node = Node::new(RunnerConfig::default());
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        tokio::spawn(serve_on(listener, node));
-
-        let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/"))
-            .await
-            .unwrap();
-        ws.send(Message::Text(
-            ClientCommand::Run {
-                scenario: "http-throughput".to_string(),
-            }
-            .to_json()
-            .into(),
-        ))
-        .await
-        .unwrap();
-
-        let start = Instant::now();
-        let mut max_ops = 0.0_f64;
-        while start.elapsed() < Duration::from_secs(6) {
-            let Some(Ok(Message::Text(text))) = ws.next().await else {
-                continue;
-            };
-            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
-                if v["type"] == "tick" && v["frame"]["scenario"] == "http-throughput" {
-                    max_ops = v["frame"]["ops_per_sec"]
-                        .as_f64()
-                        .unwrap_or(0.0)
-                        .max(max_ops);
-                }
-            }
-        }
-        assert!(
-            max_ops > 1000.0,
-            "node served http over the WebSocket (max {max_ops:.0}/s)"
-        );
-    }
-
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn run_stop_run_still_produces_throughput() {
-        let _serial = crate::SERVING_TEST_GUARD.lock().await;
         // The dashboard flow over the node API: Run → Stop → Run. The second run must
         // still produce throughput, and an idle node must report not-running.
         let node = Node::new(RunnerConfig::default());

@@ -22,15 +22,31 @@ high-throughput **HTTP / WS / SSE** server, all in `rusm-wasm` (hyper +
 (instance-per-request `wasi:http` via `ProxyPre`, ~64.5k req/s lean), `WsServer` (one
 sandboxed **component process per connection** — inbound frame → mailbox message,
 replies via a Wasm-free writer process that owns the socket sink; ~192k echo
-round-trips/s, sandbox cost inside noise), and **SSE** (a `wasi:http` streaming body —
-~1.5M events/s across 128 held streams). **Both guest languages serve all three**:
+round-trips/s, sandbox cost inside noise), and **SSE** (a `wasi:http` streaming body).
+**Both guest languages serve all three**:
 RS compiles to `wasi:http`/the actor world; **TS** runs on embedded rquickjs runners —
 `http_server_js` + the raw-`wasi:http` **js-http-runner** (runs `export default { fetch }`,
 pull-based streaming for SSE) and `ws_server_js` (a TS worker, one process per
-connection). Benches: `http_bench`/`ws_bench`/`sse_bench`; the **ws-echo**,
-**sse-fanout**, and **connection-scale** (held-open concurrency to the OS fd ceiling)
-dashboard scenarios are live. Still to land: `rusm serve` + `rusm.toml [[http]]`,
-serving TLS. The Wasm-free
+connection). **`rusm serve` is live**: it hosts `rusm.toml [[serve]]` entries
+(`name`, `protocol` = `http`|`sse`|`ws`, `listen`, `capability` = `sandboxed` by
+default) on real TCP ports — loading `wasm/<name>.{wasm,js}`, HTTP/SSE via the
+`http_server` path and WS via `ws_server`. The node only serves; it never generates
+load. **`rusm new <name>`** scaffolds an app (a zero-dependency TS HTTP component
+`components/api/index.ts`, a `rusm.toml` `[[serve]]` entry, `.gitignore`, README) so
+`rusm new hello && cd hello && rusm build && rusm serve` then `curl
+http://127.0.0.1:8080/` works end-to-end. **Serving is benchmarked out-of-process**
+by the `bench/rusm-loadtest` (`rusm-loadtest`) binary against a real `rusm serve`
+port — the fair methodology (the load generator runs in a separate process, never
+sharing the server's CPU, and crosses a real socket). HTTP uses **balter** (a
+Tokio-native load framework) as a fixed-rate sweep (balter's auto-saturation control
+is too cautious in the sub-ms loopback regime, so we drive its constant-rate
+controller and sweep ourselves — every number measured, none extrapolated); WS & SSE
+use a tokio-native connection-capacity harness (held connections sustaining echo
+round-trips / draining events). Measured live (out-of-process, loopback): HTTP ~46k
+req/s at 0% errors; WS 256 held connections ~146k round-trips/s; SSE 256 held streams
+~609k events/s. The three in-process *dashboard* serving scenarios
+(`http-throughput`, `ws-echo`, `sse-fanout` and their `*-ts` twins) were **removed**
+— they shared the server's CPU and hid the network behind loopback. The Wasm-free
 **`rusm-cluster`** crate (over `rusm-otp`, never Wasmtime) connects nodes over
 **QUIC + TLS** (quinn + rustls/ring; **mutual TLS** — a `ClusterCa` issues per-node
 certs, or a shared self-signed `Identity`): a `ClusterNode`
@@ -40,8 +56,11 @@ stream**, and routes each message on its own **uni-stream**. It gives cross-node
 `send_global`), **remote spawn** (named `Spawnable` factories), and **live attach**
 (`remote_pids`) over one request/reply control-plane RPC — ~550k cross-node msgs/s,
 ~39µs p50 round-trip (the standalone `cluster_fanout` bench). The live
-`distributed-fanout` dashboard scenario now runs on this real engine — **all nine
-dashboard scenarios are real; none remain synthetic**. The Wasmtime backend (`rusm-wasm`, the *only* crate that
+`distributed-fanout` dashboard scenario now runs on this real engine — **all ten
+dashboard scenarios are real; none remain synthetic** (spawn-storm, ping-pong,
+fault-recovery, connection-storm, connection-scale, fairness, module-storm,
+component-storm, stream-pipe, distributed-fanout; serving numbers now come solely
+from `rusm-loadtest`, not the dashboard). The Wasmtime backend (`rusm-wasm`, the *only* crate that
 touches Wasmtime) runs each component instance-per-process via the **component
 model** (`wasmtime-wasi`; `bridges/{wasip1,wasip2,wasip3}.rs` over a shared core).
 The component linker wires **WASI p2 and p3** — both `@0.2.0` and `@0.3.0`
@@ -54,9 +73,10 @@ The spawn path is optimized — pooling allocator + copy-on-write + per-module
 `InstancePre` + **precomputed export index** + **opt-in mailbox depth** (default
 off → zero hot-path atomics) + single runtime-handle clone — sustaining **~440k
 component spawns/sec** (live `component-storm` scenario). Trap → process
-`Crashed`. An **app model** (`rusm-cli`): `rusm.toml [[components]]`, `rusm build`
-(cargo `wasm32-wasip2` per `components/*`, no jco), `rusm run`/`rusm dev`; env the
-Rust way (process env, then `.env` via `dotenvy`). `rusm-otp` stays Wasm-free
+`Crashed`. An **app model** (`rusm-cli`): `rusm new <name>` (scaffold),
+`rusm.toml [[components]]`/`[[serve]]`, `rusm build`
+(cargo `wasm32-wasip2` per `components/*`, no jco), `rusm run`/`rusm dev`/`rusm
+serve`; env the Rust way (process env, then `.env` via `dotenvy`). `rusm-otp` stays Wasm-free
 (verified: no `wasmtime` in its dep tree).
 
 Underneath, the Wasm-free OTP core (`rusm-otp`) spawns,
@@ -142,8 +162,11 @@ cargo llvm-cov --workspace --ignore-filename-regex 'main\.rs' --summary-only
 cargo fmt --check
 cargo run -p rusm-cli -- node start         # start a node
 cargo run -p rusm-cli -- attach             # local node; or attach host[:port]
+cargo run -p rusm-cli -- new hello          # scaffold an app
+cargo run -p rusm-cli -- serve              # host rusm.toml [[serve]] entries on real ports
 cargo run -p rusm-bench -- run connection-storm 5
 cargo run -p rusm-bench --example headless_run
+cargo run -p rusm-loadtest -- --help        # out-of-process serving load test (vs a live `rusm serve` port)
 
 cd bench/dashboard && bun install && bun run dev      # dashboard
 cd bench/dashboard && bun test --coverage             # dashboard tests
@@ -153,5 +176,6 @@ cd bench/dashboard && bun test --coverage             # dashboard tests
 
 `crates/rusm-otp`, `crates/rusm-wasm`, `crates/rusm-cluster`,
 `crates/rusm-metrics`, `crates/rusm-observer`, `bench/rusm-bench` (lib+bin),
+`bench/rusm-loadtest` (out-of-process serving load test),
 `rusm-cli` (`rusm`), `bench/dashboard` (Bun/React), `examples/`, `docs/`.
 Per-crate purpose: see `README.md` → Crates.

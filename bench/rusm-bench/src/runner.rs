@@ -7,7 +7,6 @@ use crate::connectionstorm::ConnectionStormEngine;
 use crate::distributedfanout::DistributedFanoutEngine;
 use crate::fairness::FairnessEngine;
 use crate::faultrecovery::FaultRecoveryEngine;
-use crate::httpthroughput::HttpThroughputEngine;
 use crate::modulestorm::ModuleStormEngine;
 use crate::pingpong::PingPongEngine;
 use crate::profile::ResourceProfile;
@@ -15,10 +14,8 @@ use crate::protocol::Frame;
 use crate::sample::Sample;
 use crate::scenario::Scenario;
 use crate::spawnstorm::SpawnStormEngine;
-use crate::ssefanout::SseFanoutEngine;
 use crate::streampipe::StreamPipeEngine;
 use crate::synthetic::SyntheticSource;
-use crate::wsecho::WsEchoEngine;
 
 fn available_cores() -> usize {
     std::thread::available_parallelism().map_or(4, |n| n.get())
@@ -68,10 +65,7 @@ enum Engine {
     ComponentStorm(ComponentStormEngine),
     StreamPipe(StreamPipeEngine),
     DistributedFanout(DistributedFanoutEngine),
-    HttpThroughput(HttpThroughputEngine),
     ConnectionScale(ConnectionScaleEngine),
-    WsEcho(WsEchoEngine),
-    SseFanout(SseFanoutEngine),
 }
 
 impl Engine {
@@ -116,26 +110,9 @@ impl Engine {
                 config.spawn_workers,
                 config.scheduler_count,
             )),
-            Scenario::HttpThroughput | Scenario::HttpThroughputTs => {
-                Engine::HttpThroughput(HttpThroughputEngine::new(
-                    config.spawn_workers,
-                    config.scheduler_count,
-                    scenario.guest(),
-                ))
-            }
             Scenario::ConnectionScale => Engine::ConnectionScale(ConnectionScaleEngine::new(
                 config.spawn_workers,
                 config.scheduler_count,
-            )),
-            Scenario::WsEcho | Scenario::WsEchoTs => Engine::WsEcho(WsEchoEngine::new(
-                config.spawn_workers,
-                config.scheduler_count,
-                scenario.guest(),
-            )),
-            Scenario::SseFanout | Scenario::SseFanoutTs => Engine::SseFanout(SseFanoutEngine::new(
-                config.spawn_workers,
-                config.scheduler_count,
-                scenario.guest(),
             )),
         }
     }
@@ -157,10 +134,7 @@ impl Engine {
             Engine::ComponentStorm(engine) => engine.tick(),
             Engine::StreamPipe(engine) => engine.tick(),
             Engine::DistributedFanout(engine) => engine.tick(),
-            Engine::HttpThroughput(engine) => engine.tick(),
             Engine::ConnectionScale(engine) => engine.tick(),
-            Engine::WsEcho(engine) => engine.tick(),
-            Engine::SseFanout(engine) => engine.tick(),
         }
     }
 }
@@ -222,13 +196,7 @@ impl Runner {
             | Scenario::ComponentStorm
             | Scenario::StreamPipe
             | Scenario::DistributedFanout
-            | Scenario::HttpThroughput
-            | Scenario::ConnectionScale
-            | Scenario::WsEcho
-            | Scenario::SseFanout
-            | Scenario::HttpThroughputTs
-            | Scenario::WsEchoTs
-            | Scenario::SseFanoutTs),
+            | Scenario::ConnectionScale),
         ) = self.scenario()
         {
             self.start(scenario);
@@ -392,63 +360,8 @@ mod tests {
         assert!(frame.observer.messages_total > 0);
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-    async fn http_throughput_is_sustained_not_a_blip() {
-        let _serial = crate::SERVING_TEST_GUARD.lock().await;
-        // Reproduce the live node: full Balanced client count, watched for several
-        // seconds. The frame the user saw was 0 ops for 20s while "running" — a hang,
-        // not slowness. Sustained throughput must be clearly non-zero.
-        let mut r = runner();
-        r.start(Scenario::HttpThroughput);
-        let mut max_ops = 0.0_f64;
-        for tick in 0..120 {
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-            max_ops = r.tick(tick).ops_per_sec.max(max_ops);
-        }
-        assert!(
-            max_ops > 1000.0,
-            "http throughput sustained (max {max_ops:.0}/s)"
-        );
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-    async fn switching_scenarios_keeps_producing_throughput() {
-        let _serial = crate::SERVING_TEST_GUARD.lock().await;
-        // The user's exact flow: stop one benchmark, start a *different* one. Each
-        // switch must produce throughput — a fresh engine, no leak from the last.
-        let config = RunnerConfig {
-            spawn_workers: 1, // lighter connection counts → fast test
-            ..RunnerConfig::default()
-        };
-        let mut r = Runner::new(config);
-        async fn run_until_throughput(r: &mut Runner, scenario: Scenario) -> bool {
-            r.start(scenario);
-            for tick in 0..400 {
-                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-                if r.tick(tick).ops_per_sec > 0.0 {
-                    return true;
-                }
-            }
-            false
-        }
-        for scenario in [
-            Scenario::HttpThroughput,
-            Scenario::WsEcho,
-            Scenario::SseFanout,
-            Scenario::HttpThroughput,
-        ] {
-            assert!(
-                run_until_throughput(&mut r, scenario).await,
-                "{} produced throughput after the switch",
-                scenario.id()
-            );
-            r.stop();
-        }
-    }
-
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn repeated_restart_keeps_producing_throughput() {
-        let _serial = crate::SERVING_TEST_GUARD.lock().await;
         // Click like a monkey: run → stop, over and over, for both a bare-process and
         // a WASM-spawning scenario. Every cycle must produce throughput — if a stopped
         // engine leaked its processes/runtime, later cycles would degrade to zero.
@@ -463,7 +376,7 @@ mod tests {
             false
         }
         let mut r = runner();
-        for scenario in [Scenario::SpawnStorm, Scenario::HttpThroughput] {
+        for scenario in [Scenario::SpawnStorm, Scenario::ComponentStorm] {
             for cycle in 1..=4 {
                 assert!(
                     run_until_throughput(&mut r, scenario).await,
@@ -473,34 +386,6 @@ mod tests {
                 r.stop();
             }
         }
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-    async fn ws_echo_sustains_throughput_under_the_runner() {
-        let _serial = crate::SERVING_TEST_GUARD.lock().await;
-        // Drive ws-echo the way the node does (through the Runner), at the default
-        // Balanced profile (hundreds of connections), and confirm round-trips flow.
-        let mut r = runner();
-        r.start(Scenario::WsEcho);
-        // Mimic the dashboard flow: switch the resource profile mid-run (which
-        // restarts the engine at the new, larger connection count).
-        r.tick(0);
-        r.set_resource_profile(ResourceProfile::Max);
-        let mut frame = r.tick(1);
-        let mut ok = false;
-        for tick in 2..=500 {
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-            frame = r.tick(tick);
-            if frame.ops_per_sec > 0.0 {
-                ok = true;
-                break;
-            }
-        }
-        assert!(
-            ok,
-            "ws-echo produced throughput under the runner (peak concurrent {})",
-            frame.peak_concurrent
-        );
     }
 
     #[test]

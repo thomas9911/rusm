@@ -29,7 +29,7 @@ Wasmtime does the isolation.
 > schedules, kills, messages, **supervises**, **manages**, and **connects** **real**
 > lightweight processes — links, monitors, `trap_exit`, exit cascades, a named
 > registry, timers, graceful shutdown, and **TCP** (one process per connection).
-> Nine benchmarks show real numbers (release) — *every* dashboard scenario now runs
+> Ten dashboard scenarios show real numbers (release) — *every* scenario now runs
 > on live data: spawn-storm **~2.4M spawns/sec**,
 > ping-pong **~21M messages/sec** (round-trip p50 <1 µs), fault-recovery
 > **~285k restarts/sec**, fairness keeping bystanders at **~50M+ ops/sec**
@@ -47,8 +47,15 @@ Wasmtime does the isolation.
 > (~39µs p50 round-trip, loopback). **Hardened for scale (Phase 10):** an on-demand
 > instance tier (live count bounded by RAM, not a fixed pool), opt-in bounded
 > mailboxes (overload load-shed), per-node certs under a cluster CA + mutual TLS,
-> and windowed supervisor restart-intensity — with no spawn/message regression. See
-> the [roadmap](docs/02-roadmap.md).
+> and windowed supervisor restart-intensity — with no spawn/message regression.
+> **Serving (Phase 11):** a component runs as a high-throughput **HTTP / WS / SSE**
+> server. **`rusm serve`** hosts `rusm.toml [[serve]]` entries (`name`, `protocol`,
+> `listen`, `capability`) on real TCP ports, and **`rusm new <name>`** scaffolds a
+> ready-to-serve TS HTTP app (`rusm new hello && cd hello && rusm build && rusm
+> serve`). Serving is benchmarked **out-of-process** by `rusm-loadtest` against a
+> live port — loopback: HTTP **~46k req/s** (0% errors), WS **~146k round-trips/s**
+> (256 held), SSE **~609k events/s** (256 held). See the
+> [roadmap](docs/02-roadmap.md).
 
 ## Why
 
@@ -99,9 +106,10 @@ make dashboard
 
 That builds the CLI, starts a node, launches the dashboard, and opens your
 browser. Pick a scenario, press **Run**, and watch live throughput, latency
-percentiles, and the host/instance observer. (Spawn-storm, ping-pong, and
-fault-recovery run **real** `rusm-otp` processes; the remaining scenarios are
-synthetic until their phase lands.)
+percentiles, and the host/instance observer. All ten dashboard scenarios now run
+**real** engines — none are synthetic. (Serving throughput — HTTP/WS/SSE — is no
+longer a dashboard scenario; it's measured out-of-process by `rusm-loadtest`
+against a live `rusm serve` port; see below.)
 
 Prefer to drive the pieces yourself? (`make help` lists everything)
 
@@ -166,8 +174,9 @@ by construction** — Wasm lives only in the `rusm-wasm` backend.
 | `rusm-cluster` | lib | **The distributed transport** (Phase 9) — connects nodes over QUIC + TLS for cross-node `send`, a gossiped global registry, remote spawn, and live attach. Over `rusm-otp`, **no `wasmtime` dependency**. |
 | `rusm-metrics` | lib | Counters, HdrHistogram-backed latency percentiles, ring-buffer time-series. |
 | `rusm-observer` | lib | Low-overhead live-observer snapshots — aggregate counters plus a sampled per-instance table, with a detail on/off toggle. |
-| `rusm-bench` | lib + bin | Scenarios, the synthetic data source, the eight real engines (spawn-storm, ping-pong, fault-recovery, connection-storm, fairness, module-storm, component-storm, stream-pipe), the run aggregator, the wire protocol, and the WebSocket server. Binary: `rusm-bench serve` / `run`. |
-| `rusm-cli` | bin (`rusm`) | The `rusm` command: `node start`, `attach <url>` (live REPL), and the app model — `build` / `run` / `dev` over `rusm.toml [[components]]`. |
+| `rusm-bench` | lib + bin | Scenarios, the deterministic preview source, the ten real engines (spawn-storm, ping-pong, fault-recovery, connection-storm, connection-scale, fairness, module-storm, component-storm, stream-pipe, distributed-fanout), the run aggregator, the wire protocol, and the WebSocket server. Binary: `rusm-bench serve` / `run`. |
+| `rusm-loadtest` | bin | **Out-of-process serving load test** — drives a live `rusm serve` port across a real socket (HTTP via a balter fixed-rate sweep; WS/SSE via a tokio-native connection-capacity harness). Reports achieved throughput, tail latency, and error rate. |
+| `rusm-cli` | bin (`rusm`) | The `rusm` command: `node start`, `attach <url>` (live REPL), `new <name>` (scaffold an app), `serve` (host `rusm.toml [[serve]]` entries on real ports), and the app model — `build` / `run` / `dev` over `rusm.toml [[components]]`. |
 | `rusm-rs` | lib (guest) | **The Rust guest crate** — write a component/service in Rust over the actor world: `Pid`/`send`/`receive` (serde)/`spawn`/registry/`Stream`, plus the `#[rusm_rs::service]` macro (dispatch loop + typed `Client`: call/cast/streaming/callbacks). Wasm-only (built for `wasm32-wasip2`), excluded from the host workspace. |
 | `rusm-rs-macros` | proc-macro | The `#[rusm_rs::service]` macro behind `rusm-rs`. |
 
