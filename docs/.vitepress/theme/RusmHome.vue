@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, onBeforeUnmount } from 'vue'
+import { withBase } from 'vitepress'
 
 /* ─────────────────────────────────────────────────────────────
    EDIT YOUR CONTENT HERE
@@ -95,7 +96,7 @@ onBeforeUnmount(() => {
         <p class="r-sub rv" style="--i: 2">{{ tagline }}</p>
 
         <div class="r-cta rv" style="--i: 3">
-          <a v-for="a in actions" :key="a.text" :href="a.link"
+          <a v-for="a in actions" :key="a.text" :href="withBase(a.link)"
              class="r-btn" :class="{ primary: a.primary }">{{ a.text }}</a>
         </div>
 
