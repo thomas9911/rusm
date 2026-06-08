@@ -70,6 +70,9 @@ const sections = [
 export default defineConfig({
   title: 'RUSM',
   description: 'An Erlang-inspired WebAssembly runtime in Rust.',
+  // Served as a GitHub Pages project site at https://archan937.github.io/rusm/,
+  // so every asset/link resolves under the /rusm/ subpath.
+  base: '/rusm/',
   cleanUrls: true,
   // The RUSM theme's fonts (display / base / mono), loaded with preconnect for
   // performance rather than a CSS @import.

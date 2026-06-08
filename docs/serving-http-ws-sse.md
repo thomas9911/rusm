@@ -2,11 +2,11 @@
 
 > **Status: HTTP, WS, and SSE all work — from both RS and TS components.** A WASM
 > component is served over real **HTTP** (`WasmRuntime::http_server` —
-> [`http_bench`](../examples/http_bench/): lean ~64.5k req/s instance-per-request vs
+> [`http_bench`](https://github.com/archan937/rusm/tree/main/examples/http_bench): lean ~64.5k req/s instance-per-request vs
 > ~197k bare-hyper), real **WebSockets** with *one component process per connection*
-> (`WasmRuntime::ws_server` — [`ws_bench`](../examples/ws_bench/): ~192k echo
+> (`WasmRuntime::ws_server` — [`ws_bench`](https://github.com/archan937/rusm/tree/main/examples/ws_bench): ~192k echo
 > round-trips/s, 128/128 held, sandbox cost inside noise), and real **SSE** (a
-> `wasi:http` streaming body — [`sse_bench`](../examples/sse_bench/): ~1.5M events/s
+> `wasi:http` streaming body — [`sse_bench`](https://github.com/archan937/rusm/tree/main/examples/sse_bench): ~1.5M events/s
 > across 128 long-lived streams).
 >
 > **Both guest languages serve all three.** RS components compile straight to
@@ -96,7 +96,7 @@ the same standard component; the choice is reversible and the developer's alone.
 
 **HTTP** — a standard `wasi:http` server via `wstd` (the Bytecode Alliance's
 ergonomic layer; the artifact is a plain wasi:http component RUSM hosts). This is the
-[`http-hello`](../crates/rusm-wasm/tests/fixtures/http-hello/) fixture verbatim:
+[`http-hello`](https://github.com/archan937/rusm/tree/main/crates/rusm-wasm/tests/fixtures/http-hello) fixture verbatim:
 
 ```rust
 use wstd::http::body::Body;
@@ -109,7 +109,7 @@ async fn main(_req: Request<Body>) -> anyhow::Result<Response<Body>> {
 ```
 
 **SSE** — set `text/event-stream` and hand the body a stream of frames; the host
-flushes each one as the guest yields it. The [`sse-ticker`](../crates/rusm-wasm/tests/fixtures/sse-ticker/)
+flushes each one as the guest yields it. The [`sse-ticker`](https://github.com/archan937/rusm/tree/main/crates/rusm-wasm/tests/fixtures/sse-ticker)
 fixture, condensed:
 
 ```rust
@@ -131,7 +131,7 @@ async fn main(_req: Request<Body>) -> Result<Response<Body>, Error> {
 **WS** — the component is a normal actor: the host owns the socket and delivers each
 inbound frame as a mailbox message; message 1 is the connection's **writer pid** (the
 process that owns the socket sink). Echo = send each frame back to the writer. This is
-the [`rs-ws-echo`](../crates/rusm-wasm/tests/fixtures/rs-ws-echo/) fixture:
+the [`rs-ws-echo`](https://github.com/archan937/rusm/tree/main/crates/rusm-wasm/tests/fixtures/rs-ws-echo) fixture:
 
 ```rust
 fn run() {
@@ -210,9 +210,9 @@ honest, *earned* number. Representative loopback figures:
 
 | Topic | Example | Earned (loopback) |
 | --- | --- | --- |
-| **HTTP** | [`http_bench`](../examples/http_bench/) | lean raw-`wasi:http` **~64.5k req/s** instance-per-request, wstd ~51k, bare hyper ~197k. Instantiate-only ~11µs (lean) — per-request isolation is cheap, so warm-pooling is **not** worth it. The ~3× vs bare hyper is `wasi:http` component-model marshaling. |
-| **WS** | [`ws_bench`](../examples/ws_bench/) | **~192k echo round-trips/s, 128/128 connections held.** One sandboxed component process per connection; the per-message writer→component→writer mailbox hop costs ~nothing — the component path lands **inside noise** of the bare hyper+tungstenite transport. |
-| **SSE** | [`sse_bench`](../examples/sse_bench/) | **~1.5M events/s across 128 long-lived streams, all held.** Each stream is its own `wasi:http` instance; a dropped client tears down only its own instance. |
+| **HTTP** | [`http_bench`](https://github.com/archan937/rusm/tree/main/examples/http_bench) | lean raw-`wasi:http` **~64.5k req/s** instance-per-request, wstd ~51k, bare hyper ~197k. Instantiate-only ~11µs (lean) — per-request isolation is cheap, so warm-pooling is **not** worth it. The ~3× vs bare hyper is `wasi:http` component-model marshaling. |
+| **WS** | [`ws_bench`](https://github.com/archan937/rusm/tree/main/examples/ws_bench) | **~192k echo round-trips/s, 128/128 connections held.** One sandboxed component process per connection; the per-message writer→component→writer mailbox hop costs ~nothing — the component path lands **inside noise** of the bare hyper+tungstenite transport. |
+| **SSE** | [`sse_bench`](https://github.com/archan937/rusm/tree/main/examples/sse_bench) | **~1.5M events/s across 128 long-lived streams, all held.** Each stream is its own `wasi:http` instance; a dropped client tears down only its own instance. |
 
 The **http-throughput** scenario is live in the dashboard; **ws-echo** and
 **sse-fanout** dashboard scenarios follow the same live-engine pattern (the standalone

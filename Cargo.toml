@@ -14,6 +14,7 @@ members = [
     "crates/rusm-observer",
     "bench/rusm-bench",
     "rusm-cli",
+    "xtask",
 ]
 # Guest test fixtures are wasm-only crates built separately for wasm32-wasip2 and
 # checked in as prebuilt .wasm; they must not build for the host target. `rusm-rs`
