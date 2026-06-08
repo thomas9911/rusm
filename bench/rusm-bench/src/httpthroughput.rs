@@ -44,7 +44,9 @@ pub struct HttpThroughputEngine {
 
 impl HttpThroughputEngine {
     pub fn new(workers: usize, scheduler_count: usize) -> Self {
-        let clients = workers.clamp(8, 256);
+        // A visible number of keep-alive clients, scaled by the resource profile —
+        // not the tiny spawn-worker count (which clamped everything to 8).
+        let clients = (workers * 32).clamp(64, 256);
 
         let wr = WasmRuntime::new(Runtime::new()).expect("wasm runtime");
         let prepared = wr
@@ -214,7 +216,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn a_wasm_component_serves_requests_under_load() {
-        let mut engine = HttpThroughputEngine::new(8, 4);
+        let mut engine = HttpThroughputEngine::new(1, 4);
         // Poll until requests are flowing (the component instantiates per request).
         let mut sample = engine.tick();
         for _ in 0..400 {

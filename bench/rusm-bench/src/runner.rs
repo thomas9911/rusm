@@ -384,6 +384,33 @@ mod tests {
         assert!(frame.observer.messages_total > 0);
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn ws_echo_sustains_throughput_under_the_runner() {
+        // Drive ws-echo the way the node does (through the Runner), at the default
+        // Balanced profile (hundreds of connections), and confirm round-trips flow.
+        let mut r = runner();
+        r.start(Scenario::WsEcho);
+        // Mimic the dashboard flow: switch the resource profile mid-run (which
+        // restarts the engine at the new, larger connection count).
+        r.tick(0);
+        r.set_resource_profile(ResourceProfile::Max);
+        let mut frame = r.tick(1);
+        let mut ok = false;
+        for tick in 2..=500 {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            frame = r.tick(tick);
+            if frame.ops_per_sec > 0.0 {
+                ok = true;
+                break;
+            }
+        }
+        assert!(
+            ok,
+            "ws-echo produced throughput under the runner (peak concurrent {})",
+            frame.peak_concurrent
+        );
+    }
+
     #[test]
     fn peak_concurrent_is_monotonic_across_ticks() {
         let mut r = runner();

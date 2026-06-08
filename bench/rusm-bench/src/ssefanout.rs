@@ -33,7 +33,8 @@ pub struct SseFanoutEngine {
     // Held alive for the run; dropping it stops the server's epoch ticker.
     _wr: WasmRuntime,
     events: Arc<AtomicU64>,
-    streams: usize,
+    /// Streams actually established (and still up) — the real concurrency.
+    alive: Arc<AtomicU64>,
     latency_rx: UnboundedReceiver<u64>,
     stop: Arc<AtomicBool>,
     client_tasks: Vec<JoinHandle<()>>,
@@ -68,12 +69,14 @@ impl SseFanoutEngine {
         let server_task = tokio::spawn(server.serve(listener));
 
         let events = Arc::new(AtomicU64::new(0));
+        let alive = Arc::new(AtomicU64::new(0));
         let stop = Arc::new(AtomicBool::new(false));
         let (latency_tx, latency_rx) = unbounded_channel();
 
         let client_tasks = (0..streams)
             .map(|_| {
                 let events = Arc::clone(&events);
+                let alive = Arc::clone(&alive);
                 let stop = Arc::clone(&stop);
                 let latency_tx = latency_tx.clone();
                 tokio::spawn(async move {
@@ -88,8 +91,10 @@ impl SseFanoutEngine {
                     {
                         return;
                     }
-                    // Count events by their `\n\n` frame terminators, carrying the last
-                    // byte across reads; sample the inter-event gap occasionally.
+                    alive.fetch_add(1, Ordering::Relaxed); // counted once the stream is open
+
+                    // Count events by their `\n\n` frame terminators, carrying the
+                    // last byte across reads; sample the inter-event gap occasionally.
                     let mut buf = [0u8; 16 * 1024];
                     let mut prev_newline = false;
                     let mut seen = 0u64;
@@ -126,6 +131,7 @@ impl SseFanoutEngine {
                             }
                         }
                     }
+                    alive.fetch_sub(1, Ordering::Relaxed);
                 })
             })
             .collect();
@@ -133,7 +139,7 @@ impl SseFanoutEngine {
         Self {
             _wr: wr,
             events,
-            streams,
+            alive,
             latency_rx,
             stop,
             client_tasks,
@@ -163,8 +169,8 @@ impl SseFanoutEngine {
             latencies_ns = latencies_ns.split_off(latencies_ns.len() - LATENCY_SAMPLE);
         }
 
-        // The charted concurrency is the live SSE streams (each its own instance).
-        let process_count = self.streams as u64;
+        // The charted concurrency is the live SSE streams actually established.
+        let process_count = self.alive.load(Ordering::Relaxed);
         Sample {
             ops_per_sec,
             process_count,
@@ -209,10 +215,7 @@ mod tests {
             sample.ops_per_sec > 0.0,
             "the WASM SSE server streamed events"
         );
-        assert_eq!(
-            sample.process_count, 64,
-            "the held-stream count (64 at workers=1)"
-        );
+        assert!(sample.process_count > 0, "live SSE streams are counted");
         assert_eq!(sample.scheduler_load.len(), 4);
     }
 }

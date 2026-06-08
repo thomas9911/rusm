@@ -32,7 +32,9 @@ pub struct WsEchoEngine {
     // Held alive for the run; dropping it stops the server's epoch ticker.
     _wr: WasmRuntime,
     echoed: Arc<AtomicU64>,
-    connections: usize,
+    /// Connections that have actually established (and are still up) — the *real*
+    /// concurrency, so the dashboard reports truth, not the configured target.
+    alive: Arc<AtomicU64>,
     latency_rx: UnboundedReceiver<u64>,
     stop: Arc<AtomicBool>,
     client_tasks: Vec<JoinHandle<()>>,
@@ -68,6 +70,7 @@ impl WsEchoEngine {
         let server_task = tokio::spawn(server.serve(listener));
 
         let echoed = Arc::new(AtomicU64::new(0));
+        let alive = Arc::new(AtomicU64::new(0));
         let stop = Arc::new(AtomicBool::new(false));
         let (latency_tx, latency_rx) = unbounded_channel();
         let url = format!("ws://{addr}/");
@@ -75,6 +78,7 @@ impl WsEchoEngine {
         let client_tasks = (0..connections)
             .map(|_| {
                 let echoed = Arc::clone(&echoed);
+                let alive = Arc::clone(&alive);
                 let stop = Arc::clone(&stop);
                 let latency_tx = latency_tx.clone();
                 let url = url.clone();
@@ -82,6 +86,7 @@ impl WsEchoEngine {
                     let Ok((mut ws, _)) = tokio_tungstenite::connect_async(url).await else {
                         return;
                     };
+                    alive.fetch_add(1, Ordering::Relaxed); // counted only once connected
                     let mut n = 0u64;
                     while !stop.load(Ordering::Relaxed) {
                         let started = Instant::now();
@@ -98,6 +103,7 @@ impl WsEchoEngine {
                         }
                         n += 1;
                     }
+                    alive.fetch_sub(1, Ordering::Relaxed);
                 })
             })
             .collect();
@@ -105,7 +111,7 @@ impl WsEchoEngine {
         Self {
             _wr: wr,
             echoed,
-            connections,
+            alive,
             latency_rx,
             stop,
             client_tasks,
@@ -135,9 +141,9 @@ impl WsEchoEngine {
             latencies_ns = latencies_ns.split_off(latencies_ns.len() - LATENCY_SAMPLE);
         }
 
-        // The charted concurrency is the live WS connections; each is a component
-        // process + a writer process behind the scenes.
-        let process_count = self.connections as u64;
+        // The charted concurrency is the live WS connections actually established
+        // (each backed by a component process + a writer process).
+        let process_count = self.alive.load(Ordering::Relaxed);
         Sample {
             ops_per_sec,
             process_count,
