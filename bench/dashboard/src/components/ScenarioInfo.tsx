@@ -1,8 +1,10 @@
 import hljs from 'highlight.js/lib/core';
 import rust from 'highlight.js/lib/languages/rust';
+import typescript from 'highlight.js/lib/languages/typescript';
 import type { ScenarioMeta } from '../types';
 
 hljs.registerLanguage('rust', rust);
+hljs.registerLanguage('typescript', typescript);
 
 interface ScenarioInfoProps {
   scenario: ScenarioMeta | undefined;
@@ -33,22 +35,29 @@ export function ScenarioInfo({ scenario }: ScenarioInfoProps) {
           <li key={i}>{detail}</li>
         ))}
       </ul>
-      {scenario.source && (
-        <details className="scenario-code">
-          <summary>
-            How it's built — the engine code
-            {scenario.source_file && <span className="code-file">{scenario.source_file}</span>}
-          </summary>
-          <pre>
-            <code
-              className="hljs language-rust"
-              dangerouslySetInnerHTML={{
-                __html: hljs.highlight(scenario.source, { language: 'rust' }).value,
-              }}
-            />
-          </pre>
-        </details>
-      )}
+      {scenario.source &&
+        (() => {
+          // Serving scenarios ship the guest handler (TypeScript or Rust); the rest
+          // ship the Rust engine. Highlight by the file's extension.
+          const isTs = scenario.source_file?.endsWith('.ts') ?? false;
+          const lang = isTs ? 'typescript' : 'rust';
+          return (
+            <details className="scenario-code">
+              <summary>
+                How it's built — {isTs ? 'the TypeScript handler' : 'the code'}
+                {scenario.source_file && <span className="code-file">{scenario.source_file}</span>}
+              </summary>
+              <pre>
+                <code
+                  className={`hljs language-${lang}`}
+                  dangerouslySetInnerHTML={{
+                    __html: hljs.highlight(scenario.source, { language: lang }).value,
+                  }}
+                />
+              </pre>
+            </details>
+          );
+        })()}
     </section>
   );
 }

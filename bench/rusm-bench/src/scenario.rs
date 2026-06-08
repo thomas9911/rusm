@@ -161,14 +161,33 @@ impl Scenario {
             Scenario::DistributedFanout => {
                 ("distributedfanout.rs", include_str!("distributedfanout.rs"))
             }
-            Scenario::HttpThroughput => ("httpthroughput.rs", include_str!("httpthroughput.rs")),
             Scenario::ConnectionScale => ("connectionscale.rs", include_str!("connectionscale.rs")),
-            Scenario::WsEcho => ("wsecho.rs", include_str!("wsecho.rs")),
-            Scenario::SseFanout => ("ssefanout.rs", include_str!("ssefanout.rs")),
-            // TS twins share the (guest-parameterized) engine source.
-            Scenario::HttpThroughputTs => ("httpthroughput.rs", include_str!("httpthroughput.rs")),
-            Scenario::WsEchoTs => ("wsecho.rs", include_str!("wsecho.rs")),
-            Scenario::SseFanoutTs => ("ssefanout.rs", include_str!("ssefanout.rs")),
+            // Serving scenarios show the **guest handler you actually write** (the
+            // star of the show), not the benchmark harness — Rust or TypeScript.
+            Scenario::HttpThroughput => (
+                "http-lean/src/lib.rs",
+                include_str!("../../../crates/rusm-wasm/tests/fixtures/http-lean/src/lib.rs"),
+            ),
+            Scenario::HttpThroughputTs => (
+                "ts-http-hello/index.ts",
+                include_str!("../../../crates/rusm-wasm/tests/fixtures/ts-http-hello/index.ts"),
+            ),
+            Scenario::WsEcho => (
+                "rs-ws-echo/src/lib.rs",
+                include_str!("../../../crates/rusm-wasm/tests/fixtures/rs-ws-echo/src/lib.rs"),
+            ),
+            Scenario::WsEchoTs => (
+                "ts-ws-echo/index.ts",
+                include_str!("../../../crates/rusm-wasm/tests/fixtures/ts-ws-echo/index.ts"),
+            ),
+            Scenario::SseFanout => (
+                "sse-firehose/src/main.rs",
+                include_str!("../../../crates/rusm-wasm/tests/fixtures/sse-firehose/src/main.rs"),
+            ),
+            Scenario::SseFanoutTs => (
+                "ts-sse-firehose/index.ts",
+                include_str!("../../../crates/rusm-wasm/tests/fixtures/ts-sse-firehose/index.ts"),
+            ),
         })
     }
 
