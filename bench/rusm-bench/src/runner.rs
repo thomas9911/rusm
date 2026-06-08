@@ -410,6 +410,40 @@ mod tests {
         );
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn switching_scenarios_keeps_producing_throughput() {
+        // The user's exact flow: stop one benchmark, start a *different* one. Each
+        // switch must produce throughput — a fresh engine, no leak from the last.
+        let config = RunnerConfig {
+            spawn_workers: 1, // lighter connection counts → fast test
+            ..RunnerConfig::default()
+        };
+        let mut r = Runner::new(config);
+        async fn run_until_throughput(r: &mut Runner, scenario: Scenario) -> bool {
+            r.start(scenario);
+            for tick in 0..400 {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                if r.tick(tick).ops_per_sec > 0.0 {
+                    return true;
+                }
+            }
+            false
+        }
+        for scenario in [
+            Scenario::HttpThroughput,
+            Scenario::WsEcho,
+            Scenario::SseFanout,
+            Scenario::HttpThroughput,
+        ] {
+            assert!(
+                run_until_throughput(&mut r, scenario).await,
+                "{} produced throughput after the switch",
+                scenario.id()
+            );
+            r.stop();
+        }
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn repeated_restart_keeps_producing_throughput() {
         // Click like a monkey: run → stop, over and over, for both a bare-process and

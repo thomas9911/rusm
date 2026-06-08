@@ -16,7 +16,9 @@ dashboard: ## Start a node + the dashboard, then open the printed URL — "the m
 	@cargo build --release -p rusm-cli
 	@# Kill any stale node still holding the port — otherwise the new node fails to
 	@# bind, the dashboard silently talks to the OLD node, and you debug a ghost.
-	@pkill -f "target/release/rusm node start" 2>/dev/null && sleep 1 || true
+	@# Broad match: release, debug, or `cargo run` — any RUSM node, gone.
+	@pkill -f "rusm node start" 2>/dev/null && sleep 1 || true
+	@lsof -nP -iTCP:4000 -sTCP:LISTEN -t 2>/dev/null | xargs -r kill 2>/dev/null || true
 	@echo "→ starting node (log: /tmp/rusm-node.log) + dashboard…"
 	@./target/release/rusm node start >/tmp/rusm-node.log 2>&1 & \
 		NODE=$$!; \
