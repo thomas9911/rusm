@@ -235,6 +235,36 @@ mod tests {
         assert_eq!(frame.scenario.as_deref(), Some("distributed-fanout"));
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn run_stop_run_still_produces_throughput() {
+        // The dashboard flow over the node API: Run → Stop → Run. The second run must
+        // still produce throughput, and an idle node must report not-running.
+        let node = Node::new(RunnerConfig::default());
+        async fn run_until_throughput(node: &Node) -> bool {
+            node.apply(ClientCommand::Run {
+                scenario: "spawn-storm".to_string(),
+            })
+            .unwrap();
+            for _ in 0..200 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                if node.tick_message().tick_frame().unwrap().ops_per_sec > 0.0 {
+                    return true;
+                }
+            }
+            false
+        }
+        assert!(
+            run_until_throughput(&node).await,
+            "first run produces throughput"
+        );
+        node.apply(ClientCommand::Stop).unwrap();
+        assert!(!node.is_running(), "stopped node is idle");
+        assert!(
+            run_until_throughput(&node).await,
+            "second run (after stop) still produces throughput"
+        );
+    }
+
     #[test]
     fn apply_run_rejects_unknown_scenario() {
         let node = Node::new(RunnerConfig::default());

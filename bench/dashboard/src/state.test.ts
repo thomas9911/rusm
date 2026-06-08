@@ -106,6 +106,19 @@ test('an idle tick keeps the last run on screen, only flipping running off', () 
   expect(s.scenario).toBe('connection-storm');
 });
 
+test('a fresh run after stop + reset shows throughput again', () => {
+  // The exact dashboard flow: run → stop → reset → run. The second run must
+  // populate throughput, not stay at zero.
+  let s = applyMessage(initialState(), tick(frame({ ops_per_sec: 100 })));
+  s = applyMessage(s, tick(frame({ running: false, scenario: null, ops_per_sec: 0 }))); // stop
+  s = resetData(s); // reset
+  s = applyMessage(s, tick(frame({ ops_per_sec: 500 }))); // run again
+  expect(s.running).toBe(true);
+  expect(s.frame?.ops_per_sec).toBe(500);
+  expect(s.history).toEqual([500]);
+  expect(averages(s)!.opsPerSec).toBe(500);
+});
+
 test('resetData clears the displayed run and the averages', () => {
   let s = applyMessage(initialState(), tick(frame({ ops_per_sec: 100 })));
   s = resetData(s);

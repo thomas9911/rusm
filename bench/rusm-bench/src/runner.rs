@@ -392,6 +392,37 @@ mod tests {
         assert!(frame.observer.messages_total > 0);
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn restart_after_stop_still_produces_throughput() {
+        // Reproduce the dashboard flow: run → stop → run again. The second run must
+        // still produce throughput (a fresh engine), not stay at zero.
+        async fn run_until_throughput(r: &mut Runner, scenario: Scenario) -> bool {
+            r.start(scenario);
+            for tick in 0..400 {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                if r.tick(tick).ops_per_sec > 0.0 {
+                    return true;
+                }
+            }
+            false
+        }
+        let mut r = runner();
+        for scenario in [Scenario::SpawnStorm, Scenario::HttpThroughput] {
+            assert!(
+                run_until_throughput(&mut r, scenario).await,
+                "first run of {} produced throughput",
+                scenario.id()
+            );
+            r.stop();
+            assert!(
+                run_until_throughput(&mut r, scenario).await,
+                "second run of {} (after stop) still produces throughput",
+                scenario.id()
+            );
+            r.stop();
+        }
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
     async fn ws_echo_sustains_throughput_under_the_runner() {
         // Drive ws-echo the way the node does (through the Runner), at the default

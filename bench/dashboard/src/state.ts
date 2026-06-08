@@ -83,8 +83,8 @@ export function applyMessage(state: DashboardState, message: ServerMessage): Das
 }
 
 function applyTick(state: DashboardState, frame: Frame): DashboardState {
-  // After Stop the node keeps emitting idle frames. Keep the last run's data on
-  // screen — only flip the running flag — until the user explicitly resets.
+  // On stop the node sends a single idle frame, then goes silent. Keep the last
+  // run's data on screen — only flip the running flag — until the user resets.
   if (!frame.running) {
     return { ...state, running: false };
   }
