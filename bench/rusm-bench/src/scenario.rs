@@ -21,6 +21,26 @@ pub enum Scenario {
     ModuleStorm,
     StreamPipe,
     ConnectionScale,
+    // Serving scenarios (live co-resident demos): a real in-process WASM server
+    // driven through the shared `rusm-loadtest` path — balter for HTTP, the
+    // connection-capacity harness for WS/SSE. The *fair* headline numbers come from
+    // the out-of-process `rusm-loadtest` binary vs a `rusm serve` port.
+    HttpThroughput,
+    WsEcho,
+    SseFanout,
+    // TypeScript twins — same servers, served from a Bun-built TS bundle on the
+    // rquickjs runners (the RS↔TS comparison).
+    HttpThroughputTs,
+    WsEchoTs,
+    SseFanoutTs,
+}
+
+/// Which guest language a serving scenario runs — the same server hosts a Rust
+/// `wasi:http`/actor component or a TypeScript bundle on the rquickjs runners.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Guest {
+    Rust,
+    Ts,
 }
 
 /// What a scenario's headline throughput number *counts*, so the dashboard can
@@ -64,11 +84,10 @@ impl Scenario {
     // Ordered by the phase each scenario goes live (the dashboard menu shows them
     // in this order). The enum discriminants are unchanged, so the synthetic
     // source stays deterministic.
-    // The HTTP/WS/SSE serving scenarios are intentionally NOT here: serving is
-    // benchmarked out-of-process against a real `rusm serve` port with the
-    // `rusm-loadtest` driver (a fair load generator that doesn't share the server's
-    // CPU), not by an in-process generator on the dashboard.
-    pub const ALL: [Scenario; 10] = [
+    // Serving scenarios (HTTP/WS/SSE, + TS twins) are **live co-resident demos** of
+    // the serving path; the *fair* throughput headline is measured out-of-process by
+    // the `rusm-loadtest` binary against a real `rusm serve` port.
+    pub const ALL: [Scenario; 16] = [
         Scenario::SpawnStorm,        // phase 1
         Scenario::PingPong,          // phase 2
         Scenario::FaultRecovery,     // phase 3
@@ -79,7 +98,22 @@ impl Scenario {
         Scenario::ComponentStorm,    // phase 7
         Scenario::StreamPipe,        // phase 7 — cross-process byte-stream throughput
         Scenario::DistributedFanout, // phase 9
+        Scenario::HttpThroughput,    // phase 11 — serve HTTP, load driven by balter (Rust)
+        Scenario::HttpThroughputTs,  // phase 11 — …the TypeScript twin
+        Scenario::WsEcho,            // phase 11 — WebSocket echo, component per connection (Rust)
+        Scenario::WsEchoTs,          // phase 11 — …the TypeScript twin
+        Scenario::SseFanout,         // phase 11 — Server-Sent Events fan-out (Rust)
+        Scenario::SseFanoutTs,       // phase 11 — …the TypeScript twin
     ];
+
+    /// The guest language a serving scenario runs (Rust by default; the `*Ts`
+    /// variants run a TypeScript bundle on the rquickjs runners).
+    pub fn guest(self) -> Guest {
+        match self {
+            Scenario::HttpThroughputTs | Scenario::WsEchoTs | Scenario::SseFanoutTs => Guest::Ts,
+            _ => Guest::Rust,
+        }
+    }
 
     pub fn id(self) -> &'static str {
         match self {
@@ -93,6 +127,12 @@ impl Scenario {
             Scenario::ModuleStorm => "module-storm",
             Scenario::StreamPipe => "stream-pipe",
             Scenario::ConnectionScale => "connection-scale",
+            Scenario::HttpThroughput => "http-throughput",
+            Scenario::WsEcho => "ws-echo",
+            Scenario::SseFanout => "sse-fanout",
+            Scenario::HttpThroughputTs => "http-throughput-ts",
+            Scenario::WsEchoTs => "ws-echo-ts",
+            Scenario::SseFanoutTs => "sse-fanout-ts",
         }
     }
 
@@ -127,6 +167,32 @@ impl Scenario {
                 ("distributedfanout.rs", include_str!("distributedfanout.rs"))
             }
             Scenario::ConnectionScale => ("connectionscale.rs", include_str!("connectionscale.rs")),
+            // Serving scenarios show the **guest handler you actually write** (the
+            // star of the show), not the benchmark harness — Rust or TypeScript.
+            Scenario::HttpThroughput => (
+                "http-lean/src/lib.rs",
+                include_str!("../../../crates/rusm-wasm/tests/fixtures/http-lean/src/lib.rs"),
+            ),
+            Scenario::HttpThroughputTs => (
+                "ts-http-hello/index.ts",
+                include_str!("../../../crates/rusm-wasm/tests/fixtures/ts-http-hello/index.ts"),
+            ),
+            Scenario::WsEcho => (
+                "rs-ws-echo/src/lib.rs",
+                include_str!("../../../crates/rusm-wasm/tests/fixtures/rs-ws-echo/src/lib.rs"),
+            ),
+            Scenario::WsEchoTs => (
+                "ts-ws-echo/index.ts",
+                include_str!("../../../crates/rusm-wasm/tests/fixtures/ts-ws-echo/index.ts"),
+            ),
+            Scenario::SseFanout => (
+                "sse-firehose/src/main.rs",
+                include_str!("../../../crates/rusm-wasm/tests/fixtures/sse-firehose/src/main.rs"),
+            ),
+            Scenario::SseFanoutTs => (
+                "ts-sse-firehose/index.ts",
+                include_str!("../../../crates/rusm-wasm/tests/fixtures/ts-sse-firehose/index.ts"),
+            ),
         })
     }
 
@@ -259,6 +325,72 @@ impl Scenario {
                 ],
                 5,
             ),
+            Scenario::HttpThroughput => (
+                "HTTP throughput",
+                "A sandboxed WASM component serving HTTP, driven live by balter. Requests/sec.",
+                vec![
+                    "What's unique here: the others measure the actor model; this serves real HTTP — a `wasi:http` component hosted by hyper + wasmtime-wasi-http, one fresh sandboxed instance per request. The load is generated by **balter** (the same engine the standalone `rusm-loadtest` driver uses), pacing a steady offered rate.",
+                    "Headline: achieved requests/sec and per-request latency, charted live. The response is produced BY THE GUEST; the host only moves bytes. A trap fails just that request.",
+                    "This tile is a **co-resident live demo** (load + server share this node process). The *fair* headline number is measured **out-of-process** by `rusm-loadtest` against a real `rusm serve` port — ~46k req/s at 0% errors on loopback — so the generator never steals the server's CPU.",
+                    "Why it matters: run your low-code/LLM/web component as a sandboxed, supervised HTTP server — `rusm serve` hosts it on a real port.",
+                ],
+                11,
+            ),
+            Scenario::WsEcho => (
+                "WebSocket echo",
+                "One sandboxed component PROCESS per WebSocket connection. Echo round-trips/sec.",
+                vec![
+                    "What's unique here: every connection is served by its own WASM **component process** (`WasmRuntime::ws_server`), not a shared event loop — inbound frame → the process mailbox, reply via a Wasm-free writer process that owns the socket sink. Clean actor isolation per socket.",
+                    "Headline: echo round-trips/sec and round-trip latency across many held connections, charted live. The load holds real WS connections through the shared connection-capacity harness (the same `rusm-loadtest` path).",
+                    "A **co-resident live demo**; the fair out-of-process figure (`rusm-loadtest`) is ~146k round-trips/s across 256 held connections on loopback. A handler crash drops only that socket — never the listener or the other connections.",
+                    "Why it matters: per-connection isolation + supervision is what a single shared event loop (the usual WS server) can't give you.",
+                ],
+                11,
+            ),
+            Scenario::SseFanout => (
+                "SSE fan-out",
+                "Many live Server-Sent Event streams, each its own WASM instance. Events/sec.",
+                vec![
+                    "What's unique here: many long-lived `text/event-stream` connections, each served by its own `wasi:http` component instance streaming events as fast as the client drains them — the 'many concurrent streaming responses, all held' story.",
+                    "Headline: events/sec across all streams + live concurrency, charted live. Streams are held open by the shared connection-capacity harness (the `rusm-loadtest` path).",
+                    "A **co-resident live demo**; the fair out-of-process figure (`rusm-loadtest`) is ~609k events/s across 256 held streams on loopback. A dropped client tears down only its own instance.",
+                    "Why it matters: streaming fan-out to many subscribers is the shape of live dashboards, LLM token streams, and push feeds.",
+                ],
+                11,
+            ),
+            Scenario::HttpThroughputTs => (
+                "HTTP throughput (TS)",
+                "Same HTTP serving, balter-driven — but the handler is a TypeScript component.",
+                vec![
+                    "What's unique here: identical to HTTP throughput, but the response is produced by a TYPESCRIPT HTTP handler on the embedded rquickjs js-http-runner (`export default` a request→response function — server-side), not a Rust `wasi:http` component — the RS↔TS comparison.",
+                    "Headline: achieved requests/sec + latency, charted live (balter pacing the offered rate). Each request instantiates a fresh sandboxed JS instance that runs the handler.",
+                    "Expect LOWER throughput than the Rust path — the honest cost of evaluating JS per request (rquickjs). A **co-resident live demo**; the fair figure comes from `rusm-loadtest`.",
+                    "Why it matters: write your handler in TS and RUSM still serves it sandboxed and supervised.",
+                ],
+                11,
+            ),
+            Scenario::WsEchoTs => (
+                "WebSocket echo (TS)",
+                "Same WS serving — but each connection is a TypeScript worker process.",
+                vec![
+                    "What's unique here: identical to WebSocket echo, but each connection's handler is a TYPESCRIPT worker on the js-runner — inbound frame → mailbox → echo, one sandboxed JS process per socket.",
+                    "Headline: echo round-trips/sec + latency across held connections, charted live (the shared capacity harness holds the connections).",
+                    "The JS runner adds per-message overhead vs the Rust component, so throughput is lower — the honest TS cost; the concurrency story is the same. A **co-resident live demo**; the fair figure comes from `rusm-loadtest`.",
+                    "Why it matters: per-connection isolation + supervision, with the handler written in TypeScript.",
+                ],
+                11,
+            ),
+            Scenario::SseFanoutTs => (
+                "SSE fan-out (TS)",
+                "Same SSE serving — but the event stream is a TypeScript ReadableStream.",
+                vec![
+                    "What's unique here: identical to SSE fan-out, but the events come from a TYPESCRIPT handler returning a Response whose body is a ReadableStream, on the js-http-runner — pulled chunk-by-chunk and flushed incrementally (true streaming).",
+                    "Headline: events/sec across many held streams, charted live (the shared capacity harness holds the streams).",
+                    "The rquickjs pull per event costs more than the Rust path, so events/sec is lower — the honest TS cost; the held-stream concurrency is the same. A **co-resident live demo**; the fair figure comes from `rusm-loadtest`.",
+                    "Why it matters: push streaming written in TypeScript, sandboxed and supervised per stream.",
+                ],
+                11,
+            ),
         };
         ScenarioMeta {
             id: self.id().to_string(),
@@ -364,8 +496,8 @@ mod tests {
             .map(|m| m.id)
             .collect();
         // Every scenario has a real engine (CURRENT_PHASE = 11) — nothing synthetic.
-        // Serving (HTTP/WS/SSE) is benchmarked out-of-process via `rusm-loadtest`,
-        // so it is deliberately not a dashboard scenario.
+        // The serving scenarios are live co-resident demos (balter / capacity harness);
+        // the fair headline is measured out-of-process by `rusm-loadtest`.
         assert_eq!(
             real,
             vec![
@@ -379,6 +511,12 @@ mod tests {
                 "component-storm",
                 "stream-pipe",
                 "distributed-fanout",
+                "http-throughput",
+                "http-throughput-ts",
+                "ws-echo",
+                "ws-echo-ts",
+                "sse-fanout",
+                "sse-fanout-ts",
             ]
         );
     }

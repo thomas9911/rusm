@@ -13,6 +13,7 @@ use crate::profile::ResourceProfile;
 use crate::protocol::Frame;
 use crate::sample::Sample;
 use crate::scenario::Scenario;
+use crate::serving::{CapacityKind, CapacityServingEngine, HttpServingEngine};
 use crate::spawnstorm::SpawnStormEngine;
 use crate::streampipe::StreamPipeEngine;
 use crate::synthetic::SyntheticSource;
@@ -66,6 +67,9 @@ enum Engine {
     StreamPipe(StreamPipeEngine),
     DistributedFanout(DistributedFanoutEngine),
     ConnectionScale(ConnectionScaleEngine),
+    // Serving (live co-resident demos): HTTP via balter, WS/SSE via the capacity harness.
+    HttpThroughput(HttpServingEngine),
+    Capacity(CapacityServingEngine),
 }
 
 impl Engine {
@@ -114,6 +118,27 @@ impl Engine {
                 config.spawn_workers,
                 config.scheduler_count,
             )),
+            Scenario::HttpThroughput | Scenario::HttpThroughputTs => {
+                Engine::HttpThroughput(HttpServingEngine::new(
+                    config.spawn_workers,
+                    config.scheduler_count,
+                    scenario.guest(),
+                ))
+            }
+            Scenario::WsEcho | Scenario::WsEchoTs => Engine::Capacity(CapacityServingEngine::new(
+                config.spawn_workers,
+                config.scheduler_count,
+                CapacityKind::Ws,
+                scenario.guest(),
+            )),
+            Scenario::SseFanout | Scenario::SseFanoutTs => {
+                Engine::Capacity(CapacityServingEngine::new(
+                    config.spawn_workers,
+                    config.scheduler_count,
+                    CapacityKind::Sse,
+                    scenario.guest(),
+                ))
+            }
         }
     }
 
@@ -135,6 +160,8 @@ impl Engine {
             Engine::StreamPipe(engine) => engine.tick(),
             Engine::DistributedFanout(engine) => engine.tick(),
             Engine::ConnectionScale(engine) => engine.tick(),
+            Engine::HttpThroughput(engine) => engine.tick(),
+            Engine::Capacity(engine) => engine.tick(),
         }
     }
 }
@@ -196,7 +223,13 @@ impl Runner {
             | Scenario::ComponentStorm
             | Scenario::StreamPipe
             | Scenario::DistributedFanout
-            | Scenario::ConnectionScale),
+            | Scenario::ConnectionScale
+            | Scenario::HttpThroughput
+            | Scenario::WsEcho
+            | Scenario::SseFanout
+            | Scenario::HttpThroughputTs
+            | Scenario::WsEchoTs
+            | Scenario::SseFanoutTs),
         ) = self.scenario()
         {
             self.start(scenario);
@@ -358,6 +391,34 @@ mod tests {
             RunnerConfig::default().latency_samples
         );
         assert!(frame.observer.messages_total > 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn serving_scenarios_produce_throughput_through_the_runner() {
+        // The exact dashboard path: Runner::start → tick, for each serving scenario.
+        // balter drives HTTP; the capacity harness drives WS/SSE — all co-resident.
+        let mut r = runner();
+        for scenario in [
+            Scenario::HttpThroughput,
+            Scenario::WsEcho,
+            Scenario::SseFanout,
+        ] {
+            r.start(scenario);
+            let mut max = 0.0_f64;
+            for tick in 0..200 {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                max = max.max(r.tick(tick).ops_per_sec);
+                if max > 0.0 {
+                    break;
+                }
+            }
+            assert!(
+                max > 0.0,
+                "{} produced throughput via the runner",
+                scenario.id()
+            );
+            r.stop();
+        }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

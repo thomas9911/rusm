@@ -16,6 +16,9 @@ rusm-observer = { path = "../../crates/rusm-observer" }
 rusm-otp = { path = "../../crates/rusm-otp" }
 rusm-wasm = { path = "../../crates/rusm-wasm" }
 rusm-cluster = { path = "../../crates/rusm-cluster" }
+# The out-of-process load lib, reused by the live serving-scenario engines so the
+# dashboard drives load through the same balter/capacity path as `rusm-loadtest`.
+rusm-loadtest = { path = "../rusm-loadtest" }
 anyhow = { workspace = true }
 tokio = { version = "1.52.3", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util"] }
 tokio-tungstenite = "0.29.0"

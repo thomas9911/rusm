@@ -18,6 +18,7 @@ mod runner;
 mod sample;
 mod scenario;
 mod server;
+mod serving;
 mod spawnstorm;
 mod streampipe;
 mod synthetic;

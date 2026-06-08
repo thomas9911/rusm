@@ -8,6 +8,10 @@ authors.workspace = true
 repository.workspace = true
 description = "Out-of-process load driver for a `rusm serve` node (balter saturation testing)."
 
+[lib]
+name = "rusm_loadtest"
+path = "src/lib.rs"
+
 [[bin]]
 name = "rusm-loadtest"
 path = "src/main.rs"

@@ -2410,6 +2410,7 @@ dependencies = [
  "libc",
  "rlimit",
  "rusm-cluster",
+ "rusm-loadtest",
  "rusm-metrics",
  "rusm-observer",
  "rusm-otp",

@@ -1,13 +1,17 @@
-//! Connection-capacity load for WS and SSE: hold `--connections` long-lived
-//! connections open at once and measure the *sustained* work they carry — echo
-//! round-trips (WS) or events drained (SSE). This is the honest metric for these
-//! workloads (held connections + throughput + latency), which a request-rate model
-//! would misrepresent as connection churn.
+//! Connection-capacity load for WS and SSE: hold many long-lived connections open
+//! at once and measure the *sustained* work they carry — echo round-trips (WS) or
+//! events drained (SSE). This is the honest metric for these workloads (held
+//! connections + throughput + latency), which a request-rate model would
+//! misrepresent as connection churn.
 //!
 //! Connections are opened once and kept for the whole run, so there is no
 //! open/close storm and no ephemeral-port / TIME_WAIT pressure — the driver simply
-//! holds them and counts. Throughput is reported live each second; latency
-//! percentiles are computed from sampled observations at the end.
+//! holds them and counts.
+//!
+//! [`CapacityLoad`] is the reusable handle: [`start`](CapacityLoad::start) spawns
+//! the held connections and exposes live counters, so both the CLI ([`run`]) and the
+//! dashboard's serving engines drive the *same* load path. Dropping it (or calling
+//! [`stop`](CapacityLoad::stop)) sets a flag every worker checks, so no task leaks.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -15,6 +19,7 @@ use std::time::{Duration, Instant};
 
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
+use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite::Message;
 
 use crate::Opts;
@@ -57,107 +62,144 @@ struct Shared {
     stop: AtomicBool,
 }
 
+/// A running connection-capacity load: holds the worker tasks and live counters.
+/// Stops cleanly on drop (every worker polls the shared stop flag), so it never
+/// leaks tasks — drive it live (read [`ops`](Self::ops)/[`alive`](Self::alive) per
+/// tick) or one-shot via [`run`].
+pub struct CapacityLoad {
+    shared: Arc<Shared>,
+    lat_rx: UnboundedReceiver<u64>,
+    // Held so the tasks live as long as the load; they also self-exit on `stop`.
+    workers: Vec<JoinHandle<()>>,
+}
+
+impl CapacityLoad {
+    /// Spawns `connections` held connections against `url`. Must be called inside a
+    /// Tokio runtime (it spawns tasks).
+    pub fn start(proto: Protocol, url: String, connections: usize) -> Self {
+        let shared = Arc::new(Shared {
+            ops: AtomicU64::new(0),
+            alive: AtomicU64::new(0),
+            stop: AtomicBool::new(false),
+        });
+        let (lat_tx, lat_rx) = unbounded_channel();
+        let workers = (0..connections)
+            .map(|_| {
+                let shared = Arc::clone(&shared);
+                let url = url.clone();
+                let lat_tx = lat_tx.clone();
+                match proto {
+                    Protocol::Ws => tokio::spawn(ws_connection(shared, url, lat_tx)),
+                    Protocol::Sse => tokio::spawn(sse_connection(shared, url, lat_tx)),
+                }
+            })
+            .collect();
+        // The handle keeps no sender, so `lat_rx` closes once every worker exits.
+        Self {
+            shared,
+            lat_rx,
+            workers,
+        }
+    }
+
+    /// Operations counted so far (round-trips for WS, events for SSE).
+    pub fn ops(&self) -> u64 {
+        self.shared.ops.load(Ordering::Relaxed)
+    }
+
+    /// Connections currently established and live.
+    pub fn alive(&self) -> u64 {
+        self.shared.alive.load(Ordering::Relaxed)
+    }
+
+    /// Drains the latency samples observed since the last call (nanoseconds).
+    pub fn drain_latencies(&mut self) -> Vec<u64> {
+        let mut out = Vec::new();
+        while let Ok(ns) = self.lat_rx.try_recv() {
+            out.push(ns);
+        }
+        out
+    }
+
+    /// Signals every worker to stop; they exit on their next poll of the flag.
+    pub fn stop(&self) {
+        self.shared.stop.store(true, Ordering::Relaxed);
+    }
+}
+
+impl Drop for CapacityLoad {
+    fn drop(&mut self) {
+        self.stop();
+        // Workers observe the flag and return; abort as a backstop so nothing lingers.
+        for w in &self.workers {
+            w.abort();
+        }
+    }
+}
+
+/// CLI one-shot: hold `connections` for `duration`, print live throughput, then a
+/// final summary with latency percentiles.
 pub fn run(proto: Protocol, opts: Opts, url: String) {
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .expect("tokio runtime");
-    rt.block_on(drive(proto, opts, url));
-}
-
-async fn drive(proto: Protocol, opts: Opts, url: String) {
-    println!(
-        "{}: holding {} connection(s) for {:?} → {url}",
-        proto.label(),
-        opts.connections,
-        opts.duration
-    );
-    let shared = Arc::new(Shared {
-        ops: AtomicU64::new(0),
-        alive: AtomicU64::new(0),
-        stop: AtomicBool::new(false),
-    });
-    let (lat_tx, lat_rx) = unbounded_channel();
-
-    let workers: Vec<_> = (0..opts.connections)
-        .map(|_| {
-            let shared = Arc::clone(&shared);
-            let url = url.clone();
-            let lat_tx = lat_tx.clone();
-            match proto {
-                Protocol::Ws => tokio::spawn(ws_connection(shared, url, lat_tx)),
-                Protocol::Sse => tokio::spawn(sse_connection(shared, url, lat_tx)),
-            }
-        })
-        .collect();
-    drop(lat_tx); // workers hold the only senders now
-
-    report(proto, &shared, opts.duration).await;
-    // Capture the live connection count *before* stopping — workers decrement it as
-    // they exit, so reading it after the join would always show zero.
-    let held = shared.alive.load(Ordering::Relaxed);
-    shared.stop.store(true, Ordering::Relaxed);
-    for w in workers {
-        let _ = w.await;
-    }
-    summary(proto, &shared, held, lat_rx, opts.duration);
-}
-
-/// Live per-second throughput, then return after `duration`.
-async fn report(proto: Protocol, shared: &Arc<Shared>, duration: Duration) {
-    let start = Instant::now();
-    let mut last = 0u64;
-    let mut interval = tokio::time::interval(Duration::from_secs(1));
-    interval.tick().await; // fire immediately; skip the zero sample
-    while start.elapsed() < duration {
-        interval.tick().await;
-        let total = shared.ops.load(Ordering::Relaxed);
-        let alive = shared.alive.load(Ordering::Relaxed);
+    rt.block_on(async move {
         println!(
-            "[t={:>2}s] {}: {} conns · {} {}/s",
-            start.elapsed().as_secs(),
+            "{}: holding {} connection(s) for {:?} → {url}",
             proto.label(),
-            alive,
-            with_commas(total - last),
-            proto.unit(),
+            opts.connections,
+            opts.duration
         );
-        last = total;
-    }
-}
+        let mut load = CapacityLoad::start(proto, url, opts.connections);
 
-fn summary(
-    proto: Protocol,
-    shared: &Arc<Shared>,
-    held: u64,
-    mut lat_rx: UnboundedReceiver<u64>,
-    dur: Duration,
-) {
-    let total = shared.ops.load(Ordering::Relaxed);
-    let mut samples = Vec::new();
-    while let Ok(ns) = lat_rx.try_recv() {
-        samples.push(ns);
-    }
-    samples.sort_unstable();
-    let pct = |q: f64| -> Duration {
-        if samples.is_empty() {
-            return Duration::ZERO;
+        // Live per-second throughput for the run's duration.
+        let start = Instant::now();
+        let mut last = 0u64;
+        let mut interval = tokio::time::interval(Duration::from_secs(1));
+        interval.tick().await; // fire immediately; skip the zero sample
+        while start.elapsed() < opts.duration {
+            interval.tick().await;
+            let total = load.ops();
+            println!(
+                "[t={:>2}s] {}: {} conns · {} {}/s",
+                start.elapsed().as_secs(),
+                proto.label(),
+                load.alive(),
+                with_commas(total - last),
+                proto.unit(),
+            );
+            last = total;
         }
-        let idx = ((samples.len() as f64 * q) as usize).min(samples.len() - 1);
-        Duration::from_nanos(samples[idx])
-    };
-    println!("\n── result ── {} ({held} held)", proto.label());
-    println!("  total            {} {}", with_commas(total), proto.unit());
-    println!(
-        "  sustained        {} {}/s",
-        with_commas((total as f64 / dur.as_secs_f64()) as u64),
-        proto.unit()
-    );
-    println!(
-        "  {} latency  p50 {:?} · p99 {:?}",
-        proto.latency_kind(),
-        pct(0.50),
-        pct(0.99)
-    );
+
+        // Capture the held count before stopping (workers decrement `alive` as they exit).
+        let held = load.alive();
+        let total = load.ops();
+        let mut samples = load.drain_latencies();
+        load.stop();
+
+        samples.sort_unstable();
+        let pct = |q: f64| -> Duration {
+            if samples.is_empty() {
+                return Duration::ZERO;
+            }
+            let idx = ((samples.len() as f64 * q) as usize).min(samples.len() - 1);
+            Duration::from_nanos(samples[idx])
+        };
+        println!("\n── result ── {} ({held} held)", proto.label());
+        println!("  total            {} {}", with_commas(total), proto.unit());
+        println!(
+            "  sustained        {} {}/s",
+            with_commas((total as f64 / opts.duration.as_secs_f64()) as u64),
+            proto.unit()
+        );
+        println!(
+            "  {} latency  p50 {:?} · p99 {:?}",
+            proto.latency_kind(),
+            pct(0.50),
+            pct(0.99)
+        );
+    });
 }
 
 /// One WebSocket connection: ping → wait for echo, forever, sampling round-trips.

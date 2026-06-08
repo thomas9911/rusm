@@ -182,6 +182,39 @@ impl SyntheticSource {
                 latency_ns: (50_000, 1_000_000),
                 processes: (10_000, 50_000),
             },
+            // Serving scenarios are live (real) engines; these are only the
+            // runtime-free preview shapes (req/sec or events/sec, sub-ms latency).
+            Scenario::HttpThroughput => Ranges {
+                ops: (8_000, 50_000),
+                latency_ns: (200_000, 3_000_000),
+                processes: (24, 256),
+            },
+            Scenario::WsEcho => Ranges {
+                ops: (100_000, 250_000),
+                latency_ns: (200_000, 2_000_000),
+                processes: (64, 768),
+            },
+            Scenario::SseFanout => Ranges {
+                ops: (500_000, 2_000_000),
+                latency_ns: (1_000, 50_000),
+                processes: (64, 768),
+            },
+            // TS twins: lower throughput than the Rust paths (the rquickjs cost).
+            Scenario::HttpThroughputTs => Ranges {
+                ops: (2_000, 15_000),
+                latency_ns: (500_000, 8_000_000),
+                processes: (24, 256),
+            },
+            Scenario::WsEchoTs => Ranges {
+                ops: (20_000, 90_000),
+                latency_ns: (300_000, 4_000_000),
+                processes: (64, 768),
+            },
+            Scenario::SseFanoutTs => Ranges {
+                ops: (100_000, 600_000),
+                latency_ns: (1_000, 80_000),
+                processes: (64, 768),
+            },
         }
     }
 }

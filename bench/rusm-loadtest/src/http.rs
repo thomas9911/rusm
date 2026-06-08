@@ -15,18 +15,63 @@
 //! [`reqwest::Client`] pools keep-alive connections that every invocation reuses
 //! (the battle-proven way to keep load realistic without re-handshaking each call).
 
-use std::sync::OnceLock;
-use std::time::Duration;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{OnceLock, RwLock};
+use std::time::{Duration, Instant};
 
 use balter::prelude::*;
 use balter::Hint;
+use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 
 use crate::Opts;
 
+/// balter's per-run statistics (achieved tps, latency quantiles, error rate),
+/// re-exported so callers needn't depend on balter directly.
+pub use balter::prelude::RunStatistics;
+
+/// Cumulative successful requests — a live counter the dashboard reads each tick to
+/// chart the *achieved* rate smoothly, independent of balter's window boundaries.
+static ACHIEVED: AtomicU64 = AtomicU64::new(0);
+/// Optional live latency sink (installed by the dashboard engine; `None` for the CLI
+/// sweep, which reads latency from balter's `RunStatistics` instead).
+static LAT_TX: OnceLock<RwLock<Option<UnboundedSender<u64>>>> = OnceLock::new();
+/// Sample one request's latency every Nth into the live sink.
+const LIVE_LAT_EVERY: u64 = 64;
+
+/// Total successful requests since the last [`reset_counter`].
+pub fn achieved() -> u64 {
+    ACHIEVED.load(Ordering::Relaxed)
+}
+
+/// Zeroes the live counter (call when (re)starting a live driver).
+pub fn reset_counter() {
+    ACHIEVED.store(0, Ordering::Relaxed);
+}
+
+/// Installs a live latency sink and returns its receiver; the transaction samples
+/// into it. Replaces any previous sink.
+pub fn install_latency_sink() -> UnboundedReceiver<u64> {
+    let (tx, rx) = unbounded_channel();
+    *LAT_TX
+        .get_or_init(|| RwLock::new(None))
+        .write()
+        .expect("latency sink lock") = Some(tx);
+    rx
+}
+
+/// Removes the live latency sink (the transaction stops sampling).
+pub fn clear_latency_sink() {
+    if let Some(cell) = LAT_TX.get() {
+        *cell.write().expect("latency sink lock") = None;
+    }
+}
+
 /// One pooled HTTP client for the whole run (keep-alive reuse across invocations).
 static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
-/// The target URL, set once before the scenario starts (scenarios take no args).
-static TARGET: OnceLock<String> = OnceLock::new();
+/// The target URL. Re-settable so each run/window — and each dashboard restart on a
+/// fresh ephemeral port — can retarget without a new process. Only one HTTP load
+/// runs at a time (the CLI is one invocation; the dashboard, one scenario).
+static TARGET: OnceLock<RwLock<String>> = OnceLock::new();
 
 fn client() -> &'static reqwest::Client {
     CLIENT.get_or_init(|| {
@@ -38,8 +83,31 @@ fn client() -> &'static reqwest::Client {
     })
 }
 
-fn target() -> &'static str {
-    TARGET.get().expect("target set before scenario").as_str()
+/// Points the HTTP scenario at `url`; call before driving load.
+pub fn set_target(url: impl Into<String>) {
+    let cell = TARGET.get_or_init(|| RwLock::new(String::new()));
+    *cell.write().expect("target lock") = url.into();
+}
+
+fn target() -> String {
+    TARGET
+        .get()
+        .expect("target set before scenario")
+        .read()
+        .expect("target lock")
+        .clone()
+}
+
+/// Runs one fixed-rate window and returns balter's measured stats. The dashboard
+/// polls this repeatedly: each window **completes**, so balter cleanly shuts down
+/// its worker tasks (it only aborts them on completion, never on drop) — nothing
+/// leaks between windows. Call [`set_target`] first.
+pub async fn run_window(target_tps: u32, concurrency: usize, window: Duration) -> RunStatistics {
+    http_load()
+        .tps(target_tps)
+        .hint(Hint::Concurrency(concurrency))
+        .duration(window)
+        .await
 }
 
 /// One measured level of the sweep: the rate we asked for and what happened.
@@ -70,7 +138,7 @@ impl Level {
 /// Drives the HTTP sweep on its own multi-threaded Tokio runtime. With `--tps` it
 /// instead measures one explicit fixed rate (no sweep).
 pub fn run(opts: Opts, url: String) {
-    TARGET.set(url.clone()).expect("target set once");
+    set_target(&url);
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -155,6 +223,7 @@ async fn http_load() {
 
 #[transaction]
 async fn get_root() -> Result<(), String> {
+    let started = Instant::now();
     let resp = client()
         .get(target())
         .send()
@@ -163,11 +232,20 @@ async fn get_root() -> Result<(), String> {
     let ok = resp.status().is_success();
     // Drain the body so the connection returns to the keep-alive pool for reuse.
     let _ = resp.bytes().await.map_err(|e| e.to_string())?;
-    if ok {
-        Ok(())
-    } else {
-        Err("non-success status".to_string())
+    if !ok {
+        return Err("non-success status".to_string());
     }
+    // Live observability for the dashboard; the CLI sweep installs no sink, so this
+    // is a single relaxed increment there (latency comes from balter's RunStatistics).
+    let n = ACHIEVED.fetch_add(1, Ordering::Relaxed);
+    if n % LIVE_LAT_EVERY == 0 {
+        if let Some(cell) = LAT_TX.get() {
+            if let Some(tx) = cell.read().expect("latency sink lock").as_ref() {
+                let _ = tx.send(started.elapsed().as_nanos() as u64);
+            }
+        }
+    }
+    Ok(())
 }
 
 /// The tail-latency reading for a quantile (RunStatistics exposes p50/90/95/99;
