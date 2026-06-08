@@ -10,16 +10,20 @@ use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
 use tokio::task::JoinHandle;
 
 use crate::sample::Sample;
+use crate::scenario::Guest;
 
 /// Most latency samples surfaced in a single tick.
 const LATENCY_SAMPLE: usize = 64;
 /// Sample one inter-event gap every Nth event, per stream.
 const LATENCY_EVERY: u64 = 256;
 
-/// An endless `wasi:http` SSE stream — yields events as fast as the client reads
-/// (the same fixture the sse_bench example uses).
+/// An endless Rust `wasi:http` SSE stream — yields events as fast as the client
+/// reads (the same fixture the sse_bench example uses).
 const FIREHOSE: &[u8] =
     include_bytes!("../../../crates/rusm-wasm/tests/fixtures/sse_firehose.wasm");
+/// The TypeScript endless-SSE bundle (an HTTP handler on the js-http-runner).
+const TS_FIREHOSE: &str =
+    include_str!("../../../crates/rusm-wasm/tests/fixtures/ts_sse_firehose.js");
 
 /// A **real** SSE fan-out: many long-lived `text/event-stream` connections, each
 /// served by its own `wasi:http` component instance (`WasmRuntime::http_server`)
@@ -45,19 +49,27 @@ pub struct SseFanoutEngine {
 }
 
 impl SseFanoutEngine {
-    pub fn new(workers: usize, scheduler_count: usize) -> Self {
+    pub fn new(workers: usize, scheduler_count: usize, guest: Guest) -> Self {
         // Hold a *serious* number of concurrent SSE streams — each its own component
         // instance. Scaled by the resource profile (via `workers`).
         let streams = (workers * 128).clamp(64, 768);
 
         let wr = WasmRuntime::new(Runtime::new()).expect("wasm runtime");
-        let prepared = wr
-            .prepare_http(
-                &wr.compile_component(FIREHOSE)
-                    .expect("compile sse firehose"),
-            )
-            .expect("prepare sse component");
-        let server = wr.http_server(&prepared, CapabilityProfile::Trusted.capabilities());
+        let caps = CapabilityProfile::Trusted.capabilities();
+        // Same SSE server, either guest: a Rust wasi:http component or a TS `fetch`
+        // bundle (returning a ReadableStream) on the js-http-runner.
+        let server = match guest {
+            Guest::Rust => {
+                let prepared = wr
+                    .prepare_http(
+                        &wr.compile_component(FIREHOSE)
+                            .expect("compile sse firehose"),
+                    )
+                    .expect("prepare sse component");
+                wr.http_server(&prepared, caps)
+            }
+            Guest::Ts => wr.http_server_js(TS_FIREHOSE, caps),
+        };
 
         // Bind via std then adopt, so `new` stays synchronous like the other engines.
         let std_listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback");
@@ -202,7 +214,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn a_wasm_component_streams_events_to_many_subscribers() {
-        let mut engine = SseFanoutEngine::new(1, 4);
+        let mut engine = SseFanoutEngine::new(1, 4, Guest::Rust);
         let mut sample = engine.tick();
         for _ in 0..400 {
             tokio::time::sleep(Duration::from_millis(10)).await;

@@ -116,21 +116,26 @@ impl Engine {
                 config.spawn_workers,
                 config.scheduler_count,
             )),
-            Scenario::HttpThroughput => Engine::HttpThroughput(HttpThroughputEngine::new(
-                config.spawn_workers,
-                config.scheduler_count,
-            )),
+            Scenario::HttpThroughput | Scenario::HttpThroughputTs => {
+                Engine::HttpThroughput(HttpThroughputEngine::new(
+                    config.spawn_workers,
+                    config.scheduler_count,
+                    scenario.guest(),
+                ))
+            }
             Scenario::ConnectionScale => Engine::ConnectionScale(ConnectionScaleEngine::new(
                 config.spawn_workers,
                 config.scheduler_count,
             )),
-            Scenario::WsEcho => Engine::WsEcho(WsEchoEngine::new(
+            Scenario::WsEcho | Scenario::WsEchoTs => Engine::WsEcho(WsEchoEngine::new(
                 config.spawn_workers,
                 config.scheduler_count,
+                scenario.guest(),
             )),
-            Scenario::SseFanout => Engine::SseFanout(SseFanoutEngine::new(
+            Scenario::SseFanout | Scenario::SseFanoutTs => Engine::SseFanout(SseFanoutEngine::new(
                 config.spawn_workers,
                 config.scheduler_count,
+                scenario.guest(),
             )),
         }
     }
@@ -220,7 +225,10 @@ impl Runner {
             | Scenario::HttpThroughput
             | Scenario::ConnectionScale
             | Scenario::WsEcho
-            | Scenario::SseFanout),
+            | Scenario::SseFanout
+            | Scenario::HttpThroughputTs
+            | Scenario::WsEchoTs
+            | Scenario::SseFanoutTs),
         ) = self.scenario()
         {
             self.start(scenario);

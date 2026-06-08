@@ -11,15 +11,18 @@ use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite::Message;
 
 use crate::sample::Sample;
+use crate::scenario::Guest;
 
 /// Most latency samples surfaced in a single tick.
 const LATENCY_SAMPLE: usize = 64;
 /// Sample one round-trip's latency every Nth, per client.
 const LATENCY_EVERY: u64 = 32;
 
-/// The WS-handler component: echoes each frame from inside the sandbox (the same
-/// fixture the rusm-wasm WS serve test uses).
+/// The Rust WS-handler component: echoes each frame from inside the sandbox (the
+/// same fixture the rusm-wasm WS serve test uses).
 const WS_ECHO: &[u8] = include_bytes!("../../../crates/rusm-wasm/tests/fixtures/rs_ws_echo.wasm");
+/// The TypeScript WS-handler bundle (a worker on the js-runner), same echo behavior.
+const TS_WS_ECHO: &str = include_str!("../../../crates/rusm-wasm/tests/fixtures/ts_ws_echo.js");
 
 /// A **real** WebSocket echo storm: each connection is served by its own sandboxed
 /// WASM **component process** (`WasmRuntime::ws_server`) — inbound frame → mailbox
@@ -45,20 +48,28 @@ pub struct WsEchoEngine {
 }
 
 impl WsEchoEngine {
-    pub fn new(workers: usize, scheduler_count: usize) -> Self {
+    pub fn new(workers: usize, scheduler_count: usize, guest: Guest) -> Self {
         // Hold a *serious* number of concurrent connections — each its own sandboxed
         // component process. Scaled by the resource profile (via `workers`), not the
         // tiny spawn-worker count itself.
         let connections = (workers * 128).clamp(64, 768);
 
         let wr = WasmRuntime::new(Runtime::new()).expect("wasm runtime");
-        let prepared = wr
-            .prepare_component(
-                &wr.compile_component(WS_ECHO).expect("compile ws echo"),
-                "run",
-            )
-            .expect("prepare ws component");
-        let server = wr.ws_server(&prepared, CapabilityProfile::Trusted.capabilities());
+        let caps = CapabilityProfile::Trusted.capabilities();
+        // Same server, either guest: a Rust actor component, or a TS worker bundle on
+        // the embedded js-runner (one instance per connection).
+        let server = match guest {
+            Guest::Rust => {
+                let prepared = wr
+                    .prepare_component(
+                        &wr.compile_component(WS_ECHO).expect("compile ws echo"),
+                        "run",
+                    )
+                    .expect("prepare ws component");
+                wr.ws_server(&prepared, caps)
+            }
+            Guest::Ts => wr.ws_server_js(TS_WS_ECHO.as_bytes().to_vec(), caps),
+        };
 
         // Bind via std then adopt, so `new` stays synchronous like the other engines.
         let std_listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback");
@@ -175,7 +186,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn a_wasm_component_echoes_websockets_under_load() {
-        let mut engine = WsEchoEngine::new(1, 4);
+        let mut engine = WsEchoEngine::new(1, 4, Guest::Rust);
         // Poll until echoes are flowing (each connection is a component process).
         let mut sample = engine.tick();
         for _ in 0..400 {
@@ -191,5 +202,20 @@ mod tests {
             "round-trip latency sampled"
         );
         assert_eq!(sample.scheduler_load.len(), 4);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_typescript_worker_echoes_websockets() {
+        // The TS path: each connection is a TypeScript worker on the js-runner.
+        let mut engine = WsEchoEngine::new(1, 4, Guest::Ts);
+        let mut sample = engine.tick();
+        for _ in 0..800 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            sample = engine.tick();
+            if sample.ops_per_sec > 0.0 {
+                break;
+            }
+        }
+        assert!(sample.ops_per_sec > 0.0, "the TS WS worker echoed frames");
     }
 }

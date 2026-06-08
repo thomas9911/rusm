@@ -55,10 +55,11 @@ impl WasmRuntime {
         }
     }
 
-    /// Build an HTTP server whose handler is a **TypeScript/JS `fetch` bundle**
-    /// (Bun-built) on the embedded js-http-runner — the TS twin of [`http_server`].
-    /// The bundle is delivered to each per-request instance via the
-    /// `RUSM_JS_BUNDLE` env capability; the guest writes `export default { fetch }`.
+    /// Build an HTTP server whose handler is a **TypeScript/JS bundle** (Bun-built)
+    /// on the embedded js-http-runner — the TS twin of [`http_server`]. The bundle is
+    /// delivered to each per-request instance via the `RUSM_JS_BUNDLE` env capability;
+    /// the guest exports a server-side request→response handler (`export default async
+    /// (request) => Response`; the Workers `{ fetch }` shape is also accepted).
     pub fn http_server_js(&self, bundle: impl Into<String>, caps: Capabilities) -> HttpServer {
         let caps = caps.env("RUSM_JS_BUNDLE", bundle.into());
         let prepared = self.js_http_runner().clone();
@@ -291,7 +292,7 @@ mod tests {
         assert!(response.starts_with("HTTP/1.1 200"), "got: {response}");
         assert!(
             response.contains("hello from TS"),
-            "the TS fetch handler produced the body: {response}"
+            "the TS HTTP handler produced the body: {response}"
         );
 
         handle.abort();

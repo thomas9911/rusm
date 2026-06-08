@@ -12,15 +12,16 @@
 > **Both guest languages serve all three.** RS components compile straight to
 > `wasi:http` (via `wstd`) / the actor world. TS components run on the embedded
 > rquickjs runners: `http_server_js` + the **js-http-runner** (a raw-`wasi:http`
-> component that runs `export default { fetch }`, including pull-based streaming for
-> SSE), and `ws_server_js` (a TS worker on the js-runner, one process per connection).
+> component that runs a TS HTTP **handler** — `export default` a request→response
+> function, server-side — including pull-based streaming for SSE), and `ws_server_js`
+> (a TS worker on the js-runner, one process per connection).
 > The `rusm-otp` core stays Wasm-free throughout (hyper, `tokio-tungstenite`, and
 > `wasi:http` live only in `rusm-wasm`).
 >
 > | | HTTP | WS | SSE |
 > |---|---|---|---|
 > | **Rust** | ✅ `wstd` / lean `wasi:http` | ✅ `rusm-rs` worker | ✅ `wstd` streaming body |
-> | **TypeScript** | ✅ `export default { fetch }` | ✅ `export default` worker | ✅ `Response(ReadableStream)` |
+> | **TypeScript** | ✅ `export default` handler | ✅ `export default` worker | ✅ `Response(ReadableStream)` |
 
 RUSM's end goal is to run a component as a high-throughput **HTTP(S) / WS(S) / SSE
 server** — a sandboxed, supervised process answering requests. Phase 11 delivers
@@ -153,36 +154,35 @@ A TS component is a Bun-bundled `.js` run on an embedded rquickjs runner — no 
 (`Request`/`Response`/`URL`/`ReadableStream`) are polyfilled. These are the checked-in
 fixtures verbatim.
 
-**HTTP** — the Service-Worker / Deno / Workers `fetch` shape. The js-http-runner builds
-a `Request` from the wasi:http request (URL reconstructed from `Host` + path, so
-`new URL(req.url).searchParams` works) and marshals the `Response` back:
+**HTTP** — a server-side **handler**: `export default` a request→response function.
+The js-http-runner builds a `Request` from the wasi:http request (URL reconstructed
+from `Host` + path, so `new URL(request.url).searchParams` works) and marshals the
+`Response` back. (The Workers/Deno `export default { fetch }` shape is also accepted,
+so those components port over; we lead with the plain handler — it's server code, not
+a client `fetch`.)
 
 ```ts
-export default {
-  fetch(req: Request): Response {
-    const who = new URL(req.url).searchParams.get("who") ?? "world";
-    return new Response(`hello, ${who}\n`, { headers: { "content-type": "text/plain" } });
-  },
-};
+export default function handle(request: Request): Response {
+  const who = new URL(request.url).searchParams.get("who") ?? "world";
+  return new Response(`hello, ${who}\n`, { headers: { "content-type": "text/plain" } });
+}
 ```
 
 **SSE** — return a `Response` whose body is a `ReadableStream`; the runner pulls each
 chunk and flushes it incrementally (chunked, truly streamed — not buffered):
 
 ```ts
-export default {
-  fetch(): Response {
-    let n = 0;
-    const enc = new TextEncoder();
-    const body = new ReadableStream({
-      pull(c) {
-        if (n >= 5) return c.close();
-        c.enqueue(enc.encode(`data: tick ${n++}\n\n`));
-      },
-    });
-    return new Response(body, { headers: { "content-type": "text/event-stream" } });
-  },
-};
+export default function handle(): Response {
+  let n = 0;
+  const enc = new TextEncoder();
+  const body = new ReadableStream({
+    pull(c) {
+      if (n >= 5) return c.close();
+      c.enqueue(enc.encode(`data: tick ${n++}\n\n`));
+    },
+  });
+  return new Response(body, { headers: { "content-type": "text/event-stream" } });
+}
 ```
 
 **WS** — a TS **worker** (`export default` an async fn), one process per connection.

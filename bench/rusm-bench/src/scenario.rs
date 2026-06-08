@@ -26,6 +26,19 @@ pub enum Scenario {
     ConnectionScale,
     WsEcho,
     SseFanout,
+    // TypeScript twins — same engines, served from a Bun-built TS bundle on the
+    // rquickjs runners (the RS↔TS comparison).
+    HttpThroughputTs,
+    WsEchoTs,
+    SseFanoutTs,
+}
+
+/// Which guest language a serving scenario runs — the same engine serves a Rust
+/// `wasi:http`/actor component or a TypeScript bundle on the rquickjs runners.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Guest {
+    Rust,
+    Ts,
 }
 
 /// What a scenario's headline throughput number *counts*, so the dashboard can
@@ -69,7 +82,7 @@ impl Scenario {
     // Ordered by the phase each scenario goes live (the dashboard menu shows them
     // in this order). The enum discriminants are unchanged, so the synthetic
     // source stays deterministic.
-    pub const ALL: [Scenario; 13] = [
+    pub const ALL: [Scenario; 16] = [
         Scenario::SpawnStorm,        // phase 1
         Scenario::PingPong,          // phase 2
         Scenario::FaultRecovery,     // phase 3
@@ -80,10 +93,22 @@ impl Scenario {
         Scenario::ComponentStorm,    // phase 7
         Scenario::StreamPipe,        // phase 7 — cross-process byte-stream throughput
         Scenario::DistributedFanout, // phase 9
-        Scenario::HttpThroughput,    // phase 11 — serve a WASM component over HTTP
-        Scenario::WsEcho,            // phase 11 — WebSocket echo, component per connection
-        Scenario::SseFanout,         // phase 11 — Server-Sent Events fan-out
+        Scenario::HttpThroughput,    // phase 11 — serve a WASM component over HTTP (Rust)
+        Scenario::HttpThroughputTs,  // phase 11 — …the TypeScript twin
+        Scenario::WsEcho,            // phase 11 — WebSocket echo, component per connection (Rust)
+        Scenario::WsEchoTs,          // phase 11 — …the TypeScript twin
+        Scenario::SseFanout,         // phase 11 — Server-Sent Events fan-out (Rust)
+        Scenario::SseFanoutTs,       // phase 11 — …the TypeScript twin
     ];
+
+    /// The guest language a serving scenario runs (Rust by default; the `*Ts`
+    /// variants run a TypeScript bundle on the rquickjs runners).
+    pub fn guest(self) -> Guest {
+        match self {
+            Scenario::HttpThroughputTs | Scenario::WsEchoTs | Scenario::SseFanoutTs => Guest::Ts,
+            _ => Guest::Rust,
+        }
+    }
 
     pub fn id(self) -> &'static str {
         match self {
@@ -100,6 +125,9 @@ impl Scenario {
             Scenario::ConnectionScale => "connection-scale",
             Scenario::WsEcho => "ws-echo",
             Scenario::SseFanout => "sse-fanout",
+            Scenario::HttpThroughputTs => "http-throughput-ts",
+            Scenario::WsEchoTs => "ws-echo-ts",
+            Scenario::SseFanoutTs => "sse-fanout-ts",
         }
     }
 
@@ -137,6 +165,10 @@ impl Scenario {
             Scenario::ConnectionScale => ("connectionscale.rs", include_str!("connectionscale.rs")),
             Scenario::WsEcho => ("wsecho.rs", include_str!("wsecho.rs")),
             Scenario::SseFanout => ("ssefanout.rs", include_str!("ssefanout.rs")),
+            // TS twins share the (guest-parameterized) engine source.
+            Scenario::HttpThroughputTs => ("httpthroughput.rs", include_str!("httpthroughput.rs")),
+            Scenario::WsEchoTs => ("wsecho.rs", include_str!("wsecho.rs")),
+            Scenario::SseFanoutTs => ("ssefanout.rs", include_str!("ssefanout.rs")),
         })
     }
 
@@ -303,6 +335,39 @@ impl Scenario {
                 ],
                 11,
             ),
+            Scenario::HttpThroughputTs => (
+                "HTTP throughput (TS)",
+                "Same HTTP serving — but the handler is a TypeScript `fetch` component.",
+                vec![
+                    "What's unique here: identical to HTTP throughput, but the response is produced by a TYPESCRIPT HTTP handler on the embedded rquickjs js-http-runner (`export default` a request→response function — server-side, not a client fetch), not a Rust wasi:http component — the RS↔TS comparison.",
+                    "Real (Phase 11): hundreds of keep-alive clients; each request instantiates a fresh sandboxed JS instance that evaluates the bundle and runs the handler. Total isolation per request.",
+                    "Headline: requests/sec + p50/p99. Expect LOWER throughput than the Rust path — that's the honest cost of evaluating JS per request (rquickjs), the price of writing the handler in TypeScript. Concurrency holds either way.",
+                    "Why it matters: write your handler in TS and RUSM still serves it sandboxed and supervised — you trade some throughput for the familiar fetch shape.",
+                ],
+                11,
+            ),
+            Scenario::WsEchoTs => (
+                "WebSocket echo (TS)",
+                "Same WS serving — but each connection is a TypeScript worker process.",
+                vec![
+                    "What's unique here: identical to WebSocket echo, but each connection's handler is a TYPESCRIPT worker (export default async fn) on the js-runner — inbound frame → mailbox → echo, one sandboxed JS process per socket.",
+                    "Headline: echo round-trips/sec + p50/p99 across many held connections. The JS runner adds per-message overhead vs the Rust component, so throughput is lower — the honest TS cost; the concurrency story is the same.",
+                    "Real (Phase 11): one js-runner instance per connection, each fed the Bun-built bundle, replies via the same Wasm-free writer process the Rust path uses.",
+                    "Why it matters: per-connection isolation + supervision, with the handler written in TypeScript.",
+                ],
+                11,
+            ),
+            Scenario::SseFanoutTs => (
+                "SSE fan-out (TS)",
+                "Same SSE serving — but the event stream is a TypeScript ReadableStream.",
+                vec![
+                    "What's unique here: identical to SSE fan-out, but the events come from a TYPESCRIPT handler returning a Response whose body is a ReadableStream, on the js-http-runner — pulled chunk-by-chunk and flushed incrementally (true streaming).",
+                    "Headline: events/sec across many held streams. The rquickjs pull per event costs more than the Rust path, so events/sec is lower — the honest TS cost; the held-stream concurrency is the same.",
+                    "Real (Phase 11): one js-http-runner instance per stream; the host pulls the JS ReadableStream and writes each event to the wasi:http output-stream.",
+                    "Why it matters: push streaming written in TypeScript, sandboxed and supervised per stream.",
+                ],
+                11,
+            ),
         };
         ScenarioMeta {
             id: self.id().to_string(),
@@ -422,8 +487,11 @@ mod tests {
                 "stream-pipe",
                 "distributed-fanout",
                 "http-throughput",
+                "http-throughput-ts",
                 "ws-echo",
-                "sse-fanout"
+                "ws-echo-ts",
+                "sse-fanout",
+                "sse-fanout-ts"
             ]
         );
     }

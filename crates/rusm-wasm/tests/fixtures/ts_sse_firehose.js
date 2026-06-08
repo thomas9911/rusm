@@ -37,14 +37,20 @@ var __export = (target, all) => {
 };
 
 // index.ts
-var exports_ts_http_hello = {};
-__export(exports_ts_http_hello, {
+var exports_ts_sse_firehose = {};
+__export(exports_ts_sse_firehose, {
   default: () => handle
 });
-module.exports = __toCommonJS(exports_ts_http_hello);
-async function handle(request) {
-  return new Response(`hello from TS (${request.method})
-`, {
-    headers: { "content-type": "text/plain" }
+module.exports = __toCommonJS(exports_ts_sse_firehose);
+async function handle() {
+  let n = 0;
+  const enc = new TextEncoder;
+  const body = new ReadableStream({
+    pull(controller) {
+      controller.enqueue(enc.encode(`data: ${n++}
+
+`));
+    }
   });
+  return new Response(body, { headers: { "content-type": "text/event-stream" } });
 }

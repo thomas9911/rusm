@@ -201,6 +201,23 @@ impl SyntheticSource {
                 latency_ns: (1_000, 50_000),
                 processes: (8, 256),
             },
+            // TS twins (real from Phase 11): preview shapes — lower throughput than
+            // the Rust paths (the rquickjs cost), same concurrency.
+            Scenario::HttpThroughputTs => Ranges {
+                ops: (2_000, 15_000),
+                latency_ns: (500_000, 8_000_000),
+                processes: (64, 512),
+            },
+            Scenario::WsEchoTs => Ranges {
+                ops: (20_000, 90_000),
+                latency_ns: (300_000, 4_000_000),
+                processes: (64, 768),
+            },
+            Scenario::SseFanoutTs => Ranges {
+                ops: (100_000, 600_000),
+                latency_ns: (1_000, 80_000),
+                processes: (64, 768),
+            },
         }
     }
 }

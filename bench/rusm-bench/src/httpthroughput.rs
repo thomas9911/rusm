@@ -10,16 +10,19 @@ use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
 use tokio::task::JoinHandle;
 
 use crate::sample::Sample;
+use crate::scenario::Guest;
 
 /// Most latency samples surfaced in a single tick.
 const LATENCY_SAMPLE: usize = 64;
 /// Sample one request's latency every Nth, per client.
 const LATENCY_EVERY: u64 = 32;
 
-/// A minimal `wasi:http` component (built with `wstd`): answers every request, in
-/// the guest, with `200 hello`. The same fixture the rusm-wasm HTTP serve test uses.
-const HTTP_HELLO: &[u8] =
-    include_bytes!("../../../crates/rusm-wasm/tests/fixtures/http_hello.wasm");
+/// A lean raw-`wasi:http` Rust component — the host's serving ceiling (no per-request
+/// reactor). The same fixture `http_bench` measures.
+const HTTP_LEAN: &[u8] = include_bytes!("../../../crates/rusm-wasm/tests/fixtures/http_lean.wasm");
+/// The TypeScript HTTP handler bundle (a request→response handler on the
+/// js-http-runner). Same answer, written in TS.
+const TS_HELLO: &str = include_str!("../../../crates/rusm-wasm/tests/fixtures/ts_http_hello.js");
 
 /// A **real** HTTP serving storm: a WASM component (`wstd` `wasi:http`) hosted by
 /// `WasmRuntime::http_server` (hyper + wasmtime-wasi-http, one sandboxed instance
@@ -43,19 +46,24 @@ pub struct HttpThroughputEngine {
 }
 
 impl HttpThroughputEngine {
-    pub fn new(workers: usize, scheduler_count: usize) -> Self {
+    pub fn new(workers: usize, scheduler_count: usize, guest: Guest) -> Self {
         // A serious number of keep-alive clients, scaled by the resource profile —
         // hundreds in flight, not the tiny spawn-worker count (which clamped to 8).
         let clients = (workers * 96).clamp(64, 512);
 
         let wr = WasmRuntime::new(Runtime::new()).expect("wasm runtime");
-        let prepared = wr
-            .prepare_http(
-                &wr.compile_component(HTTP_HELLO)
-                    .expect("compile http_hello"),
-            )
-            .expect("prepare http component");
-        let server = wr.http_server(&prepared, CapabilityProfile::Trusted.capabilities());
+        let caps = CapabilityProfile::Trusted.capabilities();
+        // Same server, either guest: a lean Rust wasi:http component, or a TS handler
+        // bundle on the js-http-runner (instance-per-request for both).
+        let server = match guest {
+            Guest::Rust => {
+                let prepared = wr
+                    .prepare_http(&wr.compile_component(HTTP_LEAN).expect("compile http_lean"))
+                    .expect("prepare http component");
+                wr.http_server(&prepared, caps)
+            }
+            Guest::Ts => wr.http_server_js(TS_HELLO, caps),
+        };
 
         // Bind via std then adopt, so `new` stays synchronous like the other engines.
         let std_listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback");
@@ -216,7 +224,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn a_wasm_component_serves_requests_under_load() {
-        let mut engine = HttpThroughputEngine::new(1, 4);
+        let mut engine = HttpThroughputEngine::new(1, 4, Guest::Rust);
         // Poll until requests are flowing (the component instantiates per request).
         let mut sample = engine.tick();
         for _ in 0..400 {

@@ -1,16 +1,14 @@
-// A wasi:http handler written in **TypeScript** — the TS twin of http-hello. The
-// Workers/Deno `export default { fetch }` shape: the js-http-runner builds a Request
-// from the wasi:http request, runs this, and marshals the Response back. Built with:
+// A TypeScript HTTP **handler** (server-side): a request → response function, the
+// twin of http-hello. The js-http-runner calls it for each incoming request and
+// marshals the Response back. (This is a server handler, not a client `fetch`.)
 //   bun build --target=browser --format=cjs --outfile ts_http_hello.js index.ts
 
-// `Request`/`Response` are the Web globals the runner polyfills.
+// `Response` is the Web global the runner polyfills.
 declare const Response: new (body?: string, init?: { headers?: Record<string, string> }) => unknown;
-type Req = { method: string; url: string };
+type Request = { method: string; url: string };
 
-export default {
-  fetch(req: Req): unknown {
-    return new Response(`hello from TS (${req.method})\n`, {
-      headers: { "content-type": "text/plain" },
-    });
-  },
-};
+export default async function handle(request: Request): Promise<unknown> {
+  return new Response(`hello from TS (${request.method})\n`, {
+    headers: { "content-type": "text/plain" },
+  });
+}

@@ -39,25 +39,23 @@ var __export = (target, all) => {
 // index.ts
 var exports_ts_sse_ticker = {};
 __export(exports_ts_sse_ticker, {
-  default: () => ts_sse_ticker_default
+  default: () => handle
 });
 module.exports = __toCommonJS(exports_ts_sse_ticker);
-var ts_sse_ticker_default = {
-  fetch() {
-    let n = 0;
-    const enc = new TextEncoder;
-    const body = new ReadableStream({
-      pull(controller) {
-        if (n >= 5) {
-          controller.close();
-          return;
-        }
-        controller.enqueue(enc.encode(`data: tick ${n}
+async function handle() {
+  let n = 0;
+  const enc = new TextEncoder;
+  const body = new ReadableStream({
+    pull(controller) {
+      if (n >= 5) {
+        controller.close();
+        return;
+      }
+      controller.enqueue(enc.encode(`data: tick ${n}
 
 `));
-        n++;
-      }
-    });
-    return new Response(body, { headers: { "content-type": "text/event-stream" } });
-  }
-};
+      n++;
+    }
+  });
+  return new Response(body, { headers: { "content-type": "text/event-stream" } });
+}
