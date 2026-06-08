@@ -112,20 +112,17 @@ pub async fn serve_on(listener: TcpListener, node: Arc<Node>) -> std::io::Result
 
 async fn ticker(node: Arc<Node>, tx: broadcast::Sender<ServerMessage>) {
     let mut interval = tokio::time::interval(node.tick_period());
-    // While running, broadcast every tick (the live chart needs it). While idle, only
-    // heartbeat ~once a second — no point flooding clients with empty frames — but
-    // always send the running→idle transition so the dashboard sees the stop at once.
-    let heartbeat = (1000 / node.tick_period().as_millis().max(1)).max(1) as u64;
-    let mut idle_ticks = 0u64;
+    // Broadcast every tick while a scenario runs (the live chart needs it), plus the
+    // single running→idle frame the moment it stops. An idle node is then **silent** —
+    // no stream at all; a freshly-connected client gets a one-shot snapshot instead
+    // (see `handle_connection`).
     let mut was_running = false;
     loop {
         interval.tick().await;
         let running = node.is_running();
-        let send_idle = !running && (was_running || idle_ticks % heartbeat == 0);
-        if running || send_idle {
+        if running || was_running {
             let _ = tx.send(node.tick_message());
         }
-        idle_ticks = if running { 0 } else { idle_ticks + 1 };
         was_running = running;
     }
 }
@@ -141,6 +138,11 @@ async fn handle_connection(
     let (mut write, mut read) = ws.split();
 
     if send(&mut write, node.hello()).await.is_err() {
+        return;
+    }
+    // A one-shot snapshot so a client that connects while the node is idle renders
+    // the current state immediately — the ticker stays silent when nothing runs.
+    if send(&mut write, node.tick_message()).await.is_err() {
         return;
     }
 
