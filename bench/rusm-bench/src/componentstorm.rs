@@ -125,6 +125,9 @@ impl Drop for ComponentStormEngine {
         for worker in &self.workers {
             worker.abort();
         }
+        // Catch-all: abort every component process still on the runtime, so none
+        // outlive the engine and hold pooled instances into the next run.
+        self.runtime.shutdown();
     }
 }
 

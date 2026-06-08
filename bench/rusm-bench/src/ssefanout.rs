@@ -203,6 +203,9 @@ impl Drop for SseFanoutEngine {
         for task in &self.client_tasks {
             task.abort();
         }
+        // Release every per-stream component instance the runtime is holding, so a
+        // run never leaks instances into the next one. The runtime is this engine's.
+        self._wr.shutdown();
         // `_wr` drops here → its epoch ticker thread stops.
     }
 }

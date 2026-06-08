@@ -278,6 +278,52 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn shutdown_reclaims_every_held_process() {
+        // The control USP: components parked on `receive` (here, handlers awaiting a
+        // writer pid that never comes) must not leak — `shutdown` aborts them all and
+        // frees their pooled instances, so a dropped engine never starves the next.
+        use crate::{CapabilityProfile, WasmRuntime};
+        use rusm_otp::Runtime;
+        use std::time::Duration;
+
+        const WS_ECHO: &[u8] = include_bytes!("../../tests/fixtures/rs_ws_echo.wasm");
+        let rt = Runtime::new();
+        let wr = WasmRuntime::new(rt.clone()).unwrap();
+        let prepared = wr
+            .prepare_component(&wr.compile_component(WS_ECHO).unwrap(), "run")
+            .unwrap();
+
+        let n = 8u64;
+        for _ in 0..n {
+            // Drop the handle on purpose — the process stays parked (a leak, without
+            // shutdown). Trusted just to keep the spawn unconditional.
+            let _ = wr.spawn_component_with(&prepared, CapabilityProfile::Trusted.capabilities());
+        }
+        for _ in 0..200 {
+            if rt.process_count() as u64 >= n {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert!(
+            rt.process_count() as u64 >= n,
+            "the parked handlers are alive"
+        );
+
+        assert!(
+            wr.shutdown() as u64 >= n,
+            "shutdown reports the processes it aborted"
+        );
+        for _ in 0..200 {
+            if rt.process_count() == 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(rt.process_count(), 0, "shutdown reclaimed every process");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_typescript_component_handles_a_websocket() {
         use crate::{CapabilityProfile, WasmRuntime};
         use rusm_otp::Runtime;

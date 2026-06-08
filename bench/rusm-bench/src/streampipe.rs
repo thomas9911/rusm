@@ -127,6 +127,9 @@ impl Drop for StreamPipeEngine {
         for process in &self.processes {
             process.kill();
         }
+        // Catch-all: abort every process still on the runtime (e.g. stream peers a
+        // tracked pair spawned), so none outlive the engine into the next run.
+        self.runtime.shutdown();
     }
 }
 

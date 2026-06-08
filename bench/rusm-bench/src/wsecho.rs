@@ -175,6 +175,10 @@ impl Drop for WsEchoEngine {
         for task in &self.client_tasks {
             task.abort();
         }
+        // Kill every per-connection component + writer process — they're parked on
+        // `receive`, so without this they'd leak past the engine and hold pool slots
+        // (starving the next run). The runtime is this engine's alone, so this is safe.
+        self._wr.shutdown();
         // `_wr` drops here → its epoch ticker thread stops.
     }
 }

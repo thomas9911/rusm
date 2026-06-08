@@ -98,6 +98,9 @@ impl Drop for FairnessEngine {
         for process in &self.processes {
             process.kill();
         }
+        // Catch-all: abort every process still on the runtime — the spinners run a
+        // tight loop forever, so they must not outlive the engine into the next run.
+        self.runtime.shutdown();
     }
 }
 

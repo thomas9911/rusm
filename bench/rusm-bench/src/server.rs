@@ -140,11 +140,10 @@ async fn handle_connection(
     if send(&mut write, node.hello()).await.is_err() {
         return;
     }
-    // A one-shot snapshot so a client that connects while the node is idle renders
-    // the current state immediately — the ticker stays silent when nothing runs.
-    if send(&mut write, node.tick_message()).await.is_err() {
-        return;
-    }
+    // No snapshot frame here: an idle client renders correctly from no frame, and a
+    // client connecting mid-run gets the next broadcast within one tick. Crucially,
+    // `tick()` mutates the rate state, so it must be called *only* by the ticker —
+    // never per-connection, or a reconnect would perturb the live throughput.
 
     loop {
         tokio::select! {

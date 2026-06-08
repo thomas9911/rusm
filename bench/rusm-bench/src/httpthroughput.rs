@@ -161,6 +161,8 @@ impl Drop for HttpThroughputEngine {
         for task in &self.clients_tasks {
             task.abort();
         }
+        // Abort any in-flight per-request instances so none linger into the next run.
+        self._wr.shutdown();
         // `_wr` drops here → its epoch ticker thread stops.
     }
 }

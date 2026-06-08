@@ -283,6 +283,16 @@ impl WasmRuntime {
         );
     }
 
+    /// Aborts **every** process on this runtime, returning how many were stopped —
+    /// the kill-switch that makes teardown deterministic. A guest process (a Wasm
+    /// instance) ending here drops its `Store`, freeing its pooled-allocator slot, so
+    /// after this the instance pool is fully reclaimed. Dropping a `WasmRuntime` that
+    /// owns its runtime should call this first, so long-lived/parked processes (e.g. a
+    /// per-connection handler) never leak past the thing that spawned them.
+    pub fn shutdown(&self) -> usize {
+        self.spawner.rt.shutdown()
+    }
+
     /// Spawns a **JavaScript/TypeScript** bundle as a sandboxed process via the
     /// embedded rquickjs js-runner (default-deny `Sandboxed`). The bundle is the
     /// Bun-built JS source; it runs with the `Process` actor API + Web API
