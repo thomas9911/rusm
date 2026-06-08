@@ -46,9 +46,9 @@ pub struct SseFanoutEngine {
 
 impl SseFanoutEngine {
     pub fn new(workers: usize, scheduler_count: usize) -> Self {
-        // Hold a *visible* number of concurrent SSE streams — each its own component
+        // Hold a *serious* number of concurrent SSE streams — each its own component
         // instance. Scaled by the resource profile (via `workers`).
-        let streams = (workers * 64).clamp(64, 512);
+        let streams = (workers * 128).clamp(64, 768);
 
         let wr = WasmRuntime::new(Runtime::new()).expect("wasm runtime");
         let prepared = wr

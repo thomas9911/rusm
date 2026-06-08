@@ -46,10 +46,10 @@ pub struct WsEchoEngine {
 
 impl WsEchoEngine {
     pub fn new(workers: usize, scheduler_count: usize) -> Self {
-        // Hold a *visible* number of concurrent connections — each its own sandboxed
+        // Hold a *serious* number of concurrent connections — each its own sandboxed
         // component process. Scaled by the resource profile (via `workers`), not the
         // tiny spawn-worker count itself.
-        let connections = (workers * 64).clamp(64, 512);
+        let connections = (workers * 128).clamp(64, 768);
 
         let wr = WasmRuntime::new(Runtime::new()).expect("wasm runtime");
         let prepared = wr

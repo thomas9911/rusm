@@ -44,9 +44,9 @@ pub struct HttpThroughputEngine {
 
 impl HttpThroughputEngine {
     pub fn new(workers: usize, scheduler_count: usize) -> Self {
-        // A visible number of keep-alive clients, scaled by the resource profile —
-        // not the tiny spawn-worker count (which clamped everything to 8).
-        let clients = (workers * 32).clamp(64, 256);
+        // A serious number of keep-alive clients, scaled by the resource profile —
+        // hundreds in flight, not the tiny spawn-worker count (which clamped to 8).
+        let clients = (workers * 96).clamp(64, 512);
 
         let wr = WasmRuntime::new(Runtime::new()).expect("wasm runtime");
         let prepared = wr
