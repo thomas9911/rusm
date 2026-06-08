@@ -1,6 +1,6 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use rusm_otp::Runtime;
 use rusm_wasm::{CapabilityProfile, WasmRuntime};
@@ -96,6 +96,8 @@ impl SseFanoutEngine {
                         return;
                     };
                     conn.set_nodelay(true).ok();
+                    // RST on close (no TIME_WAIT) — see httpthroughput.rs.
+                    let _ = socket2::SockRef::from(&conn).set_linger(Some(Duration::ZERO));
                     if conn
                         .write_all(b"GET / HTTP/1.1\r\nHost: rusm\r\n\r\n")
                         .await

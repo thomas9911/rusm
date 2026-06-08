@@ -1,6 +1,6 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use rusm_otp::Runtime;
 use rusm_wasm::{CapabilityProfile, WasmRuntime};
@@ -92,6 +92,9 @@ impl HttpThroughputEngine {
                         return;
                     };
                     conn.set_nodelay(true).ok();
+                    // RST on close (no TIME_WAIT) so rapid run/stop cycles don't pin
+                    // ephemeral source ports and starve the next run's connects.
+                    let _ = socket2::SockRef::from(&conn).set_linger(Some(Duration::ZERO));
                     alive.fetch_add(1, Ordering::Relaxed); // counted only once connected
                     let mut reader = BufReader::new(conn);
                     let mut n = 0u64;

@@ -1,11 +1,11 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use futures_util::{SinkExt, StreamExt};
 use rusm_otp::Runtime;
 use rusm_wasm::{CapabilityProfile, WasmRuntime};
-use tokio::net::TcpListener;
+use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
 use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite::Message;
@@ -94,7 +94,14 @@ impl WsEchoEngine {
                 let latency_tx = latency_tx.clone();
                 let url = url.clone();
                 tokio::spawn(async move {
-                    let Ok((mut ws, _)) = tokio_tungstenite::connect_async(url).await else {
+                    // Connect the TCP socket ourselves so we can RST on close (no
+                    // TIME_WAIT) — otherwise rapid run/stop cycles exhaust ephemeral
+                    // ports and the next run can't connect. Then run the WS handshake.
+                    let Ok(tcp) = TcpStream::connect(addr).await else {
+                        return;
+                    };
+                    let _ = socket2::SockRef::from(&tcp).set_linger(Some(Duration::ZERO));
+                    let Ok((mut ws, _)) = tokio_tungstenite::client_async(&url, tcp).await else {
                         return;
                     };
                     alive.fetch_add(1, Ordering::Relaxed); // counted only once connected
