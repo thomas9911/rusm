@@ -72,6 +72,10 @@ docs: ## Live-preview the documentation site
 docs-build: ## Build the static documentation site
 	cd $(DOCS) && { test -d node_modules || bun install; } && bun run build
 
+.PHONY: docs-deploy
+docs-deploy: ## Build the docs and publish them to the gh-pages branch
+	cargo xtask deploy-docs
+
 .PHONY: clean
 clean: ## Remove Rust build artifacts
 	cargo clean
