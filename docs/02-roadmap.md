@@ -63,9 +63,16 @@ data to real measurements.
   `rusm.toml [[serve]]` entries (`name`, `protocol` = `http`|`sse`|`ws`, `listen`,
   `capability`) on real TCP ports, loading `wasm/<name>.{wasm,js}` (HTTP/SSE via the
   `http_server` path, WS via `ws_server`); **`rusm new <name>`** scaffolds a
-  ready-to-serve TS HTTP app. Serving is benchmarked **out-of-process** by the
-  `rusm-loadtest` binary against a live `rusm serve` port — loopback: HTTP ~46k req/s
-  (0% errors), WS ~146k round-trips/s (256 held), SSE ~609k events/s (256 held). See
+  ready-to-serve TS HTTP app. Serving is benchmarked two ways: the **fair, credible
+  headline numbers** come **out-of-process** from the `rusm-loadtest` binary against a
+  live `rusm serve` port — loopback: HTTP ~46k req/s (0% errors), WS ~146k
+  round-trips/s (256 held), SSE ~609k events/s (256 held), and ~34k
+  sandboxed-process-per-connection WS establishments/s (`rusm-loadtest`'s `conn`
+  mode). The **six serving dashboard tiles** (`http-throughput`, `ws-echo`,
+  `sse-fanout` and their `*-ts` twins) are **co-resident live demos** — the same real
+  in-process WASM server driven through the same load path (balter for HTTP
+  request-rate, a connection-capacity harness for WS/SSE held connections), with load
+  generator and server sharing the node process. See
   [serving HTTP/WS/SSE](./serving-http-ws-sse.md). Serving TLS and the edge-hardening
   it pairs with move to **Phase 12** (below).
   `rusm-otp` stays Wasm-free (hyper/tungstenite/`wasi:http` live only in `rusm-wasm`).
@@ -103,11 +110,13 @@ and become **Phase 12**:
   in the control loop with poison-resistant locking.
 
 These are the items to land before exposing `rusm serve` to untrusted traffic.
-- **Ten live dashboard benchmarks** — *every* scenario now runs on real data
-  (spawn-storm, ping-pong, fault-recovery, connection-storm, connection-scale,
-  fairness, module-storm, component-storm, stream-pipe, distributed-fanout) + the
-  standalone `cluster_fanout` benchmark. Serving throughput is measured separately by
-  `rusm-loadtest` (out-of-process, vs a live `rusm serve` port), not in the dashboard.
+- **Sixteen live dashboard benchmarks** — *every* scenario now runs on real data: the
+  ten core engines (spawn-storm, ping-pong, fault-recovery, connection-storm,
+  connection-scale, fairness, module-storm, component-storm, stream-pipe,
+  distributed-fanout) plus six co-resident serving demos (`http-throughput`,
+  `ws-echo`, `sse-fanout` and their `*-ts` twins) + the standalone `cluster_fanout`
+  benchmark. The fair, credible serving headline numbers are still measured by
+  `rusm-loadtest` (out-of-process, vs a live `rusm serve` port).
 - TDD throughout; coverage ≥98% (mostly 100%); `cargo fmt` + Prettier clean.
 
 See the per-phase deep dives under [`phases/`](./phases/phase-00-foundation.md), and

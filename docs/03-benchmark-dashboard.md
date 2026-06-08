@@ -14,23 +14,30 @@ A menu of scenarios and a **Run** button. Each tick streams: throughput
 | Spawn storm | spawns/sec, memory/process | phase 1 |
 | Message ping-pong | msgs/sec, round-trip latency | phase 2 |
 | Fault recovery | restarts/sec, recovery latency | phase 3 |
-| **Connection storm (300k/s proof)** | conns/sec, peak, latency | phase 5 (native), re-measured phase 6 |
+| **Connection storm** | conns/sec, peak, latency | phase 5 (native), re-measured phase 6 |
 | Connection scale (held-open to the fd ceiling) | peak concurrent connections | phase 5 |
 | Fairness under tight loop | bystanders keep progressing | phase 6 |
 | Module storm (wasip1, Lunatic head-to-head) | core-module spawns/sec | phase 6 |
 | Component storm | component spawns/sec | phase 7 |
 | Stream pipe | bytes/sec between processes | phase 7 |
 | Distributed fan-out | cross-node latency | phase 9 |
+| HTTP throughput + `-ts` twin | req/sec (co-resident live demo) | phase 11 |
+| WS echo + `-ts` twin | round-trips/sec (co-resident live demo) | phase 11 |
+| SSE fan-out + `-ts` twin | events/sec (co-resident live demo) | phase 11 |
 
-All **ten** scenarios above run **real** engines — none are synthetic
+All **sixteen** scenarios above run **real** engines — none are synthetic
 (`Runner::start_synthetic` keeps a runtime-free deterministic preview only for UI
-development). **Serving throughput (HTTP / WS / SSE) is not a dashboard scenario**:
-it is a connection/request workload best measured across a real socket, so it is
-benchmarked **out-of-process** by `rusm-loadtest` against a live `rusm serve` port
-(see [serving HTTP/WS/SSE](./serving-http-ws-sse.md)). The runtime micro-benchmarks
-above stay **in-process** on purpose — they measure the actor core itself
-(spawns/sec, msgs/sec, restarts/sec, scheduler fairness) where there is no
-network/server, so in-process is the correct way to measure raw runtime capacity.
+development). The **six serving scenarios are co-resident live demos**: each spins up
+the same real in-process WASM server and drives it through the same load path as the
+out-of-process `rusm-loadtest` (balter for HTTP request-rate, a connection-capacity
+harness for WS/SSE held connections), with the load generator and server sharing the
+node process. Because they share CPU and hide the network behind loopback, the
+**fair, credible headline numbers** for serving are still the ones measured
+**out-of-process** by `rusm-loadtest` against a live `rusm serve` port (see [serving
+HTTP/WS/SSE](./serving-http-ws-sse.md)). The runtime micro-benchmarks (spawns/sec,
+msgs/sec, restarts/sec, scheduler fairness) stay **in-process** on purpose — they
+measure the actor core itself where there is no network/server, so in-process is the
+correct way to measure raw runtime capacity.
 
 ## Live observer view
 
@@ -42,7 +49,7 @@ running/waiting, scheduler load bars, total memory, and a per-instance table.
 Counters are relaxed atomics; the node pushes a **periodic aggregated snapshot**
 (10–60 Hz), never an event per operation. The per-instance detail table is the
 only costly part of a snapshot, so it is **toggleable** — off for clean
-benchmark runs. We prove the overhead is negligible by running the 300k/s
+benchmark runs. We prove the overhead is negligible by running a high-rate
 benchmark **observer-on vs observer-off** (see the `observer_overhead` example).
 
 ## Spawn-storm: how the number is produced (read this)

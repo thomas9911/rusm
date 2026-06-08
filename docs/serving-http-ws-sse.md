@@ -4,13 +4,21 @@
 > real ports by `rusm serve`.** A WASM component is served over real **HTTP**
 > (`WasmRuntime::http_server`), real **WebSockets** with *one component process per
 > connection* (`WasmRuntime::ws_server`), and real **SSE** (a `wasi:http` streaming
-> body). Measured **out-of-process** by [`rusm-loadtest`](https://github.com/archan937/rusm/tree/main/bench/rusm-loadtest)
+> body). The **fair, credible headline numbers** are measured **out-of-process** by
+> [`rusm-loadtest`](https://github.com/archan937/rusm/tree/main/bench/rusm-loadtest)
 > against a live `rusm serve` port (loopback): HTTP **~46k req/s** at 0% errors, WS
 > **~146k round-trips/s** across 256 held connections, SSE **~609k events/s** across
-> 256 held streams. (The in-process `http_bench` / `ws_bench` / `sse_bench` examples
-> still exist to measure the engine against the bare-host ceiling, but they share the
-> server's CPU and hide the network behind loopback — `rusm-loadtest` is the fair,
-> served number.)
+> 256 held streams, and **~34k sandboxed-process-per-connection WS
+> establishments/sec** (`rusm-loadtest`'s `conn` mode — each connection spawns a full
+> component). The dashboard also carries **six co-resident live demo tiles**
+> (`http-throughput`, `ws-echo`, `sse-fanout` and their `*-ts` twins): each spins up
+> the same real in-process WASM server and drives it through the same load path as
+> `rusm-loadtest` (balter for HTTP request-rate, a connection-capacity harness for
+> WS/SSE held connections), with load generator and server sharing the node process —
+> so the tile figures (http-throughput ~20k req/s, ws-echo ~195k rt/s, sse-fanout
+> ~695k events/s) differ by design from the fair out-of-process headlines. (The
+> in-process `http_bench` / `ws_bench` / `sse_bench` examples still exist to measure
+> the engine against the bare-host ceiling.)
 >
 > **Both guest languages serve all three.** RS components compile straight to
 > `wasi:http` (via `wstd`) / the actor world. TS components run on the embedded
@@ -239,22 +247,32 @@ process — so it never shares the server's CPU — and crosses a real socket.
   sustaining echo round-trips / draining events), because these are
   connection-capacity workloads, not request-rate — reported as concurrency +
   sustained ops/sec + p50/p99.
+- **Connection establishment** uses the `conn` mode — a connection-establishment storm
+  that opens fresh WS connections as fast as the server can accept them. Each
+  connection spawns a full sandboxed component process, so this is a richer claim than
+  a raw TCP accept rate.
 
-Measured live (out-of-process, loopback):
+Measured out-of-process (loopback):
 
 | Topic | Method | Measured |
 | --- | --- | --- |
 | **HTTP** | balter fixed-rate sweep | **~46k req/s at 0% errors.** |
 | **WS** | connection-capacity harness | **~146k round-trips/s across 256 held connections.** One sandboxed component process per connection; the per-message writer→component→writer mailbox hop costs ~nothing. |
 | **SSE** | connection-capacity harness | **~609k events/s across 256 held streams.** Each stream is its own `wasi:http` instance; a dropped client tears down only its own instance. |
+| **Connections** | `conn` establishment storm | **~34k sandboxed-process-per-connection WS establishments/sec.** Connection establishment is OS-bound; each connection spawns a full component. |
 
-The in-process `http_bench` / `ws_bench` / `sse_bench` examples still exist to measure
-the **engine** against the bare-host transport ceiling (so sandbox overhead is
-explicit), but they share the server's CPU and hide the network behind loopback — so
-the `rusm-loadtest` figures above are the source of truth for *served* throughput.
-(The earlier in-process dashboard serving scenarios — `http-throughput`, `ws-echo`,
-`sse-fanout` and their `*-ts` twins — were removed for the same reason: an in-process
-load generator sharing the server's CPU is not a fair benchmark.)
+The dashboard also carries the **six co-resident serving demo tiles**
+(`http-throughput`, `ws-echo`, `sse-fanout` and their `*-ts` twins): each spins up the
+same real in-process WASM server and drives it through the **same load path** as
+`rusm-loadtest` (balter for HTTP request-rate, the connection-capacity harness for
+WS/SSE), with the load generator and server sharing the node process. They are honest
+**live demos** — useful to watch a real server take load on the dashboard — but
+because they share CPU and hide the network behind loopback, their figures
+(http-throughput ~20k req/s, ws-echo ~195k rt/s, sse-fanout ~695k events/s) differ by
+design from the fair out-of-process headlines above, which remain the source of truth
+for *served* throughput. The in-process `http_bench` / `ws_bench` / `sse_bench`
+examples still exist to measure the **engine** against the bare-host transport ceiling
+(so sandbox overhead is explicit).
 
 What "good" looks like, confirmed: HTTP serving thousands of isolated
 instance-per-request handlers a second over a real socket at zero errors; WS/SSE

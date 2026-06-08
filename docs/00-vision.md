@@ -31,8 +31,11 @@ A runtime where:
 
 The north-star artifact is a **benchmark + live-observer dashboard** that
 stress-tests RUSM and shows latency, throughput, peak concurrency, and the live
-process table — culminating in proving the **"300k/s connections"** claim
-(observer-on vs observer-off, to show observability is nearly free).
+process table (observer-on vs observer-off, to show observability is nearly free).
+Network-facing rates (HTTP/WS/SSE throughput, connection establishment) are
+**earned out-of-process** by the `rusm-loadtest` driver against a live `rusm serve`
+port — e.g. ~34k sandboxed-process-per-connection WS establishments/sec — rather
+than asserted.
 
 We build it in small, test-driven phases (see [the roadmap](./02-roadmap.md)),
 each one teaching one concept. Phase 0 built the dashboard and observability
@@ -41,5 +44,7 @@ Phases 1–5 made the OTP core real (processes, messaging, supervision, manageme
 TCP); Phase 6 slotted in Wasmtime as the process backend; and by **Phase 7** a
 RUSM process is a real, supervised, sandboxed **WASM component** (or wasip1 core
 module) hosting WASI p1/p2/p3; by **Phase 9** nodes cluster over QUIC+TLS — and
-all ten dashboard benchmarks now run on real data. See the
+all sixteen dashboard benchmarks now run on real data — including six co-resident
+serving demos (HTTP/WS/SSE and their `*-ts` twins) that drive a real in-process
+WASM server through the same load path as `rusm-loadtest`. See the
 [roadmap](./02-roadmap.md) for where things stand.

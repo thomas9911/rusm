@@ -87,10 +87,12 @@ parse/round-trip. `cargo fmt` + clippy clean. The Wasm-free invariant holds:
 The dashboard's `distributed-fanout` scenario was **graduated to this real engine**
 too (a hub + worker nodes, a sender pool keeping one round-trip in flight so latency
 stays representative): live, it does ~71k round-trips/sec at ~105µs p50 on the
-Balanced profile. With that, **every one of the ten dashboard scenarios now runs on
-real data — none remain synthetic.** (`Runner::start_synthetic` keeps a runtime-free
-deterministic preview mode for UI development.) Serving throughput (HTTP/WS/SSE) is no
-longer a dashboard scenario — it's measured out-of-process by `rusm-loadtest`.
+Balanced profile. With that, **every one of the sixteen dashboard scenarios now runs
+on real data — none remain synthetic.** (`Runner::start_synthetic` keeps a
+runtime-free deterministic preview mode for UI development.) The six serving scenarios
+(HTTP/WS/SSE and their `*-ts` twins) are co-resident live demos driving a real
+in-process WASM server; the fair, credible serving headline numbers are still measured
+out-of-process by `rusm-loadtest` against a live `rusm serve` port.
 
 ## Next
 

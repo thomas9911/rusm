@@ -8,7 +8,7 @@ distributed clusters you can hook into live. See `README.md` for the pitch and
 
 ## Status
 
-**Phase 10 of 11 — complete.** RUSM **hosts real WASM components** as isolated,
+**Phases 0–10 complete (of 12); Phase 11 (serving) in progress; Phase 12 (hardening) planned.** RUSM **hosts real WASM components** as isolated,
 supervised processes, **clusters across nodes**, and is **hardened for scale**:
 an opt-in **on-demand instance tier** (`WasmRuntime::with_overflow` — spawn past the
 pooled cap onto an on-demand engine, bounded by memory not a fixed size), **opt-in
@@ -34,19 +34,27 @@ default) on real TCP ports — loading `wasm/<name>.{wasm,js}`, HTTP/SSE via the
 load. **`rusm new <name>`** scaffolds an app (a zero-dependency TS HTTP component
 `components/api/index.ts`, a `rusm.toml` `[[serve]]` entry, `.gitignore`, README) so
 `rusm new hello && cd hello && rusm build && rusm serve` then `curl
-http://127.0.0.1:8080/` works end-to-end. **Serving is benchmarked out-of-process**
-by the `bench/rusm-loadtest` (`rusm-loadtest`) binary against a real `rusm serve`
-port — the fair methodology (the load generator runs in a separate process, never
-sharing the server's CPU, and crosses a real socket). HTTP uses **balter** (a
-Tokio-native load framework) as a fixed-rate sweep (balter's auto-saturation control
-is too cautious in the sub-ms loopback regime, so we drive its constant-rate
-controller and sweep ourselves — every number measured, none extrapolated); WS & SSE
-use a tokio-native connection-capacity harness (held connections sustaining echo
-round-trips / draining events). Measured live (out-of-process, loopback): HTTP ~46k
-req/s at 0% errors; WS 256 held connections ~146k round-trips/s; SSE 256 held streams
-~609k events/s. The three in-process *dashboard* serving scenarios
-(`http-throughput`, `ws-echo`, `sse-fanout` and their `*-ts` twins) were **removed**
-— they shared the server's CPU and hid the network behind loopback. The Wasm-free
+http://127.0.0.1:8080/` works end-to-end. **Serving is benchmarked two ways.** The
+**fair, credible headline numbers** come **out-of-process** from the
+`bench/rusm-loadtest` (`rusm-loadtest`) binary against a real `rusm serve` port — the
+load generator runs in a separate process, never sharing the server's CPU, and
+crosses a real socket. Its modes: `http` uses **balter** (a Tokio-native load
+framework) as a fixed-rate sweep (balter's auto-saturation control is too cautious in
+the sub-ms loopback regime, so we drive its constant-rate controller and sweep
+ourselves — every number measured, none extrapolated); `ws` & `sse` use a
+tokio-native connection-capacity harness (held connections sustaining echo
+round-trips / draining events); `conn` is a connection-establishment storm
+(sandboxed-process-per-connection WS establishments). Measured out-of-process
+(loopback): HTTP ~46k req/s at 0% errors; WS 256 held connections ~146k
+round-trips/s; SSE 256 held streams ~609k events/s; `conn` ~34k
+sandboxed-process-per-connection WS establishments/s. The **six serving dashboard
+scenarios are co-resident live demos** (`http-throughput`, `ws-echo`, `sse-fanout`
+and their `*-ts` twins): each spins up the same real in-process WASM server and
+drives it through the same load path as `rusm-loadtest` (balter for HTTP request-rate,
+a connection-capacity harness for WS/SSE held connections), with load generator and
+server sharing the node process — so live tile figures (http-throughput ~20k req/s,
+ws-echo ~195k rt/s, sse-fanout ~695k events/s) differ by design from the fair
+out-of-process headlines above. The Wasm-free
 **`rusm-cluster`** crate (over `rusm-otp`, never Wasmtime) connects nodes over
 **QUIC + TLS** (quinn + rustls/ring; **mutual TLS** — a `ClusterCa` issues per-node
 certs, or a shared self-signed `Identity`): a `ClusterNode`
@@ -56,11 +64,13 @@ stream**, and routes each message on its own **uni-stream**. It gives cross-node
 `send_global`), **remote spawn** (named `Spawnable` factories), and **live attach**
 (`remote_pids`) over one request/reply control-plane RPC — ~550k cross-node msgs/s,
 ~39µs p50 round-trip (the standalone `cluster_fanout` bench). The live
-`distributed-fanout` dashboard scenario now runs on this real engine — **all ten
-dashboard scenarios are real; none remain synthetic** (spawn-storm, ping-pong,
-fault-recovery, connection-storm, connection-scale, fairness, module-storm,
-component-storm, stream-pipe, distributed-fanout; serving numbers now come solely
-from `rusm-loadtest`, not the dashboard). The Wasmtime backend (`rusm-wasm`, the *only* crate that
+`distributed-fanout` dashboard scenario now runs on this real engine — **all sixteen
+dashboard scenarios are real; none remain synthetic** (the ten core engines:
+spawn-storm, ping-pong, fault-recovery, connection-storm, connection-scale, fairness,
+module-storm, component-storm, stream-pipe, distributed-fanout; plus the six
+co-resident serving demos: `http-throughput`, `ws-echo`, `sse-fanout` and their `*-ts`
+twins; the fair serving headline numbers still come from `rusm-loadtest`
+out-of-process). The Wasmtime backend (`rusm-wasm`, the *only* crate that
 touches Wasmtime) runs each component instance-per-process via the **component
 model** (`wasmtime-wasi`; `bridges/{wasip1,wasip2,wasip3}.rs` over a shared core).
 The component linker wires **WASI p2 and p3** — both `@0.2.0` and `@0.3.0`

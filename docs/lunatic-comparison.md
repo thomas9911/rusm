@@ -14,7 +14,7 @@ This is not apples-to-apples. RUSM has **Phases 1–10 complete**: the OTP core 
 manages, and connects real processes over TCP, and the `rusm-wasm` backend runs
 them as real **Wasm instances** behind three bridges (wasip1 core modules, wasip2
 components, wasip3 `@0.3.0`), with default-deny capabilities, instance-per-process,
-pooling + CoW + epoch. All **nine** dashboard scenarios run on real data — including
+pooling + CoW + epoch. All **sixteen** dashboard scenarios run on real data — including
 **fairness**, where Wasm spinners saturate every core yet bystanders keep
 progressing, and **distributed-fanout**, real cross-node messaging over QUIC+TLS. The **guest crate** (Phase 8: `rusm-rs` + `rusm-ts`) and **distributed
 clusters** (Phase 9: `rusm-cluster`, QUIC+TLS) are now built too; remaining phases
@@ -79,7 +79,8 @@ phase, same themes, same order.
 | 8 ✅ | Guest crate | ✅ `rusm-rs` + `rusm-ts` (service macro / typed client, call/cast/stream/callbacks) | 🅛 `lunatic-rs` (Rust only) | 🔥 ahead — TS *and* Rust guests, one wire |
 | 9 ✅ | Distributed clusters + live attach | ✅ `rusm-cluster` (QUIC+TLS, cross-node send, gossiped global registry, remote spawn, live attach) | ✅ (QUIC + distributed registry) | ✅ at parity — secure cluster + global registry, one persistent conn/node, message-per-stream (no custom congestion layer) |
 | 10 ✅ | Scale & hardening | ✅ on-demand instance tier, bounded mailboxes, mutual-TLS cluster CA, windowed restart-intensity | ⚠️ OnDemand + fuel | 🔥 ahead — overflow tier *on top of* pooling, + secure cluster |
-| 11 ⏳ | **Serving** (HTTP / WS / SSE from a component) | ✅ engine built+measured, **from both Rust and TS guests** — `http_server` (instance-per-request `wasi:http`), `ws_server` (one sandboxed component process per WS connection), SSE streaming body. **`rusm serve`** hosts `rusm.toml [[serve]]` entries on real ports; **`rusm new`** scaffolds an app. Benchmarked **out-of-process** by `rusm-loadtest` (vs a live port): HTTP ~46k req/s (0% errors), WS ~146k round-trips/s (256 held), SSE ~609k events/s (256 held). Remaining: serving TLS | ❌ **no `wasi:http` host** (core modules only) | 🔥 **ahead — an axis Lunatic lacks** |
+| 11 ⏳ | **Serving** (HTTP / WS / SSE from a component) | ✅ engine built+measured, **from both Rust and TS guests** — `http_server` (instance-per-request `wasi:http`), `ws_server` (one sandboxed component process per WS connection), SSE streaming body. **`rusm serve`** hosts `rusm.toml [[serve]]` entries on real ports; **`rusm new`** scaffolds an app. Six **co-resident live demos** on the dashboard (`http-throughput`/`ws-echo`/`sse-fanout` + `*-ts` twins); the **fair headline numbers** come **out-of-process** from `rusm-loadtest` (vs a live port): HTTP ~46k req/s (0% errors), WS ~146k round-trips/s (256 held), SSE ~609k events/s (256 held), ~34k sandboxed-process-per-connection WS establishments/s (`conn` mode). Remaining: serving TLS (→ Phase 12) | ❌ **no `wasi:http` host** (core modules only) | 🔥 **ahead — an axis Lunatic lacks** |
+| 12 ⏳ | **Edge & cluster hardening** (planned) | serve-path admission control (concurrency/body/timeout → graceful `503`), default-bounded serve mailboxes, serving TLS (`https`/`wss`), signed `name→node` gossip ownership + poison-resistant locking | ⚠️ partial | — closing network-edge & peer-trust gaps |
 | — | SQLite host API | ❌ | 🅛 | — n/a |
 
 > ¹ The perf column is an **architectural** assessment, not a head-to-head
@@ -217,9 +218,10 @@ a true head-to-head benchmark to put numbers on the delta.
 
 ## Phase 10 — Performance & hardening
 
-Roll up the "beat" levers and prove them: pooling + CoW + epoch toward 300k+
-spawns/sec, quinn 0.11+ with adaptive chunking, and the superiority scorecard
-below — each as a measured number on the dashboard.
+Roll up the "beat" levers and prove them: pooling + CoW + epoch (already at ~440k
+component spawns/sec, ~475k wasip1 core-module spawns/sec — the direct head-to-head),
+quinn 0.11+ with adaptive chunking, and the superiority scorecard below — each as a
+measured number on the dashboard.
 
 ---
 

@@ -264,7 +264,7 @@ impl Scenario {
                     "What's unique here: it's about *concurrency* — how many simultaneous TCP connections you can keep open, each served by its own isolated process — not raw create speed.",
                     "Headline: peak concurrent connections (the live process count) — thousands at once — plus connections/sec and connect latency.",
                     "Phase 5: REAL loopback TCP, each connection a cheap isolated process, measured live.",
-                    "The ceiling is the OS (file descriptors, ephemeral ports, the kernel connect/accept path), NOT RUSM: minting a process per connection is near-free (spawn storm does ~2.4M/sec, hundreds of times this). The 300k/s target wants an external load generator on a tuned OS — RUSM scales with the kernel, not the runtime.",
+                    "The ceiling is the OS (file descriptors, ephemeral ports, the kernel connect/accept path), NOT RUSM: minting a process per connection is near-free (spawn storm does ~2.4M/sec, hundreds of times this). This tile shows the live loopback rate; the *earned* out-of-process figure comes from `rusm-loadtest conn` against a `rusm serve` port — ~34k establishments/sec even on the heavier path where every connection spawns a full sandboxed component (a raw-TCP process-per-connection, like this tile, is lighter still). RUSM scales with the kernel, not the runtime.",
                 ],
                 5,
             ),
