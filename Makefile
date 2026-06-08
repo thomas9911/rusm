@@ -14,10 +14,18 @@ help: ## Show this help
 .PHONY: dashboard
 dashboard: ## Start a node + the dashboard, then open the printed URL — "the money"
 	@cargo build --release -p rusm-cli
+	@# Kill any stale node still holding the port — otherwise the new node fails to
+	@# bind, the dashboard silently talks to the OLD node, and you debug a ghost.
+	@pkill -f "target/release/rusm node start" 2>/dev/null && sleep 1 || true
 	@echo "→ starting node (log: /tmp/rusm-node.log) + dashboard…"
 	@./target/release/rusm node start >/tmp/rusm-node.log 2>&1 & \
 		NODE=$$!; \
 		trap 'kill $$NODE 2>/dev/null' EXIT INT TERM; \
+		sleep 1; \
+		if ! kill -0 $$NODE 2>/dev/null; then \
+			echo "✗ node failed to start — most likely the port is in use:"; \
+			sed 's/^/    /' /tmp/rusm-node.log; exit 1; \
+		fi; \
 		cd $(DASHBOARD) && { test -d node_modules || bun install; } && bun run dev
 
 .PHONY: node
