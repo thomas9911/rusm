@@ -12,7 +12,7 @@
 //! rusm-loadtest sse  <url> [--duration S] [--connections N]
 //! ```
 
-use rusm_loadtest::{capacity, http, Opts};
+use rusm_loadtest::{capacity, conn, http, Opts};
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -23,6 +23,7 @@ fn main() {
         (Some("http"), Some(url)) => http::run(Opts::parse(&args), url),
         (Some("ws"), Some(url)) => capacity::run(capacity::Protocol::Ws, Opts::parse(&args), url),
         (Some("sse"), Some(url)) => capacity::run(capacity::Protocol::Sse, Opts::parse(&args), url),
+        (Some("conn"), Some(url)) => conn::run(Opts::parse(&args), url),
         _ => {
             eprintln!("{USAGE}");
             std::process::exit(2);
@@ -37,6 +38,7 @@ USAGE:
   rusm-loadtest http <url> [options]   saturate HTTP to find max sustainable req/s
   rusm-loadtest ws   <url> [options]   hold N WS connections, sustained echo round-trips/s
   rusm-loadtest sse  <url> [options]   hold N SSE streams, sustained events/s
+  rusm-loadtest conn <ws-url> [options]  connection-establishment storm (accepts/s)
 
 OPTIONS:
   --duration <secs>      test length (default 15)

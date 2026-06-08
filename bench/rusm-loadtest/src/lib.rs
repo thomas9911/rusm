@@ -13,6 +13,7 @@
 //! drives them live.
 
 pub mod capacity;
+pub mod conn;
 pub mod http;
 
 use std::time::Duration;
