@@ -44,7 +44,10 @@ pub struct WsEchoEngine {
 
 impl WsEchoEngine {
     pub fn new(workers: usize, scheduler_count: usize) -> Self {
-        let connections = workers.clamp(8, 256);
+        // Hold a *visible* number of concurrent connections — each its own sandboxed
+        // component process. Scaled by the resource profile (via `workers`), not the
+        // tiny spawn-worker count itself.
+        let connections = (workers * 64).clamp(64, 512);
 
         let wr = WasmRuntime::new(Runtime::new()).expect("wasm runtime");
         let prepared = wr
@@ -166,7 +169,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn a_wasm_component_echoes_websockets_under_load() {
-        let mut engine = WsEchoEngine::new(8, 4);
+        let mut engine = WsEchoEngine::new(1, 4);
         // Poll until echoes are flowing (each connection is a component process).
         let mut sample = engine.tick();
         for _ in 0..400 {

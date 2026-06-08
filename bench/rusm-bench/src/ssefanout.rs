@@ -45,7 +45,9 @@ pub struct SseFanoutEngine {
 
 impl SseFanoutEngine {
     pub fn new(workers: usize, scheduler_count: usize) -> Self {
-        let streams = workers.clamp(8, 256);
+        // Hold a *visible* number of concurrent SSE streams — each its own component
+        // instance. Scaled by the resource profile (via `workers`).
+        let streams = (workers * 64).clamp(64, 512);
 
         let wr = WasmRuntime::new(Runtime::new()).expect("wasm runtime");
         let prepared = wr
@@ -194,7 +196,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn a_wasm_component_streams_events_to_many_subscribers() {
-        let mut engine = SseFanoutEngine::new(8, 4);
+        let mut engine = SseFanoutEngine::new(1, 4);
         let mut sample = engine.tick();
         for _ in 0..400 {
             tokio::time::sleep(Duration::from_millis(10)).await;
@@ -207,7 +209,10 @@ mod tests {
             sample.ops_per_sec > 0.0,
             "the WASM SSE server streamed events"
         );
-        assert_eq!(sample.process_count, 8, "eight concurrent streams held");
+        assert_eq!(
+            sample.process_count, 64,
+            "the held-stream count (64 at workers=1)"
+        );
         assert_eq!(sample.scheduler_load.len(), 4);
     }
 }
