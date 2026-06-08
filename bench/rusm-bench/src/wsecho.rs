@@ -190,6 +190,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn a_wasm_component_echoes_websockets_under_load() {
+        let _serial = crate::SERVING_TEST_GUARD.lock().await;
         let mut engine = WsEchoEngine::new(1, 4, Guest::Rust);
         // Poll until echoes are flowing (each connection is a component process).
         let mut sample = engine.tick();
@@ -210,6 +211,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn a_typescript_worker_echoes_websockets() {
+        let _serial = crate::SERVING_TEST_GUARD.lock().await;
         // The TS path: each connection is a TypeScript worker on the js-runner.
         let mut engine = WsEchoEngine::new(1, 4, Guest::Ts);
         let mut sample = engine.tick();

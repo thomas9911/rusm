@@ -235,6 +235,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
     async fn node_serves_http_throughput_over_the_websocket() {
+        let _serial = crate::SERVING_TEST_GUARD.lock().await;
         // The EXACT dashboard path: serve_on + ticker + a WebSocket client sending
         // Run and reading frames. Reproduces what `make dashboard` does, end to end.
         let node = Node::new(RunnerConfig::default());
@@ -278,6 +279,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn run_stop_run_still_produces_throughput() {
+        let _serial = crate::SERVING_TEST_GUARD.lock().await;
         // The dashboard flow over the node API: Run → Stop → Run. The second run must
         // still produce throughput, and an idle node must report not-running.
         let node = Node::new(RunnerConfig::default());

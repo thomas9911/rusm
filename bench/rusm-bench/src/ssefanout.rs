@@ -217,6 +217,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn a_wasm_component_streams_events_to_many_subscribers() {
+        let _serial = crate::SERVING_TEST_GUARD.lock().await;
         let mut engine = SseFanoutEngine::new(1, 4, Guest::Rust);
         let mut sample = engine.tick();
         for _ in 0..400 {

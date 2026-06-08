@@ -232,6 +232,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn a_wasm_component_serves_requests_under_load() {
+        let _serial = crate::SERVING_TEST_GUARD.lock().await;
         let mut engine = HttpThroughputEngine::new(1, 4, Guest::Rust);
         // Poll until requests are flowing (the component instantiates per request).
         let mut sample = engine.tick();

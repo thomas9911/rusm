@@ -394,6 +394,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
     async fn http_throughput_is_sustained_not_a_blip() {
+        let _serial = crate::SERVING_TEST_GUARD.lock().await;
         // Reproduce the live node: full Balanced client count, watched for several
         // seconds. The frame the user saw was 0 ops for 20s while "running" — a hang,
         // not slowness. Sustained throughput must be clearly non-zero.
@@ -412,6 +413,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
     async fn switching_scenarios_keeps_producing_throughput() {
+        let _serial = crate::SERVING_TEST_GUARD.lock().await;
         // The user's exact flow: stop one benchmark, start a *different* one. Each
         // switch must produce throughput — a fresh engine, no leak from the last.
         let config = RunnerConfig {
@@ -446,6 +448,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn repeated_restart_keeps_producing_throughput() {
+        let _serial = crate::SERVING_TEST_GUARD.lock().await;
         // Click like a monkey: run → stop, over and over, for both a bare-process and
         // a WASM-spawning scenario. Every cycle must produce throughput — if a stopped
         // engine leaked its processes/runtime, later cycles would degrade to zero.
@@ -474,6 +477,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
     async fn ws_echo_sustains_throughput_under_the_runner() {
+        let _serial = crate::SERVING_TEST_GUARD.lock().await;
         // Drive ws-echo the way the node does (through the Runner), at the default
         // Balanced profile (hundreds of connections), and confirm round-trips flow.
         let mut r = runner();

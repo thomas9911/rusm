@@ -34,3 +34,9 @@ pub use sample::Sample;
 pub use scenario::{MetricUnit, Scenario, ScenarioMeta};
 pub use server::{serve, serve_on, Node};
 pub use synthetic::SyntheticSource;
+
+/// Serializes the heavy serving/restart tests. Each spins a real server with
+/// hundreds of live connections and a full Wasm instance pool; run in parallel they
+/// exhaust fds / CPU / pool reservations and flake. Acquire it first in such a test.
+#[cfg(test)]
+pub(crate) static SERVING_TEST_GUARD: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
