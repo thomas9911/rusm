@@ -392,6 +392,24 @@ mod tests {
         assert!(frame.observer.messages_total > 0);
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn http_throughput_is_sustained_not_a_blip() {
+        // Reproduce the live node: full Balanced client count, watched for several
+        // seconds. The frame the user saw was 0 ops for 20s while "running" — a hang,
+        // not slowness. Sustained throughput must be clearly non-zero.
+        let mut r = runner();
+        r.start(Scenario::HttpThroughput);
+        let mut max_ops = 0.0_f64;
+        for tick in 0..120 {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            max_ops = r.tick(tick).ops_per_sec.max(max_ops);
+        }
+        assert!(
+            max_ops > 1000.0,
+            "http throughput sustained (max {max_ops:.0}/s)"
+        );
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn repeated_restart_keeps_producing_throughput() {
         // Click like a monkey: run → stop, over and over, for both a bare-process and

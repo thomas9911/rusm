@@ -35,7 +35,9 @@ pub struct HttpThroughputEngine {
     // Held alive for the run; dropping it stops the server's epoch ticker.
     _wr: WasmRuntime,
     served: Arc<AtomicU64>,
-    clients: usize,
+    /// Keep-alive clients that actually connected (and are still up) — the real
+    /// concurrency, not the configured target, so the tile never lies.
+    alive: Arc<AtomicU64>,
     latency_rx: UnboundedReceiver<u64>,
     stop: Arc<AtomicBool>,
     clients_tasks: Vec<JoinHandle<()>>,
@@ -75,12 +77,14 @@ impl HttpThroughputEngine {
         let server_task = tokio::spawn(server.serve(listener));
 
         let served = Arc::new(AtomicU64::new(0));
+        let alive = Arc::new(AtomicU64::new(0));
         let stop = Arc::new(AtomicBool::new(false));
         let (latency_tx, latency_rx) = unbounded_channel();
 
         let clients_tasks = (0..clients)
             .map(|_| {
                 let served = Arc::clone(&served);
+                let alive = Arc::clone(&alive);
                 let stop = Arc::clone(&stop);
                 let latency_tx = latency_tx.clone();
                 tokio::spawn(async move {
@@ -88,6 +92,7 @@ impl HttpThroughputEngine {
                         return;
                     };
                     conn.set_nodelay(true).ok();
+                    alive.fetch_add(1, Ordering::Relaxed); // counted only once connected
                     let mut reader = BufReader::new(conn);
                     let mut n = 0u64;
                     while !stop.load(Ordering::Relaxed) {
@@ -101,6 +106,7 @@ impl HttpThroughputEngine {
                         }
                         n += 1;
                     }
+                    alive.fetch_sub(1, Ordering::Relaxed);
                 })
             })
             .collect();
@@ -108,7 +114,7 @@ impl HttpThroughputEngine {
         Self {
             _wr: wr,
             served,
-            clients,
+            alive,
             latency_rx,
             stop,
             clients_tasks,
@@ -138,9 +144,9 @@ impl HttpThroughputEngine {
             latencies_ns = latencies_ns.split_off(latencies_ns.len() - LATENCY_SAMPLE);
         }
 
-        // The charted "concurrency" is the live keep-alive client connections (each
+        // The charted "concurrency" is the keep-alive clients actually connected (each
         // request runs on a transient instance, not a long-lived process).
-        let process_count = self.clients as u64;
+        let process_count = self.alive.load(Ordering::Relaxed);
         Sample {
             ops_per_sec,
             process_count,
