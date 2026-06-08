@@ -393,9 +393,10 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn restart_after_stop_still_produces_throughput() {
-        // Reproduce the dashboard flow: run → stop → run again. The second run must
-        // still produce throughput (a fresh engine), not stay at zero.
+    async fn repeated_restart_keeps_producing_throughput() {
+        // Click like a monkey: run → stop, over and over, for both a bare-process and
+        // a WASM-spawning scenario. Every cycle must produce throughput — if a stopped
+        // engine leaked its processes/runtime, later cycles would degrade to zero.
         async fn run_until_throughput(r: &mut Runner, scenario: Scenario) -> bool {
             r.start(scenario);
             for tick in 0..400 {
@@ -408,18 +409,14 @@ mod tests {
         }
         let mut r = runner();
         for scenario in [Scenario::SpawnStorm, Scenario::HttpThroughput] {
-            assert!(
-                run_until_throughput(&mut r, scenario).await,
-                "first run of {} produced throughput",
-                scenario.id()
-            );
-            r.stop();
-            assert!(
-                run_until_throughput(&mut r, scenario).await,
-                "second run of {} (after stop) still produces throughput",
-                scenario.id()
-            );
-            r.stop();
+            for cycle in 1..=4 {
+                assert!(
+                    run_until_throughput(&mut r, scenario).await,
+                    "{} cycle {cycle} produced throughput",
+                    scenario.id()
+                );
+                r.stop();
+            }
         }
     }
 
