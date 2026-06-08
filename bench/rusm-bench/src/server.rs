@@ -48,6 +48,15 @@ impl Node {
         self.tick_period
     }
 
+    /// Whether a scenario is currently running — the ticker broadcasts at full rate
+    /// only while running, and just heartbeats when idle (no flood of empty frames).
+    pub fn is_running(&self) -> bool {
+        self.runner
+            .lock()
+            .expect("runner mutex poisoned")
+            .is_running()
+    }
+
     /// Applies a client command; `Err` carries a human-readable reason.
     pub fn apply(&self, command: ClientCommand) -> Result<(), String> {
         let mut runner = self.runner.lock().expect("runner mutex poisoned");
@@ -103,9 +112,21 @@ pub async fn serve_on(listener: TcpListener, node: Arc<Node>) -> std::io::Result
 
 async fn ticker(node: Arc<Node>, tx: broadcast::Sender<ServerMessage>) {
     let mut interval = tokio::time::interval(node.tick_period());
+    // While running, broadcast every tick (the live chart needs it). While idle, only
+    // heartbeat ~once a second — no point flooding clients with empty frames — but
+    // always send the running→idle transition so the dashboard sees the stop at once.
+    let heartbeat = (1000 / node.tick_period().as_millis().max(1)).max(1) as u64;
+    let mut idle_ticks = 0u64;
+    let mut was_running = false;
     loop {
         interval.tick().await;
-        let _ = tx.send(node.tick_message());
+        let running = node.is_running();
+        let send_idle = !running && (was_running || idle_ticks % heartbeat == 0);
+        if running || send_idle {
+            let _ = tx.send(node.tick_message());
+        }
+        idle_ticks = if running { 0 } else { idle_ticks + 1 };
+        was_running = running;
     }
 }
 
@@ -171,6 +192,14 @@ mod tests {
         let hello = node.hello();
         assert_eq!(hello.scenarios().unwrap().len(), Scenario::ALL.len());
         assert_eq!(hello.profiles().unwrap().len(), ResourceProfile::ALL.len());
+    }
+
+    #[test]
+    fn an_idle_node_is_not_running() {
+        // The ticker uses this to heartbeat (not flood) when nothing is running.
+        let node = Node::new(RunnerConfig::default());
+        assert!(!node.is_running());
+        assert!(!node.tick_message().tick_frame().unwrap().running);
     }
 
     #[test]
