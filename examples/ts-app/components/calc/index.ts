@@ -26,4 +26,4 @@ export async function work(onProgress: (pct: number) => void): Promise<string> {
 // Publish the service's contract — derived from the functions above, so it can never
 // drift from them. A caller imports this *type* (erased at build) to get a fully-typed
 // client; `calc` stays a separate component, reached over messages, never bundled in.
-export type Calc = typeof import("./index");
+export type Calc = typeof import(".");

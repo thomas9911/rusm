@@ -278,7 +278,9 @@ export function add(a: number, b: number): number { return a + b; }
 export async function greet({ name }: { name: string }) { return `hi ${name}`; }
 
 // Publish the contract — derived from the functions above, so it never drifts.
-export type Calc = typeof import("./index");
+// `import(".")` is this component's own directory (the same way a caller writes
+// `from "../calc"`); it resolves to this index, so the type is "all my exports".
+export type Calc = typeof import(".");
 ```
 
 A **worker** exports a `default` (async) function — RUSM runs it once. It reaches a
