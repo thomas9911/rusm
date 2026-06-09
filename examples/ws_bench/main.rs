@@ -22,6 +22,9 @@ use tokio_tungstenite::tungstenite::Message;
 
 /// The WS-handler component: echoes each frame from inside the sandbox.
 const WS_ECHO: &[u8] = include_bytes!("../../crates/rusm-wasm/tests/fixtures/rs_ws_echo.wasm");
+/// A resident WS echo handler: one instance multiplexes many connections (stateful).
+const WS_ECHO_RESIDENT: &[u8] =
+    include_bytes!("../../crates/rusm-wasm/tests/fixtures/rs_resident_ws_echo.wasm");
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -39,6 +42,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let component = stress(comp_addr, connections, secs).await;
     comp_task.abort();
 
+    // Resident path: ONE pool of long-lived instances multiplexes every connection
+    // (stateful — chat/pubsub), vs a process per connection. A pool of one-per-core
+    // shards connections across instances; each instance serializes its own frames.
+    let cores = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4);
+    let res_prepared = wr.prepare_component(&wr.compile_component(WS_ECHO_RESIDENT)?, "run")?;
+    let res_listener = TcpListener::bind("127.0.0.1:0").await?;
+    let res_addr = res_listener.local_addr()?;
+    let res_server = wr.resident_ws_server(
+        &res_prepared,
+        CapabilityProfile::Sandboxed.capabilities(),
+        cores,
+    );
+    let res_task = tokio::spawn(res_server.serve(res_listener));
+    let resident = stress(res_addr, connections, secs).await;
+    res_task.abort();
+
     // Transport ceiling: a host-side echo, no Wasm in the loop.
     let host_listener = TcpListener::bind("127.0.0.1:0").await?;
     let host_addr = host_listener.local_addr()?;
@@ -48,6 +69,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("WASM component per connection (real serving path):");
     component.report(connections);
+    println!("\nresident pool ({cores} instances, stateful — multiplexed):");
+    resident.report(connections);
     println!("\nhost echo (no Wasm, transport ceiling):");
     host.report(connections);
     // >1.0x = the component path matched (or beat) the bare transport; the per-message

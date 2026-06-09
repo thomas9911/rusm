@@ -1,0 +1,24 @@
+# A resident WebSocket echo handler (one instance serves all connections, echoes
+# each frame back to its sender) — used by the ws_bench resident comparison. Built
+# for wasm32-wasip2, checked in as rs_resident_ws_echo.wasm.
+#   cargo build --target wasm32-wasip2 --release
+#   cp target/wasm32-wasip2/release/rs_resident_ws_echo.wasm ../rs_resident_ws_echo.wasm
+[workspace]
+
+[package]
+name = "rs-resident-ws-echo"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+name = "rs_resident_ws_echo"
+
+[profile.release]
+opt-level = "z"
+strip = true
+
+[dependencies]
+rusm-rs = { path = "../../../../rusm-rs" }
+wit-bindgen = "0.46"

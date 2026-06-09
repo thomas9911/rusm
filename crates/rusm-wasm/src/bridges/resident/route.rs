@@ -126,7 +126,8 @@ impl ResidentRoute {
         self.pool.pids()
     }
 
-    /// The live pid in slot `i` (introspection / tests).
+    /// The live pid in slot `i` (slot-stable addressing for tests).
+    #[cfg(test)]
     pub(crate) fn slot_pid(&self, i: usize) -> Option<Pid> {
         self.pool.whereis(i)
     }
