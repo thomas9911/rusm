@@ -46,11 +46,6 @@ pub fn compile(bundle: &str) -> Result<Vec<u8>> {
     Ok(out)
 }
 
-/// Whether `bytes` is a bytecode payload produced by [`compile`] (vs raw JS source).
-pub fn is_bytecode(bytes: &[u8]) -> bool {
-    bytes.len() >= MAGIC.len() && &bytes[..MAGIC.len()] == MAGIC
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -61,7 +56,7 @@ mod tests {
         // (the same rquickjs 0.9.0 the runner embeds). This proves the bytecode is
         // valid for the runner's engine — the whole correctness premise.
         let payload = compile("module.exports.default = 6 * 7;").unwrap();
-        assert!(is_bytecode(&payload));
+        assert_eq!(&payload[..MAGIC.len()], &MAGIC[..], "MAGIC-prefixed");
 
         let rt = Runtime::new().unwrap();
         let ctx = Context::full(&rt).unwrap();
@@ -75,12 +70,5 @@ mod tests {
             let answer: i32 = ctx.eval("globalThis.module.exports.default").unwrap();
             assert_eq!(answer, 42, "the bytecode ran and populated module.exports");
         });
-    }
-
-    #[test]
-    fn detects_source_vs_bytecode() {
-        assert!(is_bytecode(&compile("1;").unwrap()));
-        assert!(!is_bytecode(b"module.exports.default = 1;"));
-        assert!(!is_bytecode(b""));
     }
 }
