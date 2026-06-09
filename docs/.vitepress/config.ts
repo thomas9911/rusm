@@ -16,6 +16,7 @@ const sections = [
     items: [
       { text: 'Why RUSM?', link: '/00-vision' },
       { text: 'RUSM vs Lunatic', link: '/lunatic-comparison' },
+      { text: 'How RUSM compares', link: '/comparison' },
       { text: 'Design analysis', link: '/design-analysis' },
       { text: 'Architecture', link: '/01-architecture' },
       { text: 'Roadmap', link: '/02-roadmap' },
