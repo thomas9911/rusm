@@ -92,17 +92,25 @@
 .VPNavBarTitle .title { font-family: var(--r-display); font-weight: 800; letter-spacing: -.02em; }
 .vp-doc h1, .vp-doc h2, .vp-doc h3, .vp-doc h4 { font-family: var(--r-display); letter-spacing: -.02em; }
 
-/* code blocks wear the Dracula background (#282a36) in both modes, so the
-   dracula/dracula-soft token colours sit on their native canvas rather than the warm
-   site palette. The window-dot title bar gets a slightly deeper shade. */
-:root,
+/* code blocks sit on Rosé Pine's own canvas so the tokens render on the background
+   the theme was designed for: rose-pine-dawn cream in light, rose-pine-moon plum in
+   dark. The code-tab bar takes a slightly deeper shade of each, with a copper active bar. */
+:root {
+  --vp-code-block-bg: #faf4ed;          /* rose-pine-dawn surface */
+  --vp-code-tab-bg: #f2e9e1;
+  --vp-code-tab-divider: rgba(87, 82, 121, .12);
+  --vp-code-tab-text-color: #6e6a86;
+  --vp-code-tab-active-text-color: #575279;
+  --vp-code-tab-hover-text-color: #575279;
+  --vp-code-tab-active-bar-color: var(--vp-c-brand-1);
+}
 .dark {
-  --vp-code-block-bg: #282a36;
-  --vp-code-tab-bg: #21222c;
+  --vp-code-block-bg: #232136;          /* rose-pine-moon surface */
+  --vp-code-tab-bg: #2a273f;
   --vp-code-tab-divider: rgba(255, 255, 255, .08);
-  --vp-code-tab-text-color: #b9bcca;
-  --vp-code-tab-active-text-color: #f8f8f2;
-  --vp-code-tab-hover-text-color: #f8f8f2;
+  --vp-code-tab-text-color: #908caa;
+  --vp-code-tab-active-text-color: #e0def4;
+  --vp-code-tab-hover-text-color: #e0def4;
   --vp-code-tab-active-bar-color: var(--vp-c-brand-1);
 }
 

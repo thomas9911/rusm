@@ -4,11 +4,44 @@ import { defineConfig } from 'vitepress';
 // top nav (as dropdowns) and the sidebar (as sections), so they never diverge.
 const sections = [
   {
+    // Categorised like every other section — and the sub-headings of the (long)
+    // getting-started page are surfaced as anchor links so the whole arc is
+    // navigable from the sidebar, not just the first three headings.
     text: 'Get started',
     items: [
-      { text: 'Overview', link: '/getting-started' },
-      { text: 'Install', link: '/getting-started#install' },
-      { text: 'Quick start', link: '/getting-started#quick-start' },
+      {
+        text: 'Setup',
+        items: [
+          { text: 'Overview', link: '/getting-started' },
+          { text: 'Install', link: '/getting-started#install' },
+          { text: 'Quick start', link: '/getting-started#quick-start' },
+        ],
+      },
+      {
+        text: 'Ways to use RUSM',
+        items: [
+          { text: 'The OTP core (no Wasm)', link: '/getting-started#_1-without-a-wasm-runtime-—-the-otp-core' },
+          { text: 'Embed a .wasm', link: '/getting-started#_2-with-an-already-compiled-wasm-—-embedding' },
+          { text: 'The app model', link: '/getting-started#_3-with-an-already-compiled-wasm-—-the-app-model' },
+        ],
+      },
+      {
+        text: 'Write a component',
+        items: [
+          { text: 'Rust component', link: '/getting-started#_4-a-rust-wasm-component-source-only' },
+          { text: 'TypeScript component', link: '/getting-started#_5-a-ts-js-wasm-component-source-only' },
+          { text: 'Serve over HTTP/WS/SSE', link: '/getting-started#_6-serve-a-component-over-http-typescript-or-rust' },
+        ],
+      },
+      {
+        text: 'Inside a component',
+        items: [
+          { text: 'Process management', link: '/getting-started#process-management-from-inside-a-component-rust' },
+          { text: 'Streaming', link: '/getting-started#streaming-from-a-component' },
+          { text: 'Capabilities & sandboxing', link: '/getting-started#capabilities-sandboxing' },
+          { text: 'Observe a node', link: '/getting-started#observe-a-running-node' },
+        ],
+      },
     ],
   },
   {
@@ -152,11 +185,11 @@ export default defineConfig({
   // so every asset/link resolves under the /rusm/ subpath.
   base: '/rusm/',
   cleanUrls: true,
-  // Code blocks use the Dracula palette (vivid purple/pink/green/cyan tokens) in both
-  // modes — deliberate dark "code islands" on the warm light page. `dracula-soft` is a
-  // muted variant for light mode; swap both to `'dracula'` for full vibrancy.
+  // Code uses Rosé Pine — a warm, muted, uncommon palette that sits naturally with
+  // RUSM's copper/cream brand: rose-pine-dawn (light) over a cream canvas, rose-pine-moon
+  // (dark) over muted plum. A true light theme in light mode, its dark sibling in dark.
   markdown: {
-    theme: { light: 'dracula-soft', dark: 'dracula' },
+    theme: { light: 'rose-pine-dawn', dark: 'rose-pine-moon' },
   },
   // The RUSM theme's fonts (display / base / mono), loaded with preconnect for
   // performance rather than a CSS @import.
