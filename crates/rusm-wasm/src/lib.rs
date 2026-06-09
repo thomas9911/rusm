@@ -26,10 +26,10 @@ mod bridges;
 mod caps;
 
 pub use bridges::http::{HttpServer, PreparedHttp};
-pub use bridges::resident::ResidentHttpServer;
+pub use bridges::resident::{ResidentHttpServer, ResidentWsServer};
 pub use bridges::wasip1::PreparedModule;
 pub use bridges::wasip2::PreparedComponent;
-pub use bridges::ws::{serve_ws_echo, ResidentWsServer, WsServer};
+pub use bridges::ws::{serve_ws_echo, WsServer};
 pub use caps::{Capabilities, CapabilityProfile};
 
 /// How often the epoch is bumped. A guest runs at most this long before it must
