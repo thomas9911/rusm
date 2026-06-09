@@ -234,7 +234,10 @@ async fn connect_ws(
 ) -> Option<
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
 > {
-    for _ in 0..50 {
+    // A generous budget: hundreds of simultaneous handshakes against a small
+    // resident pool (especially the heavier TS js-runner) serialize, so a short
+    // budget would leave many connections unestablished and the held count short.
+    for _ in 0..600 {
         if shared.stop.load(Ordering::Relaxed) {
             return None;
         }
@@ -246,38 +249,47 @@ async fn connect_ws(
     None
 }
 
-/// One SSE stream: GET the endpoint and drain `text/event-stream` events forever,
-/// counting `\n\n` frame terminators and sampling the inter-event gap.
+/// One SSE slot: keep an `event-stream` draining, counting `\n\n` frame terminators
+/// and sampling the inter-event gap. **Reconnects when a stream ends** — an infinite
+/// firehose never ends (so this never re-loops), but a resident handler may emit a
+/// finite burst per request, and reusing the kept-alive connection keeps the slot
+/// busy without churn. The slot stays "alive" for its whole lifetime.
 async fn sse_connection(shared: Arc<Shared>, url: String, lat_tx: UnboundedSender<u64>) {
-    let resp = match reqwest::Client::new().get(&url).send().await {
-        Ok(resp) => resp,
-        Err(_) => return,
-    };
+    let client = reqwest::Client::new();
     shared.alive.fetch_add(1, Ordering::Relaxed);
-    let mut stream = resp.bytes_stream();
-    let mut prev_newline = false;
     let mut n = 0u64;
     let mut last_event = Instant::now();
     while !shared.stop.load(Ordering::Relaxed) {
-        let Some(Ok(chunk)) = stream.next().await else {
-            break;
+        let Ok(resp) = client.get(&url).send().await else {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+            continue;
         };
-        for &b in chunk.iter() {
-            if b == b'\n' {
-                if prev_newline {
-                    shared.ops.fetch_add(1, Ordering::Relaxed);
-                    if n % LATENCY_EVERY == 0 {
-                        let now = Instant::now();
-                        let _ = lat_tx.send(now.duration_since(last_event).as_nanos() as u64);
-                        last_event = now;
+        let mut stream = resp.bytes_stream();
+        let mut prev_newline = false;
+        // Reset the clock per connection so a reconnect gap isn't mis-sampled as an
+        // inter-event latency.
+        last_event = Instant::now();
+        while !shared.stop.load(Ordering::Relaxed) {
+            let Some(Ok(chunk)) = stream.next().await else {
+                break; // stream ended (finite resident burst) → reconnect
+            };
+            for &b in chunk.iter() {
+                if b == b'\n' {
+                    if prev_newline {
+                        shared.ops.fetch_add(1, Ordering::Relaxed);
+                        if n % LATENCY_EVERY == 0 {
+                            let now = Instant::now();
+                            let _ = lat_tx.send(now.duration_since(last_event).as_nanos() as u64);
+                            last_event = now;
+                        }
+                        n += 1;
+                        prev_newline = false;
+                    } else {
+                        prev_newline = true;
                     }
-                    n += 1;
-                    prev_newline = false;
                 } else {
-                    prev_newline = true;
+                    prev_newline = false;
                 }
-            } else {
-                prev_newline = false;
             }
         }
     }
