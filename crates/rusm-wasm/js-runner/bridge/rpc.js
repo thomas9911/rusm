@@ -260,7 +260,7 @@ async function __rusm_http_serve(handler) {
     const request = new Request(a.url || "/", {
       method: a.method || "GET",
       headers: a.headers || [],
-      body: a.body ? new Uint8Array(a.body) : null,
+      body: a.body ? __b64decode(a.body) : null, // body crosses as base64
     });
     let response;
     try {
@@ -325,20 +325,51 @@ async function __rusm_ws_serve(ws) {
   }
 }
 
-// Encode a guest `Response` to the wire shape the host expects (body as a byte
-// array, headers as pairs).
+// Encode a guest `Response` to the wire shape the host expects: body as base64
+// (compact + binary-safe), headers as pairs.
 function __http_response_to_wire(response) {
   const enc = new TextEncoder();
   const b = response && response.body;
-  let body;
-  if (b == null) body = [];
-  else if (b instanceof Uint8Array) body = Array.from(b);
-  else if (typeof b === "string") body = Array.from(enc.encode(b));
-  else body = Array.from(enc.encode(String(b)));
+  let bytes;
+  if (b == null) bytes = new Uint8Array();
+  else if (b instanceof Uint8Array) bytes = b;
+  else if (typeof b === "string") bytes = enc.encode(b);
+  else bytes = enc.encode(String(b));
   const headers = [];
   const h = response && response.headers;
   if (h && typeof h.entries === "function") {
     for (const [k, v] of h.entries()) headers.push([k, v]);
   }
-  return { status: (response && response.status) || 200, headers, body };
+  return { status: (response && response.status) || 200, headers, body: __b64encode(bytes) };
+}
+
+// Standard base64 (no external deps) for the request/response body on the wire.
+const __B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+function __b64encode(bytes) {
+  let out = "";
+  for (let i = 0; i < bytes.length; i += 3) {
+    const b0 = bytes[i];
+    const b1 = i + 1 < bytes.length ? bytes[i + 1] : 0;
+    const b2 = i + 2 < bytes.length ? bytes[i + 2] : 0;
+    out += __B64[b0 >> 2] + __B64[((b0 & 3) << 4) | (b1 >> 4)];
+    out += i + 1 < bytes.length ? __B64[((b1 & 15) << 2) | (b2 >> 6)] : "=";
+    out += i + 2 < bytes.length ? __B64[b2 & 63] : "=";
+  }
+  return out;
+}
+function __b64decode(str) {
+  const out = [];
+  let acc = 0;
+  let bits = 0;
+  for (const ch of str) {
+    const v = __B64.indexOf(ch);
+    if (v < 0) continue; // skip padding / whitespace
+    acc = (acc << 6) | v;
+    bits += 6;
+    if (bits >= 8) {
+      bits -= 8;
+      out.push((acc >> bits) & 0xff);
+    }
+  }
+  return new Uint8Array(out);
 }

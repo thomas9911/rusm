@@ -9,6 +9,23 @@ use serde::{Deserialize, Serialize};
 
 use crate::wire;
 
+/// (De)serialize a byte body as a base64 string on the JSON wire — compact (~1.33×
+/// vs ~3× for a number array) and binary-safe.
+mod b64 {
+    use base64::engine::general_purpose::STANDARD;
+    use base64::Engine;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(bytes: &[u8], s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&STANDARD.encode(bytes))
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<u8>, D::Error> {
+        let encoded = String::deserialize(d)?;
+        STANDARD.decode(encoded).map_err(serde::de::Error::custom)
+    }
+}
+
 /// An incoming HTTP request, as delivered to a resident [`Handler`].
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Request {
@@ -19,8 +36,8 @@ pub struct Request {
     /// Header name/value pairs, in arrival order.
     #[serde(default)]
     pub headers: Vec<(String, String)>,
-    /// The raw request body.
-    #[serde(default)]
+    /// The raw request body (base64 on the wire).
+    #[serde(default, with = "b64")]
     pub body: Vec<u8>,
 }
 
@@ -32,8 +49,8 @@ pub struct Response {
     /// Header name/value pairs.
     #[serde(default)]
     pub headers: Vec<(String, String)>,
-    /// The response body.
-    #[serde(default)]
+    /// The response body (base64 on the wire).
+    #[serde(default, with = "b64")]
     pub body: Vec<u8>,
 }
 

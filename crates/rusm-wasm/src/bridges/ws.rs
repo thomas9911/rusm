@@ -12,7 +12,6 @@
 //! `rusm-otp` core never sees hyper, tungstenite, or `wasi:http`.
 
 use std::convert::Infallible;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use futures_util::{SinkExt, StreamExt};
@@ -27,6 +26,7 @@ use tokio_tungstenite::tungstenite::protocol::Role;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::WebSocketStream;
 
+use crate::bridges::resident::ResidentPool;
 use crate::caps::Capabilities;
 use crate::{PreparedComponent, Spawner, WasmRuntime};
 
@@ -105,6 +105,15 @@ fn switching_protocols(accept: String) -> hyper::Response<Empty<Bytes>> {
 fn upgrade_required() -> hyper::Response<Empty<Bytes>> {
     hyper::Response::builder()
         .status(426)
+        .body(Empty::new())
+        .unwrap()
+}
+
+/// No resident instance is currently available (e.g. all mid-restart) — refuse the
+/// upgrade with a 503 rather than accept a socket nothing will serve.
+fn service_unavailable() -> hyper::Response<Empty<Bytes>> {
+    hyper::Response::builder()
+        .status(503)
         .body(Empty::new())
         .unwrap()
 }
@@ -232,38 +241,31 @@ impl WsServer {
     }
 }
 
-/// Serves **all** WebSocket connections with a single (or a sharded pool of)
+/// Serves **all** WebSocket connections with a single (or a supervised pool of)
 /// long-lived **resident** component process(es) that hold shared state — a chat
 /// room, a pub/sub hub — vs [`WsServer`]'s one-process-per-connection. Each
 /// connection still gets its own Wasm-free **writer** owning the socket sink; the
 /// connection is identified to the resident by its writer pid (`conn`), and the
-/// resident replies by sending bytes to that pid. A connection is pinned to one
-/// instance for its lifetime.
+/// resident replies by sending bytes to that pid. A connection is pinned to its
+/// instance for its lifetime; a crashed instance is restarted by the pool.
 #[derive(Clone)]
 pub struct ResidentWsServer {
-    rt: Runtime,
-    instances: Arc<Vec<Pid>>,
-    next: Arc<AtomicUsize>,
+    pool: ResidentPool,
 }
 
 impl WasmRuntime {
-    /// Build a resident WebSocket server: `instances` (≥1) long-lived processes
-    /// from `prepared` under `caps`, each serving many connections and holding
-    /// shared state. The component's `run` should drive `rusm_rs::ws::serve`.
+    /// Build a resident WebSocket server: a supervised pool of `instances` (≥1)
+    /// long-lived processes from `prepared` under `caps`, each serving many
+    /// connections and holding shared state. The component's `run` should drive
+    /// `rusm_rs::ws::serve`.
     pub fn resident_ws_server(
         &self,
         prepared: &PreparedComponent,
         caps: Capabilities,
         instances: usize,
     ) -> ResidentWsServer {
-        let n = instances.max(1);
-        let instances = (0..n)
-            .map(|_| self.spawn_component_with(prepared, caps.clone()).pid())
-            .collect();
         ResidentWsServer {
-            rt: self.spawner.rt.clone(),
-            instances: Arc::new(instances),
-            next: Arc::new(AtomicUsize::new(0)),
+            pool: ResidentPool::spawn(&self.spawner, prepared.clone(), caps, None, instances),
         }
     }
 
@@ -277,16 +279,16 @@ impl WasmRuntime {
         caps: Capabilities,
         instances: usize,
     ) -> ResidentWsServer {
-        let bundle: Vec<u8> = bundle.into();
         let caps = caps.env("RUSM_SERVE_ROLE", "ws");
-        let n = instances.max(1);
-        let instances = (0..n)
-            .map(|_| self.spawn_js_with(bundle.clone(), caps.clone()).pid())
-            .collect();
+        let bundle = Arc::new(bundle.into());
         ResidentWsServer {
-            rt: self.spawner.rt.clone(),
-            instances: Arc::new(instances),
-            next: Arc::new(AtomicUsize::new(0)),
+            pool: ResidentPool::spawn(
+                &self.spawner,
+                self.js_runner().clone(),
+                caps,
+                Some(bundle),
+                instances,
+            ),
         }
     }
 }
@@ -295,6 +297,7 @@ impl ResidentWsServer {
     /// Serve WebSockets on `listener` until it closes — one task per connection,
     /// each routed to a resident instance.
     pub async fn serve(self, listener: TcpListener) {
+        self.pool.ready().await; // don't accept until the pool is up
         loop {
             let Ok((stream, _peer)) = listener.accept().await else {
                 break;
@@ -321,19 +324,17 @@ impl ResidentWsServer {
         let Some(accept) = ws_accept(&req) else {
             return Ok(upgrade_required());
         };
-        let rt = self.rt.clone();
-        let resident = self.route();
+        // Pin the connection to an instance at connect (sticky for its lifetime).
+        let Some(resident) = self.pool.route() else {
+            return Ok(service_unavailable());
+        };
+        let rt = self.pool.runtime().clone();
         tokio::spawn(async move {
             if let Some(ws) = upgraded_ws(req).await {
                 run_resident_connection(rt, resident, ws).await;
             }
         });
         Ok(switching_protocols(accept))
-    }
-
-    /// Pin a connection to an instance (round-robin at connect; sticky after).
-    fn route(&self) -> Pid {
-        self.instances[self.next.fetch_add(1, Ordering::Relaxed) % self.instances.len()]
     }
 }
 
