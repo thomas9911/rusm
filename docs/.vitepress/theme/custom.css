@@ -131,3 +131,13 @@
   padding-left: 8px;
   border-left: 1px solid var(--vp-c-divider);
 }
+
+/* the active page: an accent left-bar + a small indent + soft tint, so where you
+   are stands out (the bar sits just inside the category guide line). */
+.VPSidebarItem.is-active > .item {
+  border-left: 2px solid var(--vp-c-brand-1);
+  margin-left: -1px;
+  padding-left: 12px;
+  background: var(--vp-c-brand-soft);
+  border-radius: 0 4px 4px 0;
+}
