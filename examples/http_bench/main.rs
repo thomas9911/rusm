@@ -33,6 +33,9 @@ const LEAN: &[u8] = include_bytes!("../../crates/rusm-wasm/tests/fixtures/http_l
 /// instantiation is gone, but requests serialize through the instance's mailbox.
 const RESIDENT: &[u8] =
     include_bytes!("../../crates/rusm-wasm/tests/fixtures/rs_resident_count.wasm");
+/// A resident SSE handler — streams a chunked `text/event-stream` body per request.
+const RESIDENT_SSE: &[u8] =
+    include_bytes!("../../crates/rusm-wasm/tests/fixtures/rs_resident_sse.wasm");
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -70,8 +73,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cores = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(4);
-    let res1 = resident_run(clients, secs, 1).await?;
-    let resn = resident_run(clients, secs, cores).await?;
+    let res1 = resident_run(RESIDENT, clients, secs, 1).await?;
+    let resn = resident_run(RESIDENT, clients, secs, cores).await?;
+    // Resident SSE: each request streams a chunked text/event-stream body (5 events).
+    let res_sse = resident_run(RESIDENT_SSE, clients, secs, cores).await?;
 
     println!("\nbare hyper (no Wasm, baseline):");
     base.report();
@@ -79,6 +84,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     res1.report();
     println!("\nresident actor handler ({cores} instances — sharded pool):");
     resn.report();
+    println!("\nresident SSE handler ({cores} instances — streamed, 5 events/response):");
+    res_sse.report();
+    println!("  = {:.0} SSE events/sec", res_sse.rps * 5.0);
     println!(
         "\nlean WASM vs bare hyper: {:.1}x fewer req/s, +{:.1}µs p50  (the true sandbox cost)",
         base.rps / lean.rps.max(1.0),
@@ -113,16 +121,17 @@ async fn wasm_run(
     Ok((stats, n as f64 / start.elapsed().as_secs_f64()))
 }
 
-/// Serve `RESIDENT` as a resident handler with `instances` long-lived instances and
+/// Serve `component` as a resident handler with `instances` long-lived instances and
 /// stress it — the per-request instantiation cost is gone, so this isolates the
 /// resident path's own overhead (mailbox round-trip + JSON envelope + responder).
 async fn resident_run(
+    component: &[u8],
     clients: usize,
     secs: u64,
     instances: usize,
 ) -> Result<Stats, Box<dyn std::error::Error>> {
     let wr = WasmRuntime::new(Runtime::new())?;
-    let prepared = wr.prepare_component(&wr.compile_component(RESIDENT)?, "run")?;
+    let prepared = wr.prepare_component(&wr.compile_component(component)?, "run")?;
     let server = wr.resident_http_server(
         &prepared,
         CapabilityProfile::Sandboxed.capabilities(),
