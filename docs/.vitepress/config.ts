@@ -101,19 +101,39 @@ const sections = [
     ],
   },
   {
+    // Phases grouped by the arc the roadmap tells (foundation → OTP core → Wasm →
+    // distributed & scale); short `PN —` labels.
     text: 'Phase log',
     items: [
-      { text: 'Phase 0 — Foundation', link: '/phases/phase-00-foundation' },
-      { text: 'Phase 1 — Process core', link: '/phases/phase-01-process-core' },
-      { text: 'Phase 2 — Messaging', link: '/phases/phase-02-messaging' },
-      { text: 'Phase 3 — Supervision', link: '/phases/phase-03-supervision' },
-      { text: 'Phase 4 — Management', link: '/phases/phase-04-management' },
-      { text: 'Phase 5 — TCP', link: '/phases/phase-05-tcp' },
-      { text: 'Phase 6 — Wasm backend', link: '/phases/phase-06-wasm-backend' },
-      { text: 'Phase 7 — Component hosting', link: '/phases/phase-07-components' },
-      { text: 'Phase 8 — Guest ergonomics', link: '/phases/phase-08-guest-ergonomics' },
-      { text: 'Phase 9 — Distributed clusters', link: '/phases/phase-09-distributed-clusters' },
-      { text: 'Phase 10 — Scale & hardening', link: '/phases/phase-10-scale-hardening' },
+      {
+        text: 'Foundation',
+        items: [{ text: 'P0 — Foundation', link: '/phases/phase-00-foundation' }],
+      },
+      {
+        text: 'OTP core',
+        items: [
+          { text: 'P1 — Process core', link: '/phases/phase-01-process-core' },
+          { text: 'P2 — Messaging', link: '/phases/phase-02-messaging' },
+          { text: 'P3 — Supervision', link: '/phases/phase-03-supervision' },
+          { text: 'P4 — Management', link: '/phases/phase-04-management' },
+          { text: 'P5 — TCP', link: '/phases/phase-05-tcp' },
+        ],
+      },
+      {
+        text: 'WebAssembly',
+        items: [
+          { text: 'P6 — Wasm backend', link: '/phases/phase-06-wasm-backend' },
+          { text: 'P7 — Component hosting', link: '/phases/phase-07-components' },
+          { text: 'P8 — Guest ergonomics', link: '/phases/phase-08-guest-ergonomics' },
+        ],
+      },
+      {
+        text: 'Distributed & scale',
+        items: [
+          { text: 'P9 — Distributed clusters', link: '/phases/phase-09-distributed-clusters' },
+          { text: 'P10 — Scale & hardening', link: '/phases/phase-10-scale-hardening' },
+        ],
+      },
     ],
   },
 ];
