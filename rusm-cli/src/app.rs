@@ -208,7 +208,11 @@ fn build_resident_http_server(
         let prepared = prepare_resident_component(wasm, &wasm_dir, name)?;
         wasm.resident_http_server(&prepared, caps, spec.instances)
     };
-    Ok(server.shard_by(spec.shard_by.as_deref()))
+    let server = server.shard_by(spec.shard_by.as_deref());
+    Ok(match spec.max_inflight {
+        Some(limit) => server.max_inflight(limit),
+        None => server,
+    })
 }
 
 /// Builds a **resident** WebSocket server for `spec`: a supervised pool serving all
@@ -231,7 +235,11 @@ fn build_resident_ws_server(
         let prepared = prepare_resident_component(wasm, &wasm_dir, name)?;
         wasm.resident_ws_server(&prepared, caps, spec.instances)
     };
-    Ok(server.shard_by(spec.shard_by.as_deref()))
+    let server = server.shard_by(spec.shard_by.as_deref());
+    Ok(match spec.max_inflight {
+        Some(limit) => server.max_inflight(limit),
+        None => server,
+    })
 }
 
 /// Compile + prepare a `.wasm` actor component (the `run` export) for resident
@@ -367,6 +375,7 @@ mod tests {
             mode: ServeMode::PerRequest,
             instances: 1,
             shard_by: None,
+            max_inflight: None,
         }];
         let endpoints = serve_apps(dir.path(), &wasm, &specs, &HashMap::new())
             .await
@@ -413,6 +422,7 @@ mod tests {
             mode: ServeMode::PerRequest,
             instances: 1,
             shard_by: None,
+            max_inflight: None,
         }];
         let endpoints = serve_apps(dir.path(), &wasm, &specs, &HashMap::new())
             .await
@@ -455,6 +465,7 @@ mod tests {
             mode: ServeMode::Resident,
             instances: 1,
             shard_by: None,
+            max_inflight: None,
         }];
         let endpoints = serve_apps(dir.path(), &wasm, &specs, &HashMap::new())
             .await
@@ -488,6 +499,7 @@ mod tests {
             mode: ServeMode::PerRequest,
             instances: 1,
             shard_by: None,
+            max_inflight: None,
         }];
         let err = serve_apps(dir.path(), &wasm, &specs, &HashMap::new())
             .await

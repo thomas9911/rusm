@@ -19,14 +19,14 @@ use http_body_util::Empty;
 use hyper::body::Bytes;
 use hyper::upgrade::Upgraded;
 use hyper_util::rt::TokioIo;
-use rusm_otp::{Pid, Runtime};
+use rusm_otp::Runtime;
 use tokio::net::TcpListener;
 use tokio_tungstenite::tungstenite::handshake::derive_accept_key;
 use tokio_tungstenite::tungstenite::protocol::Role;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::WebSocketStream;
 
-use crate::bridges::resident::{ResidentPool, Shard};
+use crate::bridges::resident::{Lease, ResidentPool, ResidentRoute};
 use crate::caps::Capabilities;
 use crate::{PreparedComponent, Spawner, WasmRuntime};
 
@@ -250,8 +250,7 @@ impl WsServer {
 /// instance for its lifetime; a crashed instance is restarted by the pool.
 #[derive(Clone)]
 pub struct ResidentWsServer {
-    pool: ResidentPool,
-    shard: Shard,
+    route: ResidentRoute,
 }
 
 impl WasmRuntime {
@@ -265,9 +264,9 @@ impl WasmRuntime {
         caps: Capabilities,
         instances: usize,
     ) -> ResidentWsServer {
+        let pool = ResidentPool::spawn(&self.spawner, prepared.clone(), caps, None, instances);
         ResidentWsServer {
-            pool: ResidentPool::spawn(&self.spawner, prepared.clone(), caps, None, instances),
-            shard: Shard::RoundRobin,
+            route: ResidentRoute::new(pool),
         }
     }
 
@@ -283,15 +282,15 @@ impl WasmRuntime {
     ) -> ResidentWsServer {
         let caps = caps.env("RUSM_SERVE_ROLE", "ws");
         let bundle = Arc::new(bundle.into());
+        let pool = ResidentPool::spawn(
+            &self.spawner,
+            self.js_runner().clone(),
+            caps,
+            Some(bundle),
+            instances,
+        );
         ResidentWsServer {
-            pool: ResidentPool::spawn(
-                &self.spawner,
-                self.js_runner().clone(),
-                caps,
-                Some(bundle),
-                instances,
-            ),
-            shard: Shard::RoundRobin,
+            route: ResidentRoute::new(pool),
         }
     }
 }
@@ -300,22 +299,22 @@ impl ResidentWsServer {
     /// Route connections by a `shard_by` spec (`"header:<name>"` → handshake-header
     /// affinity; `None` → round-robin) so same-key connections land on one instance.
     pub fn shard_by(mut self, spec: Option<&str>) -> Self {
-        self.shard = Shard::parse(spec);
+        self.route.shard_by(spec);
         self
     }
 
-    /// Refuse the upgrade (503) when the routed instance's mailbox is at least
-    /// `limit` deep (requires a depth-tracking runtime; a no-op otherwise) — the WS
-    /// twin of [`ResidentHttpServer::max_mailbox`](super::resident::ResidentHttpServer::max_mailbox).
-    pub fn max_mailbox(mut self, limit: usize) -> Self {
-        self.pool = self.pool.with_depth_limit(limit);
+    /// Bound concurrent connections per instance to `limit`; excess refuses the
+    /// upgrade with 503 — the WS twin of
+    /// [`ResidentHttpServer::max_inflight`](super::resident::ResidentHttpServer::max_inflight).
+    pub fn max_inflight(mut self, limit: usize) -> Self {
+        self.route.max_inflight(limit);
         self
     }
 
     /// Serve WebSockets on `listener` until it closes — one task per connection,
     /// each routed to a resident instance.
     pub async fn serve(self, listener: TcpListener) {
-        self.pool.ready().await; // don't accept until the pool is up
+        self.route.ready().await; // don't accept until the pool is up
         loop {
             let Ok((stream, _peer)) = listener.accept().await else {
                 break;
@@ -342,15 +341,15 @@ impl ResidentWsServer {
         let Some(accept) = ws_accept(&req) else {
             return Ok(upgrade_required());
         };
-        // Pin the connection to an instance at connect (sticky for its lifetime):
-        // round-robin, or by a handshake header for session affinity.
-        let Some(resident) = self.shard.route(&self.pool, req.headers()) else {
+        // Pin the connection to an instance at connect (sticky for its lifetime), and
+        // take its in-flight permit — held by the lease for the connection's life.
+        let Some(lease) = self.route.route(req.headers()) else {
             return Ok(service_unavailable());
         };
-        let rt = self.pool.runtime().clone();
+        let rt = self.route.runtime().clone();
         tokio::spawn(async move {
             if let Some(ws) = upgraded_ws(req).await {
-                run_resident_connection(rt, resident, ws).await;
+                run_resident_connection(rt, lease, ws).await;
             }
         });
         Ok(switching_protocols(accept))
@@ -359,12 +358,14 @@ impl ResidentWsServer {
 
 /// Wire one connection to a resident instance: a Wasm-free writer owns the sink and
 /// is the connection's `conn`; lifecycle + frames become `open`/`message`/`close`
-/// events the resident dispatches, replying by sending bytes to `conn`.
+/// events the resident dispatches, replying by sending bytes to `conn`. The `lease`
+/// is held for the whole connection — its in-flight permit frees on disconnect.
 async fn run_resident_connection(
     rt: Runtime,
-    resident: Pid,
+    lease: Lease,
     ws: WebSocketStream<TokioIo<Upgraded>>,
 ) {
+    let resident = lease.pid;
     let (mut sink, mut stream) = ws.split();
     let writer = rt.spawn(move |mut ctx| async move {
         while let Some(message) = ctx.recv().await.message() {

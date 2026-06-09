@@ -195,6 +195,10 @@ pub struct ServeSpec {
     /// the same header value to one instance; omitted → round-robin.
     #[serde(default)]
     pub shard_by: Option<String>,
+    /// Resident overload back-pressure: max concurrent in-flight requests (HTTP/SSE)
+    /// or connections (WS) **per instance**; excess sheds to 503. Omitted → unbounded.
+    #[serde(default)]
+    pub max_inflight: Option<usize>,
 }
 
 impl Default for NodeConfig {
@@ -415,12 +419,14 @@ mod tests {
             mode = "resident"
             instances = 4
             shard_by = "header:x-session"
+            max_inflight = 256
             "#,
         )
         .unwrap();
         assert_eq!(cfg.serve[0].mode, ServeMode::Resident);
         assert_eq!(cfg.serve[0].instances, 4);
         assert_eq!(cfg.serve[0].shard_by.as_deref(), Some("header:x-session"));
+        assert_eq!(cfg.serve[0].max_inflight, Some(256));
     }
 
     #[test]

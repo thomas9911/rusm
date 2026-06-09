@@ -7,13 +7,17 @@
 //! back into the HTTP response (a buffered body, or a streamed/SSE body that drains
 //! the guest's byte stream directly).
 //!
-//! Instances run under a one-for-one [`ResidentPool`] supervisor and are addressed
-//! by a registered slot name, so a crashed instance is restarted and routing picks
-//! up its fresh pid automatically — the endpoint keeps serving (per-instance state
-//! is lost on restart; supervision keeps the *service* up, not the state). With
-//! `instances > 1` requests round-robin across the pool.
+//! A [`ResidentPool`] runs each instance under its **own** one-for-one supervisor —
+//! so a crash-looping instance is restarted in isolation and can never take down a
+//! healthy sibling — addressed by a registered slot name (a restarted instance's
+//! fresh pid is picked up automatically). [`ResidentRoute`] is the single routing
+//! decision over a pool: round-robin or header affinity (`shard_by`), with an
+//! optional per-instance **in-flight permit** (`max_inflight`) that sheds to 503
+//! under overload. Both the HTTP and WS resident servers are thin shells over it.
 
+use std::collections::hash_map::DefaultHasher;
 use std::convert::Infallible;
+use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -25,6 +29,7 @@ use hyper::body::{Bytes, Frame};
 use hyper::{Response, StatusCode};
 use rusm_otp::{Pid, ProcessHandle, Received, Runtime, Strategy, StreamHandle};
 use serde::Deserialize;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use wasmtime_wasi_http::io::TokioIo;
 
 use crate::bridges::wasip2::PreparedComponent;
@@ -38,65 +43,25 @@ type ResBody = http_body_util::combinators::BoxBody<Bytes, Infallible>;
 /// Namespaces slot names so independent pools never collide.
 static POOL_SEQ: AtomicU64 = AtomicU64::new(0);
 
-/// A supervised pool of long-lived resident component instances, addressed by
-/// registered slot name. Shared by the resident HTTP and WS servers. Cheap to clone
-/// (`Arc`/`Runtime`).
+/// A pool of long-lived resident component instances, each under its **own**
+/// one-for-one supervisor and addressed by a registry slot name. Per-instance
+/// supervision means one crash-looping instance is isolated — it never trips a
+/// shared budget and takes down healthy siblings. Cheap to clone (`Arc`/`Runtime`).
 #[derive(Clone)]
 pub(crate) struct ResidentPool {
     rt: Runtime,
     /// One registry name per instance; routing resolves a slot to its live pid, so a
     /// restarted instance (new pid) is found without bookkeeping.
     slots: Arc<Vec<String>>,
-    next: Arc<AtomicUsize>,
-    /// Shed (return `None` → 503) when the chosen instance's mailbox is at least this
-    /// deep — overload back-pressure. Only enforced when the runtime tracks depth
-    /// (`Runtime::with_mailbox_depth`); a no-op otherwise. `None` = unbounded.
-    depth_limit: Option<usize>,
-    /// The one-for-one supervisor keeping the instances alive (held so it isn't
-    /// dropped while the pool is in use).
-    _supervisor: Arc<ProcessHandle>,
-}
-
-/// How a resident server spreads requests/connections across its pool.
-#[derive(Clone)]
-pub(crate) enum Shard {
-    /// Round-robin across the pool (the default).
-    RoundRobin,
-    /// Pin by a request header value: the same value always maps to the same
-    /// instance (session affinity), so per-key state lives on one instance.
-    Header(String),
-}
-
-impl Shard {
-    /// Parse a `shard_by` config spec: `"header:<name>"` → header affinity; `None`
-    /// (or an unrecognised spec) → round-robin.
-    pub(crate) fn parse(spec: Option<&str>) -> Self {
-        match spec.and_then(|s| s.strip_prefix("header:")) {
-            Some(name) => Shard::Header(name.trim().to_ascii_lowercase()),
-            None => Shard::RoundRobin,
-        }
-    }
-
-    /// Route a request/connection to an instance per this policy, reading the shard
-    /// key from `headers` when pinning. Shared by the HTTP and WS resident servers.
-    pub(crate) fn route(&self, pool: &ResidentPool, headers: &hyper::HeaderMap) -> Option<Pid> {
-        match self {
-            Shard::RoundRobin => pool.route(),
-            Shard::Header(name) => {
-                let key = headers
-                    .get(name)
-                    .and_then(|v| v.to_str().ok())
-                    .unwrap_or("");
-                pool.route_keyed(key)
-            }
-        }
-    }
+    /// One supervisor per instance (held so they aren't dropped), each with its own
+    /// independent restart budget.
+    _supervisors: Arc<Vec<ProcessHandle>>,
 }
 
 impl ResidentPool {
-    /// Spawn `instances` (≥1) instances of `prepared` under a one-for-one supervisor
-    /// that restarts a crashed instance; each registers a slot name (and, for a JS
-    /// runner, is fed `bundle` as its first message).
+    /// Spawn `instances` (≥1) instances of `prepared`, each under its own one-for-one
+    /// supervisor that restarts only that instance; each registers a slot name (and,
+    /// for a JS runner, is fed `bundle` as its first message).
     pub(crate) fn spawn(
         spawner: &Arc<Spawner>,
         prepared: PreparedComponent,
@@ -109,67 +74,47 @@ impl ResidentPool {
         let uid = POOL_SEQ.fetch_add(1, Ordering::Relaxed);
         let slots: Vec<String> = (0..n).map(|i| format!("__resident.{uid}.{i}")).collect();
 
-        let mut supervisor = rt.supervisor(Strategy::OneForOne);
-        for slot in &slots {
-            let spawner = Arc::clone(spawner);
-            let prepared = prepared.clone();
-            let caps = caps.clone();
-            let bundle = bundle.clone();
-            let slot = slot.clone();
-            supervisor = supervisor.child(move |rt: &Runtime| {
-                let handle = spawner.spawn_component(&prepared, caps.clone());
-                if let Some(bundle) = &bundle {
-                    rt.send(handle.pid(), (**bundle).clone()); // js-runner: bundle first
-                }
-                // Register the slot so routing always finds the *current* instance,
-                // even after a restart. The dead instance released this name before
-                // its `Down` reached the supervisor, so a restart can't clash on it.
-                rt.register(slot.clone(), handle.pid());
-                handle
-            });
-        }
+        let supervisors: Vec<ProcessHandle> = slots
+            .iter()
+            .map(|slot| {
+                let spawner = Arc::clone(spawner);
+                let prepared = prepared.clone();
+                let caps = caps.clone();
+                let bundle = bundle.clone();
+                let slot = slot.clone();
+                // Each instance is its own supervised child — an isolated restart budget.
+                rt.supervisor(Strategy::OneForOne)
+                    .child(move |rt: &Runtime| {
+                        let handle = spawner.spawn_component(&prepared, caps.clone());
+                        if let Some(bundle) = &bundle {
+                            rt.send(handle.pid(), (**bundle).clone()); // js-runner: bundle first
+                        }
+                        // Register the slot so routing always finds the *current*
+                        // instance, even after a restart gives it a new pid. The dead
+                        // instance released this name before its `Down` reached the
+                        // supervisor, so a restart can't clash on it.
+                        rt.register(slot.clone(), handle.pid());
+                        handle
+                    })
+                    .start()
+            })
+            .collect();
 
         ResidentPool {
             rt,
             slots: Arc::new(slots),
-            next: Arc::new(AtomicUsize::new(0)),
-            depth_limit: None,
-            _supervisor: Arc::new(supervisor.start()),
+            _supervisors: Arc::new(supervisors),
         }
     }
 
-    /// Shed to 503 when the routed instance's mailbox is at least `limit` deep.
-    pub(crate) fn with_depth_limit(mut self, limit: usize) -> Self {
-        self.depth_limit = Some(limit);
-        self
+    /// Number of instance slots.
+    fn len(&self) -> usize {
+        self.slots.len()
     }
 
-    /// Resolve slot `i` to its live pid, or `None` if it's absent (mid-restart) or
-    /// over the back-pressure limit — the caller turns that into a 503.
-    fn pick(&self, i: usize) -> Option<Pid> {
-        let pid = self.rt.whereis(&self.slots[i])?;
-        if let Some(limit) = self.depth_limit {
-            let depth = self.rt.info(pid).map_or(0, |info| info.mailbox_depth);
-            if depth >= limit {
-                return None; // overloaded — shed
-            }
-        }
-        Some(pid)
-    }
-
-    /// The next instance (round-robin).
-    pub(crate) fn route(&self) -> Option<Pid> {
-        let i = self.next.fetch_add(1, Ordering::Relaxed) % self.slots.len();
-        self.pick(i)
-    }
-
-    /// The instance a `key` is pinned to (stable hash → slot), for session affinity.
-    pub(crate) fn route_keyed(&self, key: &str) -> Option<Pid> {
-        use std::hash::{Hash, Hasher};
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        key.hash(&mut hasher);
-        let i = (hasher.finish() % self.slots.len() as u64) as usize;
-        self.pick(i)
+    /// The live pid in slot `i`, or `None` if it's absent (mid-restart / gave up).
+    fn whereis(&self, i: usize) -> Option<Pid> {
+        self.rt.whereis(&self.slots[i])
     }
 
     /// The pool's runtime handle (for sending into instances from a connection task).
@@ -199,13 +144,127 @@ impl ResidentPool {
     }
 }
 
+/// How a resident server spreads requests/connections across its pool.
+#[derive(Clone)]
+enum Shard {
+    /// Round-robin across the pool (the default).
+    RoundRobin,
+    /// Pin by a request header value: the same value always maps to the same
+    /// instance (session affinity), so per-key state lives on one instance.
+    Header(String),
+}
+
+impl Shard {
+    /// Parse a `shard_by` config spec: `"header:<name>"` → header affinity; `None`
+    /// (or an unrecognised spec) → round-robin.
+    fn parse(spec: Option<&str>) -> Self {
+        match spec.and_then(|s| s.strip_prefix("header:")) {
+            Some(name) => Shard::Header(name.trim().to_ascii_lowercase()),
+            None => Shard::RoundRobin,
+        }
+    }
+}
+
+/// The single routing decision over a [`ResidentPool`], shared by the HTTP and WS
+/// resident servers: pick an instance (round-robin or header affinity) and, if a
+/// `max_inflight` limit is set, take a per-instance permit — held by the returned
+/// [`Lease`] for the request/connection's lifetime, so an overloaded instance sheds.
+#[derive(Clone)]
+pub(crate) struct ResidentRoute {
+    pool: ResidentPool,
+    shard: Shard,
+    next: Arc<AtomicUsize>,
+    /// Per-instance in-flight permits; `None` = unbounded. A permit is held by the
+    /// [`Lease`] until the request/connection completes, so this bounds concurrent
+    /// in-flight work per instance (always-on — no runtime opt-in needed).
+    inflight: Option<Arc<Vec<Arc<Semaphore>>>>,
+}
+
+/// Holds the routed instance and (when `max_inflight` is set) its in-flight permit;
+/// dropping it releases the permit. Keep it for the request/connection's lifetime.
+pub(crate) struct Lease {
+    pub(crate) pid: Pid,
+    _permit: Option<OwnedSemaphorePermit>,
+}
+
+impl ResidentRoute {
+    pub(crate) fn new(pool: ResidentPool) -> Self {
+        Self {
+            pool,
+            shard: Shard::RoundRobin,
+            next: Arc::new(AtomicUsize::new(0)),
+            inflight: None,
+        }
+    }
+
+    /// Set the shard policy from a `shard_by` spec.
+    pub(crate) fn shard_by(&mut self, spec: Option<&str>) {
+        self.shard = Shard::parse(spec);
+    }
+
+    /// Bound concurrent in-flight requests/connections per instance to `limit`;
+    /// excess sheds to 503 / a refused upgrade.
+    pub(crate) fn max_inflight(&mut self, limit: usize) {
+        let sems = (0..self.pool.len())
+            .map(|_| Arc::new(Semaphore::new(limit)))
+            .collect();
+        self.inflight = Some(Arc::new(sems));
+    }
+
+    /// The slot a request/connection routes to (round-robin or header affinity).
+    fn slot_index(&self, headers: &hyper::HeaderMap) -> usize {
+        let n = self.pool.len();
+        match &self.shard {
+            Shard::RoundRobin => self.next.fetch_add(1, Ordering::Relaxed) % n,
+            Shard::Header(name) => {
+                let key = headers
+                    .get(name)
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("");
+                let mut hasher = DefaultHasher::new();
+                key.hash(&mut hasher);
+                (hasher.finish() % n as u64) as usize
+            }
+        }
+    }
+
+    /// Route to an instance and take its in-flight permit; `None` if the instance is
+    /// absent (mid-restart) or saturated — the caller turns that into a 503.
+    pub(crate) fn route(&self, headers: &hyper::HeaderMap) -> Option<Lease> {
+        let i = self.slot_index(headers);
+        let pid = self.pool.whereis(i)?;
+        let permit = match &self.inflight {
+            Some(sems) => match Arc::clone(&sems[i]).try_acquire_owned() {
+                Ok(permit) => Some(permit),
+                Err(_) => return None, // saturated — shed
+            },
+            None => None,
+        };
+        Some(Lease {
+            pid,
+            _permit: permit,
+        })
+    }
+
+    pub(crate) fn runtime(&self) -> &Runtime {
+        self.pool.runtime()
+    }
+
+    pub(crate) async fn ready(&self) {
+        self.pool.ready().await
+    }
+
+    pub(crate) fn pids(&self) -> Vec<Pid> {
+        self.pool.pids()
+    }
+}
+
 /// A resident HTTP server: a supervised pool of long-lived instances that serve
 /// every request and hold state. Cheap to clone, so it spawns one task per
 /// connection like [`super::http::HttpServer`].
 #[derive(Clone)]
 pub struct ResidentHttpServer {
-    pool: ResidentPool,
-    shard: Shard,
+    route: ResidentRoute,
 }
 
 impl WasmRuntime {
@@ -220,9 +279,9 @@ impl WasmRuntime {
         caps: Capabilities,
         instances: usize,
     ) -> ResidentHttpServer {
+        let pool = ResidentPool::spawn(&self.spawner, prepared.clone(), caps, None, instances);
         ResidentHttpServer {
-            pool: ResidentPool::spawn(&self.spawner, prepared.clone(), caps, None, instances),
-            shard: Shard::RoundRobin,
+            route: ResidentRoute::new(pool),
         }
     }
 
@@ -237,15 +296,15 @@ impl WasmRuntime {
     ) -> ResidentHttpServer {
         let caps = caps.env("RUSM_SERVE_ROLE", "http");
         let bundle = Arc::new(bundle.into());
+        let pool = ResidentPool::spawn(
+            &self.spawner,
+            self.js_runner().clone(),
+            caps,
+            Some(bundle),
+            instances,
+        );
         ResidentHttpServer {
-            pool: ResidentPool::spawn(
-                &self.spawner,
-                self.js_runner().clone(),
-                caps,
-                Some(bundle),
-                instances,
-            ),
-            shard: Shard::RoundRobin,
+            route: ResidentRoute::new(pool),
         }
     }
 }
@@ -254,21 +313,26 @@ impl ResidentHttpServer {
     /// Route requests by a `shard_by` spec (`"header:<name>"` → header affinity;
     /// `None` → round-robin) so same-key requests reach the same instance.
     pub fn shard_by(mut self, spec: Option<&str>) -> Self {
-        self.shard = Shard::parse(spec);
+        self.route.shard_by(spec);
         self
     }
 
-    /// Shed to 503 when the routed instance's mailbox is at least `limit` deep
-    /// (requires a depth-tracking runtime; a no-op otherwise).
-    pub fn max_mailbox(mut self, limit: usize) -> Self {
-        self.pool = self.pool.with_depth_limit(limit);
+    /// Bound concurrent in-flight requests per instance to `limit`; excess sheds to
+    /// 503. Always-on back-pressure, independent of runtime depth tracking.
+    pub fn max_inflight(mut self, limit: usize) -> Self {
+        self.route.max_inflight(limit);
         self
+    }
+
+    /// The current live instance pids (introspection / tests).
+    pub fn instance_pids(&self) -> Vec<Pid> {
+        self.route.pids()
     }
 
     /// Serve HTTP/1.1 on `listener` until it closes — one task per connection.
     /// Abort the task driving this to stop.
     pub async fn serve(self, listener: tokio::net::TcpListener) {
-        self.pool.ready().await; // don't accept until the pool is up
+        self.route.ready().await; // don't accept until the pool is up
         loop {
             let Ok((stream, _peer)) = listener.accept().await else {
                 break;
@@ -288,11 +352,6 @@ impl ResidentHttpServer {
         }
     }
 
-    /// The current live instance pids (introspection / tests).
-    pub fn instance_pids(&self) -> Vec<Pid> {
-        self.pool.pids()
-    }
-
     /// Turn one HTTP request into a `"fetch"` request to a resident instance and the
     /// reply back into the HTTP response. Always `Ok` — failures become status codes.
     async fn handle(
@@ -300,9 +359,8 @@ impl ResidentHttpServer {
         req: hyper::Request<hyper::body::Incoming>,
     ) -> Result<Response<ResBody>, Infallible> {
         let (parts, body) = req.into_parts();
-
-        // Route: round-robin, or pin by a header value for session affinity.
-        let Some(instance) = self.shard.route(&self.pool, &parts.headers) else {
+        // Route + take an in-flight permit; the lease is held for the whole request.
+        let Some(lease) = self.route.route(&parts.headers) else {
             return Ok(error_response(
                 StatusCode::SERVICE_UNAVAILABLE,
                 "no resident instance available",
@@ -334,7 +392,7 @@ impl ResidentHttpServer {
         // The responder's fresh pid is the reply target; the resident sends exactly
         // one reply to it, so no ref-matching is needed on this side.
         let (tx, rx) = tokio::sync::oneshot::channel();
-        let responder = spawn_responder(&self.pool.rt, tx);
+        let responder = spawn_responder(self.route.runtime(), tx);
         let envelope = serde_json::json!({
             "op": "fetch",
             "ref": 0,
@@ -342,12 +400,14 @@ impl ResidentHttpServer {
             // Body crosses as base64 (compact + binary-safe), matching the guest SDK.
             "args": [ { "method": method, "url": url, "headers": headers, "body": STANDARD.encode(&body) } ],
         });
-        self.pool.rt.send(
-            instance,
+        self.route.runtime().send(
+            lease.pid,
             serde_json::to_vec(&envelope).expect("envelope serializes"),
         );
 
-        Ok(match rx.await {
+        let reply = rx.await;
+        drop(lease); // release the in-flight permit once the reply (head) is in
+        Ok(match reply {
             Ok(ResidentReply::Buffered(resp)) => build_response(resp),
             Ok(ResidentReply::Streaming {
                 status,
@@ -539,73 +599,30 @@ mod tests {
         addr
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn round_robin_spreads_across_the_pool() {
-        let wr = WasmRuntime::new(Runtime::new()).unwrap();
+    fn count_server(wr: &WasmRuntime, instances: usize) -> ResidentHttpServer {
         let prepared = wr
             .prepare_component(&wr.compile_component(COUNT).unwrap(), "run")
             .unwrap();
-        // Two instances, round-robin: consecutive requests hit different instances,
-        // each with its own counter — so the first two are both "hit #1".
-        let server =
-            wr.resident_http_server(&prepared, CapabilityProfile::Sandboxed.capabilities(), 2);
-        let addr = serve_on(server).await;
-
-        assert!(get(addr).await.contains("hit #1"), "instance A, fresh");
-        assert!(get(addr).await.contains("hit #1"), "instance B, fresh");
-        assert!(
-            get(addr).await.contains("hit #2"),
-            "wraps back to instance A"
-        );
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn shard_by_header_pins_a_key_to_one_instance() {
-        let wr = WasmRuntime::new(Runtime::new()).unwrap();
-        let prepared = wr
-            .prepare_component(&wr.compile_component(COUNT).unwrap(), "run")
-            .unwrap();
-        // Two instances, but a fixed shard key pins every request to one — so its
-        // counter increments monotonically (round-robin would alternate instances).
-        let server = wr
-            .resident_http_server(&prepared, CapabilityProfile::Sandboxed.capabilities(), 2)
-            .shard_by(Some("header:x-shard"));
-        let addr = serve_on(server).await;
-
-        assert!(get_with(addr, "x-shard: alice").await.contains("hit #1"));
-        assert!(get_with(addr, "x-shard: alice").await.contains("hit #2"));
-        assert!(
-            get_with(addr, "x-shard: alice").await.contains("hit #3"),
-            "same key always reaches the same instance"
-        );
+        wr.resident_http_server(
+            &prepared,
+            CapabilityProfile::Sandboxed.capabilities(),
+            instances,
+        )
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_resident_rs_handler_holds_state_across_requests() {
         let wr = WasmRuntime::new(Runtime::new()).unwrap();
-        let prepared = wr
-            .prepare_component(&wr.compile_component(COUNT).unwrap(), "run")
-            .unwrap();
-        // One resident instance, so the counter is shared across every request.
-        let server =
-            wr.resident_http_server(&prepared, CapabilityProfile::Sandboxed.capabilities(), 1);
-
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        let handle = tokio::spawn(server.serve(listener));
+        let addr = serve_on(count_server(&wr, 1)).await;
 
         let first = get(addr).await;
         assert!(first.starts_with("HTTP/1.1 200"), "got: {first}");
         assert!(first.contains("hit #1"), "first request: {first}");
-
         // The SAME instance answers the second request — state persisted.
-        let second = get(addr).await;
         assert!(
-            second.contains("hit #2"),
-            "state must persist across requests (per-request would say hit #1): {second}"
+            get(addr).await.contains("hit #2"),
+            "state must persist across requests (per-request would say hit #1)"
         );
-
-        handle.abort();
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -616,10 +633,7 @@ mod tests {
             .unwrap();
         let server =
             wr.resident_http_server(&prepared, CapabilityProfile::Sandboxed.capabilities(), 1);
-
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        let handle = tokio::spawn(server.serve(listener));
+        let addr = serve_on(server).await;
 
         let response = get(addr).await;
         let lower = response.to_lowercase();
@@ -638,8 +652,6 @@ mod tests {
                 "missing event {n}: {response}"
             );
         }
-
-        handle.abort();
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -652,22 +664,13 @@ mod tests {
             CapabilityProfile::Sandboxed.capabilities(),
             1,
         );
+        let addr = serve_on(server).await;
 
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        let handle = tokio::spawn(server.serve(listener));
-
-        let first = get(addr).await;
-        assert!(first.starts_with("HTTP/1.1 200"), "got: {first}");
-        assert!(first.contains("hit #1"), "first request: {first}");
-
-        let second = get(addr).await;
+        assert!(get(addr).await.contains("hit #1"));
         assert!(
-            second.contains("hit #2"),
-            "module state must persist across requests on the resident js-runner: {second}"
+            get(addr).await.contains("hit #2"),
+            "module state must persist across requests on the resident js-runner"
         );
-
-        handle.abort();
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -680,17 +683,14 @@ mod tests {
             CapabilityProfile::Sandboxed.capabilities(),
             1,
         );
-
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        let handle = tokio::spawn(server.serve(listener));
+        let addr = serve_on(server).await;
 
         let response = get(addr).await;
         let lower = response.to_lowercase();
         assert!(response.starts_with("HTTP/1.1 200"), "got: {response}");
         assert!(
             lower.contains("text/event-stream"),
-            "SSE content-type from the TS resident handler: {response}"
+            "SSE content-type: {response}"
         );
         assert!(
             lower.contains("transfer-encoding: chunked"),
@@ -702,28 +702,47 @@ mod tests {
                 "missing event {n}: {response}"
             );
         }
+    }
 
-        handle.abort();
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn round_robin_spreads_across_the_pool() {
+        let wr = WasmRuntime::new(Runtime::new()).unwrap();
+        // Two instances, round-robin: consecutive requests hit different instances,
+        // each with its own counter — so the first two are both "hit #1".
+        let addr = serve_on(count_server(&wr, 2)).await;
+        assert!(get(addr).await.contains("hit #1"), "instance A, fresh");
+        assert!(get(addr).await.contains("hit #1"), "instance B, fresh");
+        assert!(
+            get(addr).await.contains("hit #2"),
+            "wraps back to instance A"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn shard_by_header_pins_a_key_to_one_instance() {
+        let wr = WasmRuntime::new(Runtime::new()).unwrap();
+        // Two instances, but a fixed shard key pins every request to one — so its
+        // counter increments monotonically (round-robin would alternate instances).
+        let addr = serve_on(count_server(&wr, 2).shard_by(Some("header:x-shard"))).await;
+        assert!(get_with(addr, "x-shard: alice").await.contains("hit #1"));
+        assert!(get_with(addr, "x-shard: alice").await.contains("hit #2"));
+        assert!(
+            get_with(addr, "x-shard: alice").await.contains("hit #3"),
+            "same key always reaches the same instance"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_crashed_resident_is_restarted_and_keeps_serving() {
         let rt = Runtime::new();
         let wr = WasmRuntime::new(rt.clone()).unwrap();
-        let prepared = wr
-            .prepare_component(&wr.compile_component(COUNT).unwrap(), "run")
-            .unwrap();
-        let server =
-            wr.resident_http_server(&prepared, CapabilityProfile::Sandboxed.capabilities(), 1);
-
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        let handle = tokio::spawn(server.clone().serve(listener));
+        let server = count_server(&wr, 1);
+        let addr = serve_on(server.clone()).await;
 
         assert!(get(addr).await.contains("hit #1"));
         assert!(get(addr).await.contains("hit #2"));
 
-        // Kill the live instance; the pool's supervisor must restart it.
+        // Kill the live instance; its supervisor must restart it.
         let before = server.instance_pids();
         assert_eq!(before.len(), 1, "one instance");
         rt.kill(before[0]);
@@ -742,17 +761,72 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(2)).await;
         }
 
-        // Serving continues, and the restarted instance has fresh state (hit #1).
         let after = get(addr).await;
-        assert!(
-            after.starts_with("HTTP/1.1 200"),
-            "still serving after restart: {after}"
-        );
+        assert!(after.starts_with("HTTP/1.1 200"), "still serving: {after}");
         assert!(
             after.contains("hit #1"),
             "restarted instance has fresh state: {after}"
         );
+    }
 
-        handle.abort();
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn one_crash_looping_instance_does_not_take_down_siblings() {
+        // Per-instance supervision: hammering one slot past its restart budget makes
+        // *that* slot give up, but a healthy sibling keeps running — a shared budget
+        // would have taken the whole pool down.
+        let rt = Runtime::new();
+        let wr = WasmRuntime::new(rt.clone()).unwrap();
+        let server = count_server(&wr, 2);
+        let _addr = serve_on(server.clone()).await;
+        server.route.ready().await; // both instances registered before we inspect
+
+        let slot0_initial = server.route.pool.whereis(0).expect("slot 0 is up");
+        let slot1_initial = server.route.pool.whereis(1).expect("slot 1 is up");
+
+        // Hammer slot 0 within its window (default 3 restarts / 5s). The robust,
+        // timing-independent property: whatever happens to slot 0 (restart loop or
+        // give-up), slot 1 is *never* disturbed — a shared restart budget would have
+        // taken the sibling down too.
+        for _ in 0..6 {
+            if let Some(pid) = server.route.pool.whereis(0) {
+                rt.kill(pid);
+            }
+            tokio::time::sleep(Duration::from_millis(15)).await;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        assert_ne!(
+            server.route.pool.whereis(0),
+            Some(slot0_initial),
+            "slot 0 was actually killed/restarted by the hammering"
+        );
+        assert_eq!(
+            server.route.pool.whereis(1),
+            Some(slot1_initial),
+            "the healthy sibling is untouched — per-instance (isolated) restart budgets"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_saturated_instance_sheds_to_503() {
+        let wr = WasmRuntime::new(Runtime::new()).unwrap();
+        // Zero in-flight permits → every request is shed (proves the gateway sheds
+        // when an instance has no capacity, without needing a blocking handler).
+        let addr = serve_on(count_server(&wr, 1).max_inflight(0)).await;
+        assert!(
+            get(addr).await.starts_with("HTTP/1.1 503"),
+            "a saturated instance sheds to 503"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_in_flight_permit_is_released_after_each_request() {
+        let wr = WasmRuntime::new(Runtime::new()).unwrap();
+        // One permit, used sequentially: each request releases it, so all succeed
+        // (a leak would 503 the second request).
+        let addr = serve_on(count_server(&wr, 1).max_inflight(1)).await;
+        assert!(get(addr).await.contains("hit #1"));
+        assert!(get(addr).await.contains("hit #2"));
+        assert!(get(addr).await.contains("hit #3"));
     }
 }
