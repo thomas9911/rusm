@@ -227,6 +227,12 @@ globalThis.__rusm_entry = function () {
   // (or a default handler function) as a stateful serving loop — module state
   // persists across requests because the instance is long-lived.
   if (globalThis.__rusm_role === "http") return __rusm_http_serve(h.default);
+  // A resident WebSocket server: `export default { websocket: { open, message,
+  // close } }` (Workers shape). One instance serves every connection, holding
+  // shared state; reply to a connection with `Process.send(conn, frame)`.
+  if (globalThis.__rusm_role === "ws") {
+    return __rusm_ws_serve(h.default && h.default.websocket);
+  }
   const named = Object.keys(h).filter((k) => k !== "default" && typeof h[k] === "function");
   if (named.length) {
     const handlers = {};
@@ -256,13 +262,66 @@ async function __rusm_http_serve(handler) {
       headers: a.headers || [],
       body: a.body ? new Uint8Array(a.body) : null,
     });
-    let reply;
+    let response;
     try {
-      reply = { ref: req.ref, ok: __http_response_to_wire(await fetch(request)) };
+      response = await fetch(request);
     } catch (e) {
-      reply = { ref: req.ref, err: String((e && e.message) || e) };
+      if (req.ref != null) {
+        Process.send(BigInt(req.from), JSON.stringify({ ref: req.ref, err: String((e && e.message) || e) }));
+      }
+      continue;
     }
-    if (req.ref != null) Process.send(BigInt(req.from), JSON.stringify(reply));
+    // A ReadableStream body streams (SSE): send the head, then write each chunk down
+    // a byte stream to the responder. A buffered body replies in one message.
+    const body = response && response.body;
+    if (body && typeof body.getReader === "function") {
+      await __http_stream_response(req, response, body);
+    } else if (req.ref != null) {
+      Process.send(BigInt(req.from), JSON.stringify({ ref: req.ref, ok: __http_response_to_wire(response) }));
+    }
+  }
+}
+
+// Stream a ReadableStream response body to the responder: a head with `stream:true`,
+// then each chunk on a byte stream (true SSE; the host flushes each as a frame).
+async function __http_stream_response(req, response, body) {
+  if (req.ref == null) return;
+  const headers = [];
+  const h = response.headers;
+  if (h && typeof h.entries === "function") {
+    for (const [k, v] of h.entries()) headers.push([k, v]);
+  }
+  Process.send(
+    BigInt(req.from),
+    JSON.stringify({ ref: req.ref, ok: { status: response.status || 200, headers, stream: true } }),
+  );
+  const out = Process.openStream(req.from);
+  if (!out) return;
+  const enc = new TextEncoder();
+  const reader = body.getReader();
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    out.write(value instanceof Uint8Array ? value : enc.encode(String(value)));
+  }
+  out.close();
+}
+
+// Resident WebSocket serving loop: each `{op, conn, data}` event from the host
+// gateway is dispatched to the guest's websocket handler. `conn` is the writer pid
+// (a BigInt) to reply to via `Process.send(conn, frame)`.
+async function __rusm_ws_serve(ws) {
+  if (!ws) return; // not a websocket handler — nothing to serve
+  for (;;) {
+    let text;
+    try { text = await Process.receiveText(); } catch { continue; }
+    let m;
+    try { m = JSON.parse(text); } catch { continue; }
+    if (m.conn == null) continue;
+    const conn = BigInt(m.conn);
+    if (m.op === "open") { if (ws.open) await ws.open(conn); }
+    else if (m.op === "message") { if (ws.message) await ws.message(conn, new Uint8Array(m.data || [])); }
+    else if (m.op === "close") { if (ws.close) await ws.close(conn); }
   }
 }
 

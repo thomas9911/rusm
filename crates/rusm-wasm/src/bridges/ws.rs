@@ -12,6 +12,7 @@
 //! `rusm-otp` core never sees hyper, tungstenite, or `wasi:http`.
 
 use std::convert::Infallible;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use futures_util::{SinkExt, StreamExt};
@@ -19,6 +20,7 @@ use http_body_util::Empty;
 use hyper::body::Bytes;
 use hyper::upgrade::Upgraded;
 use hyper_util::rt::TokioIo;
+use rusm_otp::{Pid, Runtime};
 use tokio::net::TcpListener;
 use tokio_tungstenite::tungstenite::handshake::derive_accept_key;
 use tokio_tungstenite::tungstenite::protocol::Role;
@@ -230,6 +232,157 @@ impl WsServer {
     }
 }
 
+/// Serves **all** WebSocket connections with a single (or a sharded pool of)
+/// long-lived **resident** component process(es) that hold shared state — a chat
+/// room, a pub/sub hub — vs [`WsServer`]'s one-process-per-connection. Each
+/// connection still gets its own Wasm-free **writer** owning the socket sink; the
+/// connection is identified to the resident by its writer pid (`conn`), and the
+/// resident replies by sending bytes to that pid. A connection is pinned to one
+/// instance for its lifetime.
+#[derive(Clone)]
+pub struct ResidentWsServer {
+    rt: Runtime,
+    instances: Arc<Vec<Pid>>,
+    next: Arc<AtomicUsize>,
+}
+
+impl WasmRuntime {
+    /// Build a resident WebSocket server: `instances` (≥1) long-lived processes
+    /// from `prepared` under `caps`, each serving many connections and holding
+    /// shared state. The component's `run` should drive `rusm_rs::ws::serve`.
+    pub fn resident_ws_server(
+        &self,
+        prepared: &PreparedComponent,
+        caps: Capabilities,
+        instances: usize,
+    ) -> ResidentWsServer {
+        let n = instances.max(1);
+        let instances = (0..n)
+            .map(|_| self.spawn_component_with(prepared, caps.clone()).pid())
+            .collect();
+        ResidentWsServer {
+            rt: self.spawner.rt.clone(),
+            instances: Arc::new(instances),
+            next: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+
+    /// The TS twin of [`resident_ws_server`](Self::resident_ws_server): the handler
+    /// is a JS bundle on the persistent js-runner, signalled into WebSocket-serving
+    /// mode (`export default { websocket: { open, message, close } }`) via the
+    /// `RUSM_SERVE_ROLE=ws` capability.
+    pub fn resident_ws_server_js(
+        &self,
+        bundle: impl Into<Vec<u8>>,
+        caps: Capabilities,
+        instances: usize,
+    ) -> ResidentWsServer {
+        let bundle: Vec<u8> = bundle.into();
+        let caps = caps.env("RUSM_SERVE_ROLE", "ws");
+        let n = instances.max(1);
+        let instances = (0..n)
+            .map(|_| self.spawn_js_with(bundle.clone(), caps.clone()).pid())
+            .collect();
+        ResidentWsServer {
+            rt: self.spawner.rt.clone(),
+            instances: Arc::new(instances),
+            next: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+}
+
+impl ResidentWsServer {
+    /// Serve WebSockets on `listener` until it closes — one task per connection,
+    /// each routed to a resident instance.
+    pub async fn serve(self, listener: TcpListener) {
+        loop {
+            let Ok((stream, _peer)) = listener.accept().await else {
+                break;
+            };
+            stream.set_nodelay(true).ok();
+            let server = self.clone();
+            tokio::spawn(async move {
+                let service = hyper::service::service_fn(move |req| {
+                    let server = server.clone();
+                    async move { server.upgrade(req).await }
+                });
+                let _ = hyper::server::conn::http1::Builder::new()
+                    .serve_connection(TokioIo::new(stream), service)
+                    .with_upgrades()
+                    .await;
+            });
+        }
+    }
+
+    async fn upgrade(
+        &self,
+        req: hyper::Request<hyper::body::Incoming>,
+    ) -> Result<hyper::Response<Empty<Bytes>>, Infallible> {
+        let Some(accept) = ws_accept(&req) else {
+            return Ok(upgrade_required());
+        };
+        let rt = self.rt.clone();
+        let resident = self.route();
+        tokio::spawn(async move {
+            if let Some(ws) = upgraded_ws(req).await {
+                run_resident_connection(rt, resident, ws).await;
+            }
+        });
+        Ok(switching_protocols(accept))
+    }
+
+    /// Pin a connection to an instance (round-robin at connect; sticky after).
+    fn route(&self) -> Pid {
+        self.instances[self.next.fetch_add(1, Ordering::Relaxed) % self.instances.len()]
+    }
+}
+
+/// Wire one connection to a resident instance: a Wasm-free writer owns the sink and
+/// is the connection's `conn`; lifecycle + frames become `open`/`message`/`close`
+/// events the resident dispatches, replying by sending bytes to `conn`.
+async fn run_resident_connection(
+    rt: Runtime,
+    resident: Pid,
+    ws: WebSocketStream<TokioIo<Upgraded>>,
+) {
+    let (mut sink, mut stream) = ws.split();
+    let writer = rt.spawn(move |mut ctx| async move {
+        while let Some(message) = ctx.recv().await.message() {
+            if sink.send(Message::binary(message)).await.is_err() {
+                break;
+            }
+        }
+    });
+    let conn = writer.pid().raw().to_string();
+
+    rt.send(
+        resident,
+        serde_json::to_vec(&serde_json::json!({ "op": "open", "conn": conn }))
+            .expect("envelope serializes"),
+    );
+    while let Some(Ok(message)) = stream.next().await {
+        if message.is_close() {
+            break;
+        }
+        if message.is_text() || message.is_binary() {
+            let data = message.into_data().to_vec();
+            rt.send(
+                resident,
+                serde_json::to_vec(
+                    &serde_json::json!({ "op": "message", "conn": conn, "data": data }),
+                )
+                .expect("envelope serializes"),
+            );
+        }
+    }
+    rt.send(
+        resident,
+        serde_json::to_vec(&serde_json::json!({ "op": "close", "conn": conn }))
+            .expect("envelope serializes"),
+    );
+    writer.kill();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -321,6 +474,83 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
         assert_eq!(rt.process_count(), 0, "shutdown reclaimed every process");
+    }
+
+    /// Connect, then read until `want` arrives (skipping anything else) — so a test
+    /// isn't order-sensitive about an initial ack vs a later broadcast.
+    async fn read_until(
+        ws: &mut WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+        want: &[u8],
+    ) {
+        use std::time::Duration;
+        let deadline = tokio::time::sleep(Duration::from_secs(5));
+        tokio::pin!(deadline);
+        loop {
+            tokio::select! {
+                _ = &mut deadline => panic!("timed out waiting for {:?}", String::from_utf8_lossy(want)),
+                msg = ws.next() => {
+                    let msg = msg.expect("stream open").expect("frame ok");
+                    if msg.is_binary() || msg.is_text() {
+                        if msg.into_data()[..] == *want { return; }
+                    }
+                }
+            }
+        }
+    }
+
+    async fn resident_ws_broadcast(server: ResidentWsServer) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = tokio::spawn(server.serve(listener));
+
+        // Two connections to the SAME resident instance.
+        let (mut a, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/"))
+            .await
+            .unwrap();
+        let (mut b, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/"))
+            .await
+            .unwrap();
+        // Each gets a "welcome" once the resident has registered it — so by the time
+        // both are seen, both are members and a broadcast must reach both.
+        read_until(&mut a, b"welcome").await;
+        read_until(&mut b, b"welcome").await;
+
+        // A frame from A is broadcast by the shared resident to BOTH connections.
+        a.send(Message::text("ping")).await.unwrap();
+        read_until(&mut a, b"ping").await;
+        read_until(&mut b, b"ping").await;
+
+        handle.abort();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn two_websockets_share_one_resident_and_broadcast_rs() {
+        use crate::{CapabilityProfile, WasmRuntime};
+        use rusm_otp::Runtime;
+
+        const WS: &[u8] = include_bytes!("../../tests/fixtures/rs_resident_ws.wasm");
+        let wr = WasmRuntime::new(Runtime::new()).unwrap();
+        let prepared = wr
+            .prepare_component(&wr.compile_component(WS).unwrap(), "run")
+            .unwrap();
+        let server =
+            wr.resident_ws_server(&prepared, CapabilityProfile::Sandboxed.capabilities(), 1);
+        resident_ws_broadcast(server).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn two_websockets_share_one_resident_and_broadcast_ts() {
+        use crate::{CapabilityProfile, WasmRuntime};
+        use rusm_otp::Runtime;
+
+        const TS_WS: &str = include_str!("../../tests/fixtures/ts_resident_ws.js");
+        let wr = WasmRuntime::new(Runtime::new()).unwrap();
+        let server = wr.resident_ws_server_js(
+            TS_WS.as_bytes().to_vec(),
+            CapabilityProfile::Sandboxed.capabilities(),
+            1,
+        );
+        resident_ws_broadcast(server).await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

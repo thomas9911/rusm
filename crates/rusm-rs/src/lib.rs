@@ -32,6 +32,7 @@ pub use serde_json;
 pub mod http;
 pub mod supervisor;
 pub mod wire;
+pub mod ws;
 
 pub use supervisor::{Strategy, Supervisor};
 

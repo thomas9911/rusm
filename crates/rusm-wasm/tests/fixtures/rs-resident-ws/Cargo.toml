@@ -1,0 +1,24 @@
+# A resident WebSocket handler: one instance serves all connections and holds a
+# shared connection list (a chat room). Proves a singleton resident can broadcast
+# across connections. Built for wasm32-wasip2, checked in as rs_resident_ws.wasm.
+#   cargo build --target wasm32-wasip2 --release
+#   cp target/wasm32-wasip2/release/rs_resident_ws.wasm ../rs_resident_ws.wasm
+[workspace]
+
+[package]
+name = "rs-resident-ws"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+name = "rs_resident_ws"
+
+[profile.release]
+opt-level = "z"
+strip = true
+
+[dependencies]
+rusm-rs = { path = "../../../../rusm-rs" }
+wit-bindgen = "0.46"

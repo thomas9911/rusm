@@ -16,10 +16,10 @@ use std::convert::Infallible;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use http_body_util::{BodyExt, Full};
-use hyper::body::Bytes;
+use http_body_util::{BodyExt, Full, StreamBody};
+use hyper::body::{Bytes, Frame};
 use hyper::{Response, StatusCode};
-use rusm_otp::{Pid, ProcessHandle, Received, Runtime};
+use rusm_otp::{Pid, ProcessHandle, Received, Runtime, StreamHandle};
 use serde::Deserialize;
 use wasmtime_wasi_http::io::TokioIo;
 
@@ -27,8 +27,8 @@ use crate::bridges::wasip2::PreparedComponent;
 use crate::caps::Capabilities;
 use crate::WasmRuntime;
 
-/// The response body type the resident gateway produces (a fully-buffered body for
-/// now; SSE streaming bodies land in a later step).
+/// The response body type the resident gateway produces — a boxed body, so a
+/// buffered (`Full`) and a streamed/SSE (`StreamBody`) response share one type.
 type ResBody = http_body_util::combinators::BoxBody<Bytes, Infallible>;
 
 /// A resident HTTP server: a pool of one or more long-lived component processes
@@ -167,23 +167,69 @@ impl ResidentHttpServer {
         );
 
         Ok(match rx.await {
-            Ok(Ok(resp)) => build_response(resp),
-            Ok(Err(message)) => error_response(StatusCode::INTERNAL_SERVER_ERROR, &message),
+            Ok(ResidentReply::Buffered(resp)) => build_response(resp),
+            Ok(ResidentReply::Streaming {
+                status,
+                headers,
+                handle,
+            }) => build_streaming_response(status, headers, handle),
+            Ok(ResidentReply::Err(message)) => {
+                error_response(StatusCode::INTERNAL_SERVER_ERROR, &message)
+            }
             Err(_) => error_response(StatusCode::BAD_GATEWAY, "resident handler did not reply"),
         })
     }
 }
 
-/// A Wasm-free process that waits for the resident's single reply and completes the
-/// `oneshot` — the resident-HTTP twin of the WebSocket writer process.
-fn spawn_responder(
-    rt: &Runtime,
-    tx: tokio::sync::oneshot::Sender<Result<WireResponse, String>>,
-) -> ProcessHandle {
+/// The resident's reply, as the responder hands it to the HTTP task.
+enum ResidentReply {
+    /// A complete buffered response.
+    Buffered(WireResponse),
+    /// A streaming response (SSE): the head, plus the guest's byte stream which the
+    /// HTTP task drains directly into a chunked body — no intermediate channel.
+    Streaming {
+        status: u16,
+        headers: Vec<(String, String)>,
+        handle: StreamHandle,
+    },
+    /// The handler errored.
+    Err(String),
+}
+
+/// A Wasm-free process that waits for the resident's reply and hands it to the HTTP
+/// task — the resident-HTTP twin of the WebSocket writer process. For a streaming
+/// reply the guest sends the head, then opens a byte stream to us (`Received::Stream`);
+/// we forward the stream **handle** itself (already a back-pressured Tokio channel),
+/// so the HTTP body reads the guest directly with no extra hop.
+fn spawn_responder(rt: &Runtime, tx: tokio::sync::oneshot::Sender<ResidentReply>) -> ProcessHandle {
     rt.spawn(move |mut ctx| async move {
+        // The head reply (a plain message).
+        let head = loop {
+            match ctx.recv().await {
+                Received::Message(bytes) => break bytes,
+                _ => continue,
+            }
+        };
+        let resp = match parse_reply(&head) {
+            Ok(resp) => resp,
+            Err(err) => {
+                let _ = tx.send(ResidentReply::Err(err));
+                return;
+            }
+        };
+        if !resp.stream {
+            let _ = tx.send(ResidentReply::Buffered(resp));
+            return;
+        }
+        // Streaming: the guest opens a byte stream to us next; hand its read end to
+        // the HTTP task and exit (no forwarding loop).
         loop {
-            if let Received::Message(bytes) = ctx.recv().await {
-                let _ = tx.send(parse_reply(&bytes));
+            if let Received::Stream(handle) = ctx.recv().await {
+                let _ = tx.send(ResidentReply::Streaming {
+                    status: resp.status,
+                    headers: resp.headers,
+                    handle,
+                });
                 return;
             }
         }
@@ -199,7 +245,8 @@ struct WireReply {
     err: Option<String>,
 }
 
-/// The `ok` payload of a resident handler's reply — mirrors `rusm_rs::http::Response`.
+/// The `ok` payload of a resident handler's reply — mirrors `rusm_rs::http::Response`,
+/// plus a `stream` flag the SSE path sets (the body then rides a byte stream).
 #[derive(Deserialize)]
 struct WireResponse {
     status: u16,
@@ -207,6 +254,8 @@ struct WireResponse {
     headers: Vec<(String, String)>,
     #[serde(default)]
     body: Vec<u8>,
+    #[serde(default)]
+    stream: bool,
 }
 
 fn parse_reply(bytes: &[u8]) -> Result<WireResponse, String> {
@@ -217,13 +266,36 @@ fn parse_reply(bytes: &[u8]) -> Result<WireResponse, String> {
     reply.ok.ok_or_else(|| "reply missing `ok`".to_string())
 }
 
-fn build_response(resp: WireResponse) -> Response<ResBody> {
-    let mut builder = Response::builder().status(resp.status);
-    for (name, value) in resp.headers {
+fn response_builder(status: u16, headers: Vec<(String, String)>) -> hyper::http::response::Builder {
+    let mut builder = Response::builder().status(status);
+    for (name, value) in headers {
         builder = builder.header(name, value);
     }
     builder
+}
+
+fn build_response(resp: WireResponse) -> Response<ResBody> {
+    response_builder(resp.status, resp.headers)
         .body(Full::new(Bytes::from(resp.body)).boxed())
+        .unwrap_or_else(|_| error_response(StatusCode::INTERNAL_SERVER_ERROR, "invalid response"))
+}
+
+/// Build a chunked, streamed response by draining the guest's byte stream — each
+/// chunk becomes a body frame as it's produced (true SSE), with the stream's own
+/// Tokio back-pressure carrying through.
+fn build_streaming_response(
+    status: u16,
+    headers: Vec<(String, String)>,
+    handle: StreamHandle,
+) -> Response<ResBody> {
+    let body = futures_util::stream::unfold(handle, |mut handle| async move {
+        handle
+            .read()
+            .await
+            .map(|chunk| (Ok::<_, Infallible>(Frame::data(Bytes::from(chunk))), handle))
+    });
+    response_builder(status, headers)
+        .body(StreamBody::new(body).boxed())
         .unwrap_or_else(|_| error_response(StatusCode::INTERNAL_SERVER_ERROR, "invalid response"))
 }
 
@@ -242,6 +314,8 @@ mod tests {
 
     const COUNT: &[u8] = include_bytes!("../../tests/fixtures/rs_resident_count.wasm");
     const TS_COUNT: &str = include_str!("../../tests/fixtures/ts_resident_count.js");
+    const SSE: &[u8] = include_bytes!("../../tests/fixtures/rs_resident_sse.wasm");
+    const TS_SSE: &str = include_str!("../../tests/fixtures/ts_resident_sse.js");
 
     /// One raw HTTP/1.1 GET (Connection: close) → the full response text.
     async fn get(addr: std::net::SocketAddr) -> String {
@@ -283,6 +357,40 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_resident_rs_handler_streams_server_sent_events() {
+        let wr = WasmRuntime::new(Runtime::new()).unwrap();
+        let prepared = wr
+            .prepare_component(&wr.compile_component(SSE).unwrap(), "run")
+            .unwrap();
+        let server =
+            wr.resident_http_server(&prepared, CapabilityProfile::Sandboxed.capabilities(), 1);
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = tokio::spawn(server.serve(listener));
+
+        let response = get(addr).await;
+        let lower = response.to_lowercase();
+        assert!(response.starts_with("HTTP/1.1 200"), "got: {response}");
+        assert!(
+            lower.contains("text/event-stream"),
+            "SSE content-type from the resident handler: {response}"
+        );
+        assert!(
+            lower.contains("transfer-encoding: chunked"),
+            "streamed (chunked), not a buffered Content-Length body: {response}"
+        );
+        for n in 0..5 {
+            assert!(
+                response.contains(&format!("data: tick {n}")),
+                "missing event {n}: {response}"
+            );
+        }
+
+        handle.abort();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_resident_ts_handler_holds_module_state_across_requests() {
         let wr = WasmRuntime::new(Runtime::new()).unwrap();
         // The SAME `export default` handler the per-request path uses — resident
@@ -306,6 +414,42 @@ mod tests {
             second.contains("hit #2"),
             "module state must persist across requests on the resident js-runner: {second}"
         );
+
+        handle.abort();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_resident_ts_handler_streams_server_sent_events() {
+        // The same `export default { fetch }` returning a streaming ReadableStream —
+        // served statefully on the resident js-runner, streamed (chunked) by the host.
+        let wr = WasmRuntime::new(Runtime::new()).unwrap();
+        let server = wr.resident_http_server_js(
+            TS_SSE.as_bytes().to_vec(),
+            CapabilityProfile::Sandboxed.capabilities(),
+            1,
+        );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = tokio::spawn(server.serve(listener));
+
+        let response = get(addr).await;
+        let lower = response.to_lowercase();
+        assert!(response.starts_with("HTTP/1.1 200"), "got: {response}");
+        assert!(
+            lower.contains("text/event-stream"),
+            "SSE content-type from the TS resident handler: {response}"
+        );
+        assert!(
+            lower.contains("transfer-encoding: chunked"),
+            "streamed (chunked), not buffered: {response}"
+        );
+        for n in 0..5 {
+            assert!(
+                response.contains(&format!("data: tick {n}")),
+                "missing event {n}: {response}"
+            );
+        }
 
         handle.abort();
     }

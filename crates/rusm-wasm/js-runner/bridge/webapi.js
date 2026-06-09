@@ -131,18 +131,64 @@
     toString() { return this.href; }
   }
 
+  // Supports both `new ReadableStream(uint8Array)` (legacy one-shot) and
+  // `new ReadableStream({ start, pull, cancel })` with a controller — the shape an
+  // SSE handler uses. (The per-request js-http-runner installs an identical class;
+  // sharing it here lets the resident runner stream too.)
   class ReadableStreamPF {
-    constructor(bytes) { this._b = bytes instanceof Uint8Array ? bytes : new Uint8Array(); }
+    constructor(source) {
+      if (source instanceof Uint8Array) {
+        this._fixed = source;
+        return;
+      }
+      this._source = source || {};
+      this._queue = [];
+      this._closed = false;
+      this._error = null;
+      this._started = false;
+      const self = this;
+      this._controller = {
+        enqueue(chunk) { self._queue.push(chunk); },
+        close() { self._closed = true; },
+        error(e) { self._error = e; self._closed = true; },
+      };
+    }
     getReader() {
-      let done = false;
-      const b = this._b;
+      const self = this;
+      if (self._fixed !== undefined) {
+        let done = false;
+        return {
+          read() {
+            if (done) return Promise.resolve({ done: true });
+            done = true;
+            return Promise.resolve({ done: false, value: self._fixed });
+          },
+          cancel() { done = true; },
+          releaseLock() {},
+        };
+      }
       return {
-        read() {
-          if (done) return Promise.resolve({ done: true });
-          done = true;
-          return Promise.resolve({ done: false, value: b });
+        async read() {
+          if (!self._started) {
+            self._started = true;
+            if (self._source.start) await self._source.start(self._controller);
+          }
+          // Pull until a chunk is queued or the stream closes. A bounded guard keeps
+          // a buggy guest (a pull that never enqueues or closes) from hanging.
+          let spins = 0;
+          while (self._queue.length === 0 && !self._closed) {
+            if (!self._source.pull) break;
+            await self._source.pull(self._controller);
+            if (++spins > 1_000_000) break;
+          }
+          if (self._error) throw self._error;
+          if (self._queue.length) return { done: false, value: self._queue.shift() };
+          return { done: true };
         },
-        cancel() { done = true; },
+        cancel(reason) {
+          self._closed = true;
+          return self._source.cancel ? self._source.cancel(reason) : undefined;
+        },
         releaseLock() {},
       };
     }

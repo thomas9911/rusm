@@ -91,3 +91,54 @@ pub fn serve<H: Handler>(mut handler: H) -> ! {
         }
     }
 }
+
+/// Runs a resident **Server-Sent Events** handler: for each request, `handler`
+/// yields the event chunks (each already a full SSE event, e.g.
+/// `b"data: hi\n\n"`). The response is a streamed `text/event-stream` body — each
+/// chunk is flushed as it's produced, with the byte stream's natural back-pressure.
+/// `handler` is `FnMut`, so it can carry state across requests.
+///
+/// A resident serves one request at a time; a long-lived stream blocks the
+/// instance, so an endless SSE feed should run in a process spawned per request
+/// that streams to the caller, leaving the resident's loop free.
+pub fn serve_sse<F, I>(mut handler: F) -> !
+where
+    F: FnMut(Request) -> I,
+    I: IntoIterator<Item = Vec<u8>>,
+{
+    loop {
+        let req = wire::next_request();
+        if req.op != "fetch" {
+            wire::reply_err(&req, &format!("unsupported op: {}", req.op));
+            continue;
+        }
+        let request = match wire::arg::<Request>(&req, 0) {
+            Ok(request) => request,
+            Err(err) => {
+                wire::reply_err(&req, &err);
+                continue;
+            }
+        };
+        let (Some(reference), Some(caller)) = (req.reference, req.caller()) else {
+            continue; // a cast can't receive a streamed body
+        };
+        // Head: the streamed SSE response; the body then rides a byte stream.
+        let head = serde_json::json!({
+            "ref": reference,
+            "ok": {
+                "status": 200,
+                "headers": [["content-type", "text/event-stream"]],
+                "stream": true,
+            },
+        });
+        crate::send_bytes(caller, &serde_json::to_vec(&head).expect("head serializes"));
+        if let Some(stream) = crate::Stream::open(caller) {
+            for chunk in handler(request) {
+                if !stream.write(&chunk) {
+                    break; // the client (host body) hung up
+                }
+            }
+            stream.close();
+        }
+    }
+}
