@@ -29,6 +29,7 @@ pub use rusm_rs_macros::service;
 pub use serde;
 pub use serde_json;
 
+pub mod http;
 pub mod supervisor;
 pub mod wire;
 

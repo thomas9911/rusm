@@ -12,9 +12,11 @@ mod net;
 mod pid;
 mod runtime;
 mod stream;
+mod supervisor;
 
 pub use exit::{ExitReason, MonitorRef};
 pub use message::{Message, Received};
 pub use pid::Pid;
 pub use runtime::{Context, ProcessHandle, ProcessInfo, Runtime, TimerRef};
 pub use stream::{stream, stream_with_capacity, StreamHandle, StreamWriter};
+pub use supervisor::{Strategy, Supervisor};

@@ -2502,6 +2502,8 @@ dependencies = [
  "hyper",
  "hyper-util",
  "rusm-otp",
+ "serde",
+ "serde_json",
  "tokio",
  "tokio-tungstenite 0.29.0",
  "wasmtime",

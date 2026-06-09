@@ -7,6 +7,7 @@
 //! convention) and makes "add a WASI version" a local change.
 
 pub(crate) mod http;
+pub(crate) mod resident;
 pub(crate) mod wasip1;
 pub(crate) mod wasip2;
 pub(crate) mod wasip3;

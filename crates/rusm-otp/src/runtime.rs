@@ -641,6 +641,33 @@ impl Runtime {
         self.inner.registry.get(name).map(|pid| Pid(*pid))
     }
 
+    /// Returns the process registered under `name`, or spawns `body` and registers
+    /// it under `name` — race-free. If concurrent callers race, exactly one wins the
+    /// registration; the losers' just-spawned processes are killed and every caller
+    /// gets the winner (Erlang's "whereis-or-start" / a registered singleton). The
+    /// registration is the only synchronization point, so no lock is held across the
+    /// spawn — `body` should be a long-lived process (a service/handler), not a
+    /// one-shot. Use this to stand up a named singleton without a check-then-act race.
+    pub fn whereis_or_spawn<F, Fut>(&self, name: impl Into<String>, body: F) -> Pid
+    where
+        F: FnOnce(Context) -> Fut,
+        Fut: Future<Output = ()> + Send + 'static,
+    {
+        let name = name.into();
+        if let Some(pid) = self.whereis(&name) {
+            return pid;
+        }
+        // Optimistically spawn a candidate, then claim the name atomically.
+        let handle = self.spawn(body);
+        if self.register(name.clone(), handle.pid()) {
+            return handle.pid(); // we won — drop the handle; the registry keeps it live
+        }
+        // Lost the race: reap our candidate so it can't leak, and return the
+        // incumbent the winner registered.
+        handle.kill();
+        self.whereis(&name).unwrap_or(handle.pid())
+    }
+
     /// Releases `name`. Returns `false` if it wasn't registered.
     pub fn unregister(&self, name: &str) -> bool {
         match self.inner.registry.remove(name) {
@@ -1309,6 +1336,55 @@ mod tests {
         p.join().await;
         assert_eq!(rt.whereis("one"), None); // all of a pid's names go on exit
         assert_eq!(rt.whereis("two"), None);
+    }
+
+    #[tokio::test]
+    async fn whereis_or_spawn_returns_the_incumbent_without_spawning() {
+        let rt = Runtime::new();
+        let first = rt.whereis_or_spawn("svc", |_| std::future::pending::<()>());
+        // A second call finds the registered process and does NOT start a new one.
+        let before = rt.spawned();
+        let again = rt.whereis_or_spawn("svc", |_| std::future::pending::<()>());
+        assert_eq!(again, first, "must return the already-registered pid");
+        assert_eq!(
+            rt.spawned(),
+            before,
+            "must not spawn when the name is taken"
+        );
+        assert_eq!(rt.whereis("svc"), Some(first));
+        rt.kill(first);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn whereis_or_spawn_is_race_free_and_kills_the_loser() {
+        let rt = Runtime::new();
+        // Many threads race to get-or-spawn the same name concurrently.
+        let mut tasks = Vec::new();
+        for _ in 0..32 {
+            let rt = rt.clone();
+            tasks.push(tokio::spawn(async move {
+                rt.whereis_or_spawn("singleton", |_| std::future::pending::<()>())
+            }));
+        }
+        let mut pids = Vec::new();
+        for t in tasks {
+            pids.push(t.await.unwrap());
+        }
+        // Exactly one pid wins; everyone sees it.
+        let winner = rt.whereis("singleton").expect("a winner is registered");
+        assert!(
+            pids.iter().all(|&p| p == winner),
+            "all callers see the winner"
+        );
+        // Every loser it spawned was killed — only the winner remains live.
+        loop {
+            if rt.process_count() == 1 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(rt.whereis("singleton"), Some(winner));
+        rt.kill(winner);
     }
 
     #[tokio::test(start_paused = true)]

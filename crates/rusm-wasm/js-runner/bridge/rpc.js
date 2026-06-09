@@ -223,6 +223,10 @@ globalThis.supervise = async function ({ strategy = "one_for_one", children = []
 // (already ran during eval — nothing left to drive).
 globalThis.__rusm_entry = function () {
   const h = (globalThis.module && globalThis.module.exports) || {};
+  // A resident HTTP server (the host set the role): drive `export default { fetch }`
+  // (or a default handler function) as a stateful serving loop — module state
+  // persists across requests because the instance is long-lived.
+  if (globalThis.__rusm_role === "http") return __rusm_http_serve(h.default);
   const named = Object.keys(h).filter((k) => k !== "default" && typeof h[k] === "function");
   if (named.length) {
     const handlers = {};
@@ -232,3 +236,50 @@ globalThis.__rusm_entry = function () {
   if (typeof h.default === "function") return h.default();
   return Promise.resolve();
 };
+
+// Resident HTTP serving loop: each `{op:"fetch", ref, from, args:[req]}` envelope
+// from the host gateway becomes a `Request`, dispatched to the guest's handler; the
+// `Response` is encoded back as `{ref, ok:{status, headers, body}}`. One instance
+// serves every request, so the handler's closure state lives across them.
+async function __rusm_http_serve(handler) {
+  const fetch = typeof handler === "function" ? handler : handler && handler.fetch;
+  if (typeof fetch !== "function") return; // not an HTTP handler — nothing to serve
+  for (;;) {
+    let text;
+    try { text = await Process.receiveText(); } catch { continue; }
+    let req;
+    try { req = JSON.parse(text); } catch { continue; }
+    if (req.op !== "fetch" || req.from == null) continue;
+    const a = (req.args && req.args[0]) || {};
+    const request = new Request(a.url || "/", {
+      method: a.method || "GET",
+      headers: a.headers || [],
+      body: a.body ? new Uint8Array(a.body) : null,
+    });
+    let reply;
+    try {
+      reply = { ref: req.ref, ok: __http_response_to_wire(await fetch(request)) };
+    } catch (e) {
+      reply = { ref: req.ref, err: String((e && e.message) || e) };
+    }
+    if (req.ref != null) Process.send(BigInt(req.from), JSON.stringify(reply));
+  }
+}
+
+// Encode a guest `Response` to the wire shape the host expects (body as a byte
+// array, headers as pairs).
+function __http_response_to_wire(response) {
+  const enc = new TextEncoder();
+  const b = response && response.body;
+  let body;
+  if (b == null) body = [];
+  else if (b instanceof Uint8Array) body = Array.from(b);
+  else if (typeof b === "string") body = Array.from(enc.encode(b));
+  else body = Array.from(enc.encode(String(b)));
+  const headers = [];
+  const h = response && response.headers;
+  if (h && typeof h.entries === "function") {
+    for (const [k, v] of h.entries()) headers.push([k, v]);
+  }
+  return { status: (response && response.status) || 200, headers, body };
+}

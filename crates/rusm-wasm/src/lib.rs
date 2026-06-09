@@ -26,6 +26,7 @@ mod bridges;
 mod caps;
 
 pub use bridges::http::{HttpServer, PreparedHttp};
+pub use bridges::resident::ResidentHttpServer;
 pub use bridges::wasip1::PreparedModule;
 pub use bridges::wasip2::PreparedComponent;
 pub use bridges::ws::{serve_ws_echo, WsServer};

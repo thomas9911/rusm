@@ -175,6 +175,16 @@
       this.headers = new HeadersPF(init?.headers); this.body = init?.body ?? null;
     }
   }
+  // A real Response (the per-request js-http-runner augments this with a streaming
+  // body; the resident server reads .status/.headers/.body directly).
+  class ResponsePF {
+    constructor(body, init) {
+      this.body = body ?? null;
+      this.status = (init && init.status) || 200;
+      this.statusText = (init && init.statusText) || "";
+      this.headers = new HeadersPF(init && init.headers);
+    }
+  }
 
   def("TextEncoder", TextEncoderPF);
   def("TextDecoder", TextDecoderPF);
@@ -187,7 +197,7 @@
   def("FormData", FormDataPF);
   def("AbortController", AbortControllerPF);
   def("Request", RequestPF);
-  def("Response", Object);
+  def("Response", ResponsePF);
 
   // setTimeout/clearTimeout via microtasks (QuickJS has no event loop timers).
   if (!G.setTimeout) {

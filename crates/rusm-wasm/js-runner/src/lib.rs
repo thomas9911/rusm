@@ -19,8 +19,8 @@ wit_bindgen::generate!({
     path: "wit",
 });
 
-use rusm::runtime::actor;
 use rquickjs::{Ctx, Exception, Function, Promise, TypedArray};
+use rusm::runtime::actor;
 
 struct Component;
 
@@ -133,6 +133,14 @@ impl Guest for Component {
             let wrapped =
                 format!("(function(module,exports){{\n{bundle}\n}})(globalThis.module,globalThis.module.exports);");
             let _: () = ctx.eval(wrapped).unwrap();
+            // The host sets a serving role (e.g. "http") via the `RUSM_SERVE_ROLE`
+            // env capability for a resident server; `__rusm_entry` reads it to pick
+            // the serving loop. Absent for ordinary services/workers.
+            let role = std::env::var("RUSM_SERVE_ROLE").unwrap_or_default();
+            // `{:?}` quotes/escapes the (host-controlled) role as a JS string literal.
+            let _: () = ctx
+                .eval(format!("globalThis.__rusm_role={role:?};"))
+                .unwrap();
             // Drive the entry point (service dispatch / worker `default`) to
             // completion. finish() pumps the QuickJS job queue; a long-running
             // service blocks here (each receive suspends the fiber) until killed.
