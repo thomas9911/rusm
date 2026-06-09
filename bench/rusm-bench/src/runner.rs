@@ -171,7 +171,20 @@ struct RunState {
     engine: Engine,
     tick: u64,
     peak_concurrent: u64,
+    /// Whether throughput has been seen at least once (so warm-up zeros don't trip
+    /// the stall warning).
+    warmed: bool,
+    /// Consecutive ticks reporting 0 ops/sec *after* warm-up — the stall detector.
+    stall_ticks: u64,
+    /// Whether the current stall episode has already been warned about (warn once).
+    stall_warned: bool,
 }
+
+/// After throughput has started, this many consecutive zero-ops ticks while a
+/// scenario is "running" is treated as a stall and logged loudly. At the default
+/// 20 Hz that's ~2s — long enough to ride out a balter window boundary, short enough
+/// to surface a real silent-zero promptly.
+const STALL_TICKS: u64 = 40;
 
 /// Drives a benchmark run and aggregates each tick into a [`Frame`].
 ///
@@ -270,6 +283,9 @@ impl Runner {
             engine,
             tick: 0,
             peak_concurrent: 0,
+            warmed: false,
+            stall_ticks: 0,
+            stall_warned: false,
         });
     }
 
@@ -313,6 +329,26 @@ impl Runner {
         state.peak_concurrent = state.peak_concurrent.max(t.process_count);
         let scenario = state.scenario;
         let peak_concurrent = state.peak_concurrent;
+
+        // Loud-stall invariant: once a scenario has produced throughput, a sustained
+        // run of zero ticks means it stalled — surface it instead of quietly charting
+        // a 0 (the silent-zero failure mode). Warns once per episode; resets on resume.
+        if t.ops_per_sec > 0.0 {
+            state.warmed = true;
+            state.stall_ticks = 0;
+            state.stall_warned = false;
+        } else if state.warmed {
+            state.stall_ticks += 1;
+            if state.stall_ticks == STALL_TICKS && !state.stall_warned {
+                eprintln!(
+                    "warning: scenario '{}' is running but has reported 0 throughput for {} \
+                     consecutive ticks — likely stalled, not a quiet zero",
+                    scenario.id(),
+                    state.stall_ticks
+                );
+                state.stall_warned = true;
+            }
+        }
 
         for latency_ns in &t.latencies_ns {
             self.latency.record_nanos(*latency_ns);
@@ -394,9 +430,12 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-    async fn serving_scenarios_produce_throughput_through_the_runner() {
+    async fn serving_scenarios_sustain_throughput_through_the_runner() {
         // The exact dashboard path: Runner::start → tick, for each serving scenario.
         // balter drives HTTP; the capacity harness drives WS/SSE — all co-resident.
+        // We require throughput to be *sustained* (every tick over a window nonzero),
+        // not just to spike once — that's what catches the silent-zero class (e.g. a
+        // finite stream held as infinite).
         let mut r = runner();
         for scenario in [
             Scenario::HttpThroughput,
@@ -404,19 +443,31 @@ mod tests {
             Scenario::SseFanout,
         ] {
             r.start(scenario);
-            let mut max = 0.0_f64;
-            for tick in 0..200 {
+            let mut tick = 0u64;
+            // Warm-up: wait for first nonzero.
+            let mut warmed = false;
+            for _ in 0..200 {
                 tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-                max = max.max(r.tick(tick).ops_per_sec);
-                if max > 0.0 {
+                if r.tick(tick).ops_per_sec > 0.0 {
+                    warmed = true;
+                }
+                tick += 1;
+                if warmed {
                     break;
                 }
             }
-            assert!(
-                max > 0.0,
-                "{} produced throughput via the runner",
-                scenario.id()
-            );
+            assert!(warmed, "{} never produced throughput", scenario.id());
+            // Sustained window: a single zero tick here is the silent-zero regression.
+            for _ in 0..20 {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                let ops = r.tick(tick).ops_per_sec;
+                tick += 1;
+                assert!(
+                    ops > 0.0,
+                    "{} dropped to 0 while running (silent-zero regression)",
+                    scenario.id()
+                );
+            }
             r.stop();
         }
     }

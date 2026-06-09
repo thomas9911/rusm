@@ -310,11 +310,81 @@ fn with_commas(n: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     #[test]
     fn commas_group_thousands() {
         assert_eq!(with_commas(0), "0");
         assert_eq!(with_commas(192_344), "192,344");
         assert_eq!(with_commas(1_500_000), "1,500,000");
+    }
+
+    /// A minimal `text/event-stream` server. Each GET gets `data:` frames; when
+    /// `infinite`, it streams until the client disconnects, otherwise it writes a
+    /// finite burst of `events` and **closes** — modelling a resident handler.
+    async fn sse_server(infinite: bool, events: usize) -> std::net::SocketAddr {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((mut sock, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 1024]; // drain the request line + headers
+                    let _ = sock.read(&mut buf).await;
+                    if sock
+                        .write_all(b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\r\n")
+                        .await
+                        .is_err()
+                    {
+                        return;
+                    }
+                    let mut n = 0usize;
+                    while infinite || n < events {
+                        if sock.write_all(b"data: tick\n\n").await.is_err() {
+                            return; // client hung up
+                        }
+                        n += 1;
+                        if infinite {
+                            tokio::time::sleep(Duration::from_millis(1)).await;
+                        }
+                    }
+                    // finite: drop `sock` here → close, so the client must reconnect.
+                });
+            }
+        });
+        addr
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn capacity_counts_an_infinite_sse_stream() {
+        let addr = sse_server(true, 0).await;
+        let load = CapacityLoad::start(Protocol::Sse, format!("http://{addr}/"), 4);
+        tokio::time::sleep(Duration::from_millis(800)).await;
+        let ops = load.ops();
+        load.stop();
+        assert!(ops > 100, "infinite SSE streams counted ({ops} events)");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn capacity_reconnects_a_finite_sse_burst_instead_of_collapsing() {
+        // The exact regression: a finite burst (a few events, then close) must NOT
+        // stall the slot — the harness reconnects, so the sustained count far exceeds
+        // a single burst and slots stay alive. A non-reconnecting harness would count
+        // ~`events * slots` once and then drop to 0 (the SSE-0 bug).
+        let (events, slots) = (5usize, 4usize);
+        let addr = sse_server(false, events).await;
+        let load = CapacityLoad::start(Protocol::Sse, format!("http://{addr}/"), slots);
+        tokio::time::sleep(Duration::from_millis(800)).await;
+        let ops = load.ops();
+        let alive = load.alive();
+        load.stop();
+        assert!(
+            alive >= 1,
+            "slots stay alive across reconnects (alive {alive})"
+        );
+        assert!(
+            ops as usize > events * slots,
+            "finite SSE reconnected past one burst ({ops} > {})",
+            events * slots
+        );
     }
 }

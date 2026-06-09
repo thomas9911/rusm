@@ -334,43 +334,96 @@ impl Drop for CapacityServingEngine {
 mod tests {
     use super::*;
 
-    /// Polls an engine until it reports throughput (or times out).
-    async fn until_throughput(mut tick: impl FnMut() -> Sample) -> f64 {
-        let mut max = 0.0_f64;
+    /// Warm up until throughput appears, then verify it's **sustained** — every tick
+    /// over a ~1.5s window is nonzero. Returns the minimum sustained rate, or `0.0` if
+    /// it stalled mid-run. A first-nonzero check would miss the silent-zero class
+    /// (e.g. a finite stream the harness holds as if infinite: it spikes once, then
+    /// drops to 0); requiring *every* window tick nonzero catches exactly that.
+    async fn sustained_throughput(mut tick: impl FnMut() -> Sample) -> f64 {
+        // Warm-up: engines ramp (connect, instantiate, balter seed) — wait for first ops.
+        let mut warmed = false;
         for _ in 0..200 {
             tokio::time::sleep(Duration::from_millis(50)).await;
-            max = max.max(tick().ops_per_sec);
-            if max > 0.0 {
+            if tick().ops_per_sec > 0.0 {
+                warmed = true;
                 break;
             }
         }
-        max
+        if !warmed {
+            return 0.0;
+        }
+        // Sustained window: a single zero tick here is the silent-zero regression.
+        let mut min = f64::INFINITY;
+        for _ in 0..30 {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            let ops = tick().ops_per_sec;
+            if ops == 0.0 {
+                return 0.0; // stalled while "running" — fail loudly
+            }
+            min = min.min(ops);
+        }
+        min
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-    async fn http_engine_serves_balter_driven_throughput() {
+    async fn http_engine_sustains_throughput_rust() {
         let mut engine = HttpServingEngine::new(1, 4, Guest::Rust);
-        let max = until_throughput(|| engine.tick()).await;
+        let min = sustained_throughput(|| engine.tick()).await;
         assert!(
-            max > 0.0,
-            "balter-driven resident HTTP produced throughput (max {max:.0}/s)"
+            min > 0.0,
+            "resident HTTP (RS) sustained throughput (min {min:.0}/s)"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn http_engine_sustains_throughput_ts() {
+        let mut engine = HttpServingEngine::new(1, 4, Guest::Ts);
+        let min = sustained_throughput(|| engine.tick()).await;
+        assert!(
+            min > 0.0,
+            "resident HTTP (TS) sustained throughput (min {min:.0}/s)"
         );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn ws_engine_echoes_under_held_connections() {
+    async fn ws_engine_sustains_throughput_rust() {
         let mut engine = CapacityServingEngine::new(1, 4, CapacityKind::Ws, Guest::Rust);
-        let max = until_throughput(|| engine.tick()).await;
+        let min = sustained_throughput(|| engine.tick()).await;
         assert!(
-            max > 0.0,
-            "resident WS echo produced round-trips (max {max:.0}/s)"
+            min > 0.0,
+            "resident WS echo (RS) sustained round-trips (min {min:.0}/s)"
         );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn sse_engine_streams_events() {
+    async fn ws_engine_sustains_throughput_ts() {
+        let mut engine = CapacityServingEngine::new(1, 4, CapacityKind::Ws, Guest::Ts);
+        let min = sustained_throughput(|| engine.tick()).await;
+        assert!(
+            min > 0.0,
+            "resident WS echo (TS) sustained round-trips (min {min:.0}/s)"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn sse_engine_sustains_throughput_rust() {
+        // The exact regression that bit us: a finite resident SSE burst held as an
+        // infinite stream collapses to 0. The sustained window must stay nonzero.
         let mut engine = CapacityServingEngine::new(1, 4, CapacityKind::Sse, Guest::Rust);
-        let max = until_throughput(|| engine.tick()).await;
-        assert!(max > 0.0, "resident SSE produced events (max {max:.0}/s)");
+        let min = sustained_throughput(|| engine.tick()).await;
+        assert!(
+            min > 0.0,
+            "resident SSE (RS) sustained events (min {min:.0}/s)"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn sse_engine_sustains_throughput_ts() {
+        let mut engine = CapacityServingEngine::new(1, 4, CapacityKind::Sse, Guest::Ts);
+        let min = sustained_throughput(|| engine.tick()).await;
+        assert!(
+            min > 0.0,
+            "resident SSE (TS) sustained events (min {min:.0}/s)"
+        );
     }
 }
