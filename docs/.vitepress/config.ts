@@ -152,6 +152,12 @@ export default defineConfig({
   // so every asset/link resolves under the /rusm/ subpath.
   base: '/rusm/',
   cleanUrls: true,
+  // Code blocks use the Dracula palette (vivid purple/pink/green/cyan tokens) in both
+  // modes — deliberate dark "code islands" on the warm light page. `dracula-soft` is a
+  // muted variant for light mode; swap both to `'dracula'` for full vibrancy.
+  markdown: {
+    theme: { light: 'dracula-soft', dark: 'dracula' },
+  },
   // The RUSM theme's fonts (display / base / mono), loaded with preconnect for
   // performance rather than a CSS @import.
   head: [
