@@ -7,7 +7,10 @@
 //! get async" property). The runtime stays the source of truth; this never
 //! reimplements OTP.
 
-use rusm_otp::{stream, ExitReason, Pid, Received};
+use std::sync::Arc;
+use std::time::Duration;
+
+use rusm_otp::{stream, ExitReason, Pid, Received, Runtime, Strategy};
 
 use crate::bridges::WasiHost;
 
@@ -144,6 +147,58 @@ impl actor::Host for WasiHost {
 
     async fn set_label(&mut self, label: String) {
         self.rt.set_label(Pid::from_raw(self.pid), label);
+    }
+
+    /// Supervise named child components under the **native** `rusm-otp` supervisor —
+    /// the single restart implementation the guest `Supervisor` SDKs delegate to.
+    /// Capability-gated like `spawn`; each child is spawned with *this* process's
+    /// capabilities (non-escalating). The supervisor is **linked to the caller** and
+    /// **traps exits**: if it gives up (restart budget exceeded) the caller dies too,
+    /// and if the caller dies the supervisor tears its children down — clean
+    /// co-termination, no orphans.
+    async fn supervise(
+        &mut self,
+        strategy: actor::SuperviseStrategy,
+        children: Vec<String>,
+        max_restarts: u32,
+        within_ms: u32,
+    ) -> Result<u64, String> {
+        if !self.caps.can_spawn() {
+            return Err("supervise denied: missing the spawn capability".to_string());
+        }
+        let spawner = self.spawner.as_ref().ok_or("supervise unavailable here")?;
+        let strategy = match strategy {
+            actor::SuperviseStrategy::OneForOne => Strategy::OneForOne,
+            actor::SuperviseStrategy::OneForAll => Strategy::OneForAll,
+            actor::SuperviseStrategy::RestForOne => Strategy::RestForOne,
+        };
+        let mut sup = self.rt.supervisor(strategy).max_restarts(max_restarts);
+        sup = if within_ms == 0 {
+            sup.over_lifetime()
+        } else {
+            sup.within(Duration::from_millis(within_ms as u64))
+        };
+        for name in children {
+            let entry = spawner
+                .lookup(&name)
+                .ok_or_else(|| format!("unknown component `{name}`"))?;
+            let prepared = entry.prepared.clone();
+            let bundle = entry.bundle.clone();
+            let caps = self.caps.clone();
+            let spawner = Arc::clone(spawner);
+            sup = sup.child(move |rt: &Runtime| {
+                let child = spawner.spawn_component(&prepared, caps.clone());
+                if let Some(bundle) = &bundle {
+                    rt.send(Pid::from_raw(child.pid().raw()), (**bundle).clone());
+                }
+                child
+            });
+        }
+        let sup_pid = Pid::from_raw(sup.start().pid().raw());
+        // Co-terminate with the caller (see the doc comment).
+        self.rt.set_trap_exit(sup_pid, true);
+        self.rt.link(Pid::from_raw(self.pid), sup_pid);
+        Ok(sup_pid.raw())
     }
 
     async fn stream_open(&mut self, to: u64) -> Option<u64> {

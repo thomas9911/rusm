@@ -58,6 +58,21 @@ interface actor {
 
     /// Attach a human-readable label for observability (`Process.set_label/1`).
     set-label: func(label: string);
+/// A restart strategy for [`supervise`].
+    enum supervise-strategy {
+        one-for-one,
+        one-for-all,
+        rest-for-one,
+    }
+
+    /// Supervise named child components: restart a dead child per `strategy`, with a
+    /// restart budget of at most `max-restarts` within `within-ms` (both `0` =
+    /// unlimited / over the whole lifetime). Returns the supervisor's pid.
+    /// Capability-gated like `spawn`; children inherit these capabilities, and the
+    /// supervisor is linked to the caller — if it gives up (or the caller dies) the
+    /// whole tree is torn down. This is the **one** restart implementation; the guest
+    /// `Supervisor` SDKs delegate to it.
+    supervise: func(strategy: supervise-strategy, children: list<string>, max-restarts: u32, within-ms: u32) -> result<pid, string>;
 
     /// A handle to one byte stream this process owns (an id local to the process).
     /// (`stream` is a reserved WIT keyword, hence `stream-id`.)

@@ -98,6 +98,23 @@ impl Guest for Component {
             def!("__set_label", |l: String| actor::set_label(&l));
             def!("__spawn", js_spawn);
             def!("__monitor", |p: String| actor::monitor(p.parse().unwrap_or(0)));
+            // Delegate guest `supervise` to the host's single native supervisor.
+            def!(
+                "__supervise",
+                |strategy: String, children: Vec<String>, max_restarts: f64, within_ms: f64| {
+                    let strategy = match strategy.as_str() {
+                        "one_for_all" => actor::SuperviseStrategy::OneForAll,
+                        "rest_for_one" => actor::SuperviseStrategy::RestForOne,
+                        _ => actor::SuperviseStrategy::OneForOne,
+                    };
+                    let _ = actor::supervise(
+                        strategy,
+                        &children,
+                        max_restarts as u32,
+                        within_ms as u32,
+                    );
+                }
+            );
 
             // --- streams (handles are small ints carried as JS numbers) ---
             def!("__stream_open", |to: String| actor::stream_open(

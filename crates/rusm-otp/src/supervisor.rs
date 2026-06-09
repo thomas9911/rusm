@@ -108,6 +108,17 @@ impl Supervisor {
             loop {
                 let dead = match ctx.recv().await {
                     Received::Down { pid, .. } => pid,
+                    // An **owner** linked us and died: tear the children down and stop.
+                    // Only reached when `trap_exit` is set on us — which the actor
+                    // `supervise` ABI does for a guest-owned supervisor, so killing the
+                    // guest cleanly tears down the whole tree (no orphans). A
+                    // standalone pool supervisor isn't linked, so this never fires there.
+                    Received::Exit { .. } => {
+                        for &p in &pids {
+                            sup_rt.kill(p);
+                        }
+                        return;
+                    }
                     _ => continue,
                 };
                 // A `Down` for a pid we no longer track (e.g. a survivor we killed

@@ -1,10 +1,13 @@
-//! A guest **Supervisor** — the OTP pattern over the actor ABI: spawn children by
-//! name, `monitor` them, and restart per a strategy when one dies. Event-driven
-//! (a dead child arrives as a `__down` message — no polling).
+//! A guest **Supervisor** — a thin, ergonomic facade over the host's single native
+//! supervisor (the `supervise` actor ABI). Build it (strategy, children, restart
+//! intensity), then [`run`](Supervisor::run) it as the component body: the host
+//! spawns and supervises the named children under one restart implementation, links
+//! the supervisor to this process, and tears the whole tree down on give-up or our
+//! death. (Previously this loop lived here *and* in the TS runner; now there is one.)
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use crate::{kill, monitor, receive_bytes, spawn, Pid};
+use crate::rusm::runtime::actor;
 
 /// How a supervisor reacts when one child dies.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -22,7 +25,7 @@ pub enum Strategy {
 pub struct Supervisor {
     strategy: Strategy,
     children: Vec<String>,
-    /// Max restarts before the supervisor gives up and exits (0 = unlimited).
+    /// Max restarts before the supervisor gives up (0 = unlimited).
     max_restarts: u32,
     /// Restart-intensity window. `None` counts `max_restarts` over the whole
     /// lifetime; `Some(w)` counts only restarts within the last `w` (Erlang's
@@ -47,90 +50,40 @@ impl Supervisor {
         self
     }
 
-    /// Give up (return) after this many restarts — overload protection. By default
-    /// this counts over the supervisor's whole lifetime; pair it with
-    /// [`within`](Supervisor::within) for a sliding window. 0 (the default) means
-    /// never give up.
+    /// Give up after this many restarts — overload protection. By default this counts
+    /// over the supervisor's whole lifetime; pair it with [`within`](Supervisor::within)
+    /// for a sliding window. 0 (the default) means never give up.
     pub fn max_restarts(mut self, n: u32) -> Self {
         self.max_restarts = n;
         self
     }
 
-    /// Bound [`max_restarts`](Supervisor::max_restarts) to a sliding **time
-    /// window** — give up only if more than `max_restarts` happen within `window`
-    /// (Erlang's restart *intensity*, `{max_restarts, max_seconds}`). Restarts
-    /// spread out wider than the window never trip it, so an occasional crash over a
-    /// long uptime won't eventually exhaust the budget. Without this, the budget is
-    /// the supervisor's whole lifetime.
+    /// Bound [`max_restarts`](Supervisor::max_restarts) to a sliding **time window** —
+    /// give up only if more than `max_restarts` happen within `window` (Erlang's
+    /// restart *intensity*). Without this, the budget is the whole lifetime.
     pub fn within(mut self, window: Duration) -> Self {
         self.within = Some(window);
         self
     }
 
-    /// Spawn + monitor every child, then supervise forever: on each child death,
-    /// restart per the strategy. Returns only if `max_restarts` is exceeded.
+    /// Hand the children to the host's native supervisor and run as its owner: the
+    /// host spawns + monitors + restarts them under one implementation, and links the
+    /// supervisor to us. Returns only if the host call is rejected (e.g. the spawn
+    /// capability is missing); otherwise it parks — the link tears us down when the
+    /// supervisor gives up, and tears the children down if we're killed.
     pub fn run(self) {
-        let mut pids: Vec<Pid> = self.children.iter().map(|c| start(c)).collect();
-        // Lifetime mode counts; windowed mode keeps the restart instants in-window.
-        let mut lifetime = 0u32;
-        let mut window: Vec<Instant> = Vec::new();
+        let strategy = match self.strategy {
+            Strategy::OneForOne => actor::SuperviseStrategy::OneForOne,
+            Strategy::OneForAll => actor::SuperviseStrategy::OneForAll,
+            Strategy::RestForOne => actor::SuperviseStrategy::RestForOne,
+        };
+        let within_ms = self.within.map_or(0, |d| d.as_millis() as u32);
+        if actor::supervise(strategy, &self.children, self.max_restarts, within_ms).is_err() {
+            return; // supervision denied (no spawn capability) — nothing to own
+        }
+        // Park: stay alive as the supervisor's owner until the link takes us.
         loop {
-            let raw = receive_bytes();
-            let Some(dead) = parse_down(&raw) else {
-                continue;
-            };
-            let Some(index) = pids.iter().position(|&p| p == dead) else {
-                continue; // a Down for something we don't supervise (already restarted)
-            };
-            let over_budget = match self.within {
-                Some(span) => {
-                    let now = Instant::now();
-                    window.push(now);
-                    window.retain(|t| now.duration_since(*t) <= span);
-                    self.max_restarts != 0 && window.len() as u32 > self.max_restarts
-                }
-                None => {
-                    lifetime += 1;
-                    self.max_restarts != 0 && lifetime > self.max_restarts
-                }
-            };
-            if over_budget {
-                return; // overload — let the supervisor itself crash/stop
-            }
-            match self.strategy {
-                Strategy::OneForOne => {
-                    pids[index] = start(&self.children[index]);
-                }
-                Strategy::OneForAll => {
-                    for (j, &p) in pids.iter().enumerate() {
-                        if j != index {
-                            kill(p); // the dead one is already gone
-                        }
-                    }
-                    pids = self.children.iter().map(|c| start(c)).collect();
-                }
-                Strategy::RestForOne => {
-                    for &p in &pids[index + 1..] {
-                        kill(p);
-                    }
-                    for j in index..pids.len() {
-                        pids[j] = start(&self.children[j]);
-                    }
-                }
-            }
+            let _ = crate::receive_bytes();
         }
     }
-}
-
-/// Spawn a child and monitor it, so its death comes back as a `__down`.
-fn start(component: &str) -> Pid {
-    let pid = spawn(component).expect("supervisor child spawns");
-    monitor(pid);
-    pid
-}
-
-/// The pid in a `{"__down":"<pid>","reason":"…"}` message, if that's what `raw` is.
-fn parse_down(raw: &[u8]) -> Option<Pid> {
-    let v: serde_json::Value = serde_json::from_slice(raw).ok()?;
-    v.get("__down")?.as_str()?.parse().ok().map(Pid)
 }
