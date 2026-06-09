@@ -76,6 +76,21 @@ impl Shard {
             None => Shard::RoundRobin,
         }
     }
+
+    /// Route a request/connection to an instance per this policy, reading the shard
+    /// key from `headers` when pinning. Shared by the HTTP and WS resident servers.
+    pub(crate) fn route(&self, pool: &ResidentPool, headers: &hyper::HeaderMap) -> Option<Pid> {
+        match self {
+            Shard::RoundRobin => pool.route(),
+            Shard::Header(name) => {
+                let key = headers
+                    .get(name)
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("");
+                pool.route_keyed(key)
+            }
+        }
+    }
 }
 
 impl ResidentPool {
@@ -287,18 +302,7 @@ impl ResidentHttpServer {
         let (parts, body) = req.into_parts();
 
         // Route: round-robin, or pin by a header value for session affinity.
-        let instance = match &self.shard {
-            Shard::RoundRobin => self.pool.route(),
-            Shard::Header(name) => {
-                let key = parts
-                    .headers
-                    .get(name)
-                    .and_then(|v| v.to_str().ok())
-                    .unwrap_or("");
-                self.pool.route_keyed(key)
-            }
-        };
-        let Some(instance) = instance else {
+        let Some(instance) = self.shard.route(&self.pool, &parts.headers) else {
             return Ok(error_response(
                 StatusCode::SERVICE_UNAVAILABLE,
                 "no resident instance available",

@@ -39,6 +39,73 @@ server** — a sandboxed, supervised process answering requests. Phase 11 delive
 this **standards-first**: a guest exports the standard `wasi:http` handler (or, for
 TS, the familiar `fetch` shape), and RUSM hosts it. The actor world stays opt-in.
 
+## The chosen design: server on the host, handler in one of two shapes
+
+This is the design RUSM commits to. The **server always lives on the host** — hyper
+(HTTP/SSE), `tokio-tungstenite` (WS), all in `rusm-wasm`; the Wasm-free `rusm-otp`
+core never sees them. What varies is the **handler** behind it, and there are exactly
+two shapes, chosen per endpoint by `mode` in `rusm.toml`:
+
+| | **Spawned** — `mode = "per-request"` (default) | **Resident** — `mode = "resident"` |
+|---|---|---|
+| **Lifetime** | a fresh sandboxed instance **per request** (HTTP/SSE) or **per connection** (WS) | one — or a pooled set of — **long-lived** instance(s) serve everything |
+| **State** | none; discarded after the unit (isolation) | **held across requests** in linear memory (counter, cache, sessions, a chat room) |
+| **Faults** | a trap fails just that one request/connection | a crash is **restarted by a supervisor**; the endpoint keeps serving (in-memory state is lost — persist it if it matters) |
+| **Concurrency** | scales ~N×cores in parallel | serialized per instance (one mailbox); scale with `instances = N` (+ optional `shard_by`) |
+| **Elixir analogy** | a fresh process per request | a **GenServer** — a named process owning state; requests are messages |
+| **Use for** | stateless handling, maximal isolation & throughput | stateful services: caches, pub/sub hubs, game/chat rooms, rate limiters |
+
+Both shapes are **sandboxed** (capability profile) and **supervised**, and both work
+identically for **RS and TS** guests — no favoured language. The default is
+`per-request`; opt into `resident` when the handler must remember things between
+requests.
+
+### Resident is *also* faster (when it fits)
+
+A resident handler pays component instantiation **once**, then each request is a
+mailbox round-trip + a small base64 JSON envelope — all on `rusm-otp`'s ~21M-msg/s
+path. The per-request shape pays a fresh `wasi:http` instantiation every request.
+Measured (`http_bench`, one machine, 64 keep-alive clients): a single resident
+instance sustains **~144k req/s** vs **~63k** for per-request `wasi:http` (≈2.3×), at
+≈2.4× lower p50 — within ~1.3× of bare, no-Wasm hyper. The "serialized single
+mailbox" worry is moot for fast handlers (the mailbox isn't the bottleneck); it only
+bites if a handler blocks — which is what the **offload** contract (spawn a worker,
+reply from it) and `instances` / **503** back-pressure are for. So resident isn't a
+slow-but-stateful compromise: for a fast handler it's the faster *and* stateful shape.
+
+> **Reconciles the older note.** "Instance-per-request is optimal" (bottom of this
+> page) is about the *stateless* case — not running a warm pool that would leak state
+> to save ~30µs. Resident is the deliberate choice when you *want* shared state, and
+> it removes the per-request instantiation entirely.
+
+### How a resident handler is wired
+
+The host gateway turns each request/frame into a message on the **existing JSON actor
+wire** and routes it to the resident process; the reply returns over a Wasm-free
+**responder** (HTTP/SSE) or **writer** (WS) process — the same idiom WS already uses —
+so the sandboxed guest never touches a socket. A resident pool is a one-for-one
+**supervised** set of instances addressed by a registry slot name, so a restarted
+instance (a fresh pid) is picked up automatically. `instances = N` shards across the
+pool (round-robin, or `shard_by = "header:<name>"` for session affinity); an
+overloaded or mid-restart instance sheds to **503** (HTTP) / a refused upgrade (WS).
+
+```toml
+# rusm.toml — a stateful resident endpoint, sharded by session, 4 instances
+[[serve]]
+name      = "rooms"
+protocol  = "ws"            # http | sse | ws
+listen    = "127.0.0.1:9000"
+mode      = "resident"      # default is "per-request" (stateless)
+instances = 4               # supervised pool; omit for a singleton
+shard_by  = "header:x-session"  # same session → same instance (omit → round-robin)
+```
+
+Resident guests reuse the SDKs' serving loops — `rusm_rs::http::serve` /
+`rusm_rs::http::serve_sse` / `rusm_rs::ws::serve` (Rust), and the *same*
+`export default { fetch }` / `{ websocket }` a TS dev already writes (it becomes
+stateful purely by running resident). See [Resident handlers](#resident-handlers-stateful)
+below.
+
 ## The model
 
 ```
@@ -228,6 +295,65 @@ export default async function () {
 
 Both guests stay sandboxed (a serving component gets only the capabilities its
 profile grants) and supervised (a crash restarts the handler, never the listener).
+
+## Resident handlers (stateful)
+
+The above are *spawned* (stateless) handlers. A **resident** handler holds state
+across requests; the authoring surface is the same for both languages (no favoured
+guest), and the host wiring is identical — only `mode = "resident"` differs.
+
+**Rust** — implement a small trait with `&mut self` state and `serve` it (no
+`wasi:http`; this is an actor component driving `run`). The
+[`rs-resident-count`](https://github.com/archan937/rusm/tree/main/crates/rusm-wasm/tests/fixtures/rs-resident-count)
+fixture, verbatim:
+
+```rust
+struct Counter { hits: u64 }
+impl rusm_rs::http::Handler for Counter {
+    fn handle(&mut self, _req: rusm_rs::http::Request) -> rusm_rs::http::Response {
+        self.hits += 1;                       // state persists across requests
+        rusm_rs::http::Response::text(format!("hit #{}\n", self.hits))
+    }
+}
+fn run() { rusm_rs::http::serve(Counter { hits: 0 }); }   // never returns
+```
+
+- **SSE**: `rusm_rs::http::serve_sse(|req| events)` — yield the `text/event-stream`
+  event chunks; each rides the byte stream to the client (offload an endless feed to
+  a spawned worker so the instance's loop stays free).
+- **WS**: implement `rusm_rs::ws::Handler` (`open`/`message`/`close`, each taking the
+  connection's `conn` pid) and `rusm_rs::ws::serve(handler)`; reply with
+  `rusm_rs::ws::send(conn, &frame)`. One instance multiplexes every connection — a
+  message from one can broadcast to all (a chat room, [`rs-resident-ws`](https://github.com/archan937/rusm/tree/main/crates/rusm-wasm/tests/fixtures/rs-resident-ws)).
+
+**TypeScript** — the **same** `export default { fetch }` / `{ websocket }` shape; it
+becomes stateful purely by running resident (module-scope state persists). The
+[`ts-resident-*`](https://github.com/archan937/rusm/tree/main/crates/rusm-wasm/tests/fixtures) fixtures:
+
+```ts
+let hits = 0;                                   // module state — persists (resident)
+export default {
+  fetch(_req) { hits++; return new Response(`hit #${hits}\n`); },
+};
+
+// WebSocket chat room — one instance multiplexes every connection:
+const members = [];
+export default {
+  websocket: {
+    open(conn)  { members.push(conn); Process.send(conn, new TextEncoder().encode("welcome")); },
+    message(_c, data) { for (const m of members) Process.send(m, data); },  // broadcast
+    close(conn) { const i = members.indexOf(conn); if (i >= 0) members.splice(i, 1); },
+  },
+};
+```
+
+(SSE is the same `export default { fetch }` returning a `Response(ReadableStream)`;
+resident streams each chunk just like the per-request runner.)
+
+Per-request bodies cross the actor wire as **base64** (compact + binary-safe); SSE
+event chunks ride the raw byte stream. The resident pool is **supervised**: kill an
+instance and the supervisor restarts it, routing picks up the fresh pid, and the
+endpoint keeps serving (with reset state).
 
 ## Benchmarks
 

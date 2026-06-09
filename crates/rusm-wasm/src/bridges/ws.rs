@@ -304,6 +304,14 @@ impl ResidentWsServer {
         self
     }
 
+    /// Refuse the upgrade (503) when the routed instance's mailbox is at least
+    /// `limit` deep (requires a depth-tracking runtime; a no-op otherwise) — the WS
+    /// twin of [`ResidentHttpServer::max_mailbox`](super::resident::ResidentHttpServer::max_mailbox).
+    pub fn max_mailbox(mut self, limit: usize) -> Self {
+        self.pool = self.pool.with_depth_limit(limit);
+        self
+    }
+
     /// Serve WebSockets on `listener` until it closes — one task per connection,
     /// each routed to a resident instance.
     pub async fn serve(self, listener: TcpListener) {
@@ -336,18 +344,7 @@ impl ResidentWsServer {
         };
         // Pin the connection to an instance at connect (sticky for its lifetime):
         // round-robin, or by a handshake header for session affinity.
-        let resident = match &self.shard {
-            Shard::RoundRobin => self.pool.route(),
-            Shard::Header(name) => {
-                let key = req
-                    .headers()
-                    .get(name)
-                    .and_then(|v| v.to_str().ok())
-                    .unwrap_or("");
-                self.pool.route_keyed(key)
-            }
-        };
-        let Some(resident) = resident else {
+        let Some(resident) = self.shard.route(&self.pool, req.headers()) else {
             return Ok(service_unavailable());
         };
         let rt = self.pool.runtime().clone();
