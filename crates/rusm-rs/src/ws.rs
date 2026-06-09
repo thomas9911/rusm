@@ -29,31 +29,17 @@ pub trait Handler {
 /// from a component's `run`.
 pub fn serve<H: Handler>(mut handler: H) -> ! {
     loop {
+        // Binary event from the host gateway: [op: u8][conn: u64 LE][data…] — no
+        // per-frame JSON parse / number-array rebuild.
         let raw = crate::receive_bytes();
-        let Ok(event) = serde_json::from_slice::<serde_json::Value>(&raw) else {
+        if raw.len() < 9 {
             continue;
-        };
-        let conn = event
-            .get("conn")
-            .and_then(|c| c.as_str())
-            .and_then(|s| s.parse().ok())
-            .map(Pid);
-        let Some(conn) = conn else { continue };
-        match event.get("op").and_then(|o| o.as_str()) {
-            Some("open") => handler.open(conn),
-            Some("message") => {
-                let data = event
-                    .get("data")
-                    .and_then(|d| d.as_array())
-                    .map(|a| {
-                        a.iter()
-                            .filter_map(|n| n.as_u64().map(|b| b as u8))
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                handler.message(conn, data);
-            }
-            Some("close") => handler.close(conn),
+        }
+        let conn = Pid(u64::from_le_bytes(raw[1..9].try_into().expect("8-byte conn")));
+        match raw[0] {
+            0 => handler.open(conn),
+            1 => handler.message(conn, raw[9..].to_vec()),
+            2 => handler.close(conn),
             _ => {}
         }
     }

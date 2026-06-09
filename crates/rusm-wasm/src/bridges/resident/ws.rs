@@ -163,34 +163,37 @@ async fn run_resident_connection(
             }
         }
     });
-    let conn = writer.pid().raw().to_string();
+    let conn = writer.pid().raw();
 
-    rt.send(
-        resident,
-        serde_json::to_vec(&serde_json::json!({ "op": "open", "conn": conn }))
-            .expect("envelope serializes"),
-    );
+    rt.send(resident, ws_event(WS_OP_OPEN, conn, &[]));
     while let Some(Ok(message)) = stream.next().await {
         if message.is_close() {
             break;
         }
         if message.is_text() || message.is_binary() {
-            let data = message.into_data().to_vec();
-            rt.send(
-                resident,
-                serde_json::to_vec(
-                    &serde_json::json!({ "op": "message", "conn": conn, "data": data }),
-                )
-                .expect("envelope serializes"),
-            );
+            let data = message.into_data();
+            rt.send(resident, ws_event(WS_OP_MESSAGE, conn, data.as_ref()));
         }
     }
-    rt.send(
-        resident,
-        serde_json::to_vec(&serde_json::json!({ "op": "close", "conn": conn }))
-            .expect("envelope serializes"),
-    );
+    rt.send(resident, ws_event(WS_OP_CLOSE, conn, &[]));
     writer.kill();
+}
+
+// Resident WS event opcodes (the binary wire, host → resident instance).
+const WS_OP_OPEN: u8 = 0;
+const WS_OP_MESSAGE: u8 = 1;
+const WS_OP_CLOSE: u8 = 2;
+
+/// Encode one resident WebSocket event as a compact **binary** frame —
+/// `[op: u8][conn: u64 LE][data…]` — instead of a JSON envelope whose `data` would
+/// serialize as a per-byte number array. The guest reads `conn` and the raw payload
+/// directly (a zero-copy `subarray`), with no per-frame `JSON.parse`/array rebuild.
+fn ws_event(op: u8, conn: u64, data: &[u8]) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(9 + data.len());
+    buf.push(op);
+    buf.extend_from_slice(&conn.to_le_bytes());
+    buf.extend_from_slice(data);
+    buf
 }
 
 #[cfg(test)]

@@ -283,15 +283,16 @@ async function __http_stream_response(req, response, body) {
 async function __rusm_ws_serve(ws) {
   if (!ws) return; // not a websocket handler — nothing to serve
   for (;;) {
-    let text;
-    try { text = await Process.receiveText(); } catch { continue; }
-    let m;
-    try { m = JSON.parse(text); } catch { continue; }
-    if (m.conn == null) continue;
-    const conn = BigInt(m.conn);
-    if (m.op === "open") { if (ws.open) await ws.open(conn); }
-    else if (m.op === "message") { if (ws.message) await ws.message(conn, new Uint8Array(m.data || [])); }
-    else if (m.op === "close") { if (ws.close) await ws.close(conn); }
+    // Binary event from the host gateway: [op: u8][conn: u64 LE][data…]. Read conn
+    // and slice the payload directly — no per-frame JSON.parse or number-array.
+    let buf;
+    try { buf = await Process.receive(); } catch { continue; }
+    if (!buf || buf.length < 9) continue;
+    const op = buf[0];
+    const conn = new DataView(buf.buffer, buf.byteOffset, buf.byteLength).getBigUint64(1, true);
+    if (op === 0) { if (ws.open) await ws.open(conn); }
+    else if (op === 1) { if (ws.message) await ws.message(conn, buf.subarray(9)); }
+    else if (op === 2) { if (ws.close) await ws.close(conn); }
   }
 }
 
