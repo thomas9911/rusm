@@ -114,6 +114,76 @@
   --vp-code-tab-active-bar-color: var(--vp-c-brand-1);
 }
 
+/* ── code-theme switcher ───────────────────────────────────────
+   Every code block bakes all four families as `--shiki-<key>` vars (config.ts). The
+   default (no attribute) is Rosé Pine via VitePress's own `--shiki-light/-dark` rules.
+   `data-code-theme` on <html> remaps the live pair + the block/tab backgrounds. Each
+   override is scoped under `html[data-code-theme=…]` so it out-specifies VitePress. */
+html[data-code-theme='catppuccin']:not(.dark) .vp-code span { color: var(--shiki-catpLight, inherit); }
+html[data-code-theme='catppuccin'].dark .vp-code span { color: var(--shiki-catpDark, inherit); }
+html[data-code-theme='catppuccin'] { --vp-code-block-bg: #eff1f5; --vp-code-tab-bg: #e6e9ef; }
+html[data-code-theme='catppuccin'].dark { --vp-code-block-bg: #1e1e2e; --vp-code-tab-bg: #181825; }
+
+html[data-code-theme='vitesse']:not(.dark) .vp-code span { color: var(--shiki-vitLight, inherit); }
+html[data-code-theme='vitesse'].dark .vp-code span { color: var(--shiki-vitDark, inherit); }
+html[data-code-theme='vitesse'] { --vp-code-block-bg: #ffffff; --vp-code-tab-bg: #f7f7f7; }
+html[data-code-theme='vitesse'].dark { --vp-code-block-bg: #121212; --vp-code-tab-bg: #1a1a1a; }
+
+html[data-code-theme='one']:not(.dark) .vp-code span { color: var(--shiki-oneLight, inherit); }
+html[data-code-theme='one'].dark .vp-code span { color: var(--shiki-oneDark, inherit); }
+html[data-code-theme='one'] { --vp-code-block-bg: #fafafa; --vp-code-tab-bg: #f0f0f0; }
+html[data-code-theme='one'].dark { --vp-code-block-bg: #282c34; --vp-code-tab-bg: #21252b; }
+
+/* the nav-bar control */
+.code-theme {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+.code-theme__btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--vp-c-text-2);
+  background: transparent;
+  transition: color .2s, border-color .2s;
+}
+.code-theme__btn:hover { color: var(--vp-c-text-1); border-color: var(--vp-c-brand-1); }
+.code-theme__dot { width: 10px; height: 10px; border-radius: 50%; box-shadow: 0 0 0 1px var(--vp-c-divider) inset; }
+.code-theme__menu {
+  position: absolute;
+  top: 40px;
+  right: 0;
+  z-index: 100;
+  min-width: 168px;
+  padding: 6px;
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 12px;
+  background: var(--vp-c-bg-elv);
+  box-shadow: var(--vp-shadow-3);
+}
+.code-theme__item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 7px 9px;
+  border-radius: 8px;
+  font-size: 13px;
+  color: var(--vp-c-text-2);
+  transition: background .15s, color .15s;
+}
+.code-theme__item:hover { background: var(--vp-c-bg-soft); color: var(--vp-c-text-1); }
+.code-theme__item.is-active { color: var(--vp-c-brand-1); font-weight: 600; }
+.code-theme__item .code-theme__check { margin-left: auto; opacity: 0; }
+.code-theme__item.is-active .code-theme__check { opacity: 1; }
+
 /* the default home page chrome — neutralise padding since we inject our own home */
 .VPHome { padding-bottom: 0 !important; margin-bottom: 0 !important; }
 
@@ -138,8 +208,13 @@
 }
 .VPMenuGroup .VPMenuLink .link { padding-left: 14px; }
 
-/* sidebar: a level-1 item that contains a sub-list is a category heading */
-.VPSidebarItem.level-1:has(> .items) > .item .text {
+/* sidebar: a level-1 item that contains a sub-list is a category heading. Keep the
+   accent colour even when the group is `has-active` (its current section is on screen),
+   so every category title looks identical — VitePress would otherwise tint the active
+   group's title differently. */
+.VPSidebarItem.level-1:has(> .items) > .item .text,
+.VPSidebarItem.level-1.has-active:has(> .items) > .item .text,
+.VPSidebarItem.level-1.is-active:has(> .items) > .item .text {
   font-family: var(--r-display);
   font-weight: 700;
   font-size: 12px;

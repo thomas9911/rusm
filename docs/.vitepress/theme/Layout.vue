@@ -4,6 +4,7 @@
 import DefaultTheme from 'vitepress/theme'
 import { useData } from 'vitepress'
 import RusmHome from './RusmHome.vue'
+import CodeThemeToggle from './CodeThemeToggle.vue'
 
 const { Layout } = DefaultTheme
 const { frontmatter } = useData()
@@ -13,6 +14,9 @@ const { frontmatter } = useData()
   <Layout>
     <template #home-hero-before>
       <RusmHome v-if="frontmatter.layout === 'home'" />
+    </template>
+    <template #nav-bar-content-after>
+      <CodeThemeToggle />
     </template>
   </Layout>
 </template>

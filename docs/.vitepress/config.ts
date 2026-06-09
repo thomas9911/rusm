@@ -12,7 +12,7 @@ const sections = [
       {
         text: 'Setup',
         items: [
-          { text: 'Overview', link: '/getting-started' },
+          { text: 'Overview', link: '/getting-started#overview' },
           { text: 'Install', link: '/getting-started#install' },
           { text: 'Quick start', link: '/getting-started#quick-start' },
         ],
@@ -185,15 +185,45 @@ export default defineConfig({
   // so every asset/link resolves under the /rusm/ subpath.
   base: '/rusm/',
   cleanUrls: true,
-  // Code uses Rosé Pine — a warm, muted, uncommon palette that sits naturally with
-  // RUSM's copper/cream brand: rose-pine-dawn (light) over a cream canvas, rose-pine-moon
-  // (dark) over muted plum. A true light theme in light mode, its dark sibling in dark.
+  // Four code-theme families, each a light/dark pair, all baked into every code block
+  // as `--shiki-<key>` CSS variables (Shiki multi-theme via `defaultColor:false`). The
+  // `light`/`dark` keys are the default (Rosé Pine — warm, matches the copper/cream
+  // brand); a nav-bar switcher (theme/CodeThemeToggle.vue) flips `data-code-theme` on
+  // <html> to remap which pair is live. Extra themes are registered in `shikiSetup`
+  // (VitePress only auto-loads `light`+`dark`).
   markdown: {
-    theme: { light: 'rose-pine-dawn', dark: 'rose-pine-moon' },
+    theme: {
+      light: 'rose-pine-dawn',
+      dark: 'rose-pine-moon',
+      catpLight: 'catppuccin-latte',
+      catpDark: 'catppuccin-mocha',
+      vitLight: 'vitesse-light',
+      vitDark: 'vitesse-dark',
+      oneLight: 'one-light',
+      oneDark: 'one-dark-pro',
+      // VitePress's type only models { light, dark }; Shiki accepts the full record at
+      // runtime (each key → a `--shiki-<key>` var), so cast past the narrow type.
+    } as any,
+    async shikiSetup(highlighter) {
+      await highlighter.loadTheme(
+        'catppuccin-latte',
+        'catppuccin-mocha',
+        'vitesse-light',
+        'vitesse-dark',
+        'one-light',
+        'one-dark-pro',
+      );
+    },
   },
   // The RUSM theme's fonts (display / base / mono), loaded with preconnect for
   // performance rather than a CSS @import.
   head: [
+    // Restore the saved code-theme before first paint so reloads don't flash the default.
+    [
+      'script',
+      {},
+      "try{var t=localStorage.getItem('rusm-code-theme');if(t)document.documentElement.dataset.codeTheme=t;}catch(e){}",
+    ],
     ['link', { rel: 'preconnect', href: 'https://fonts.googleapis.com' }],
     ['link', { rel: 'preconnect', href: 'https://fonts.gstatic.com', crossorigin: '' }],
     [

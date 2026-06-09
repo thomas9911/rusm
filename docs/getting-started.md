@@ -1,4 +1,4 @@
-# Getting started
+# Getting started {#overview}
 
 This page takes you from a clean machine to running real RUSM processes — first
 the pure-Rust actor core, then hosting WebAssembly, then writing your own
