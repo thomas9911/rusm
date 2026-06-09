@@ -138,6 +138,13 @@ impl Capabilities {
         self
     }
 
+    /// Whether outbound network is permitted — gates the `wasi:http` outgoing
+    /// handler (and thus a guest's `fetch`); default-deny, so a sandboxed guest's
+    /// request is refused at the host.
+    pub(crate) fn network_allowed(&self) -> bool {
+        self.allow_network
+    }
+
     /// Inherits the host's stdio.
     pub fn inherit_stdio(mut self, inherit: bool) -> Self {
         self.inherit_stdio = inherit;

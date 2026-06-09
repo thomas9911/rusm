@@ -18,7 +18,7 @@ use wasmtime_wasi_http::p2::body::HyperOutgoingBody;
 use wasmtime_wasi_http::p2::WasiHttpView;
 use wasmtime_wasi_http::WasiHttpCtx;
 
-use super::WasiHost;
+use super::{HttpCaps, WasiHost};
 use crate::caps::Capabilities;
 use crate::{Spawner, WasmRuntime};
 
@@ -110,6 +110,9 @@ impl HttpServer {
             wasi: self.caps.build_wasi()?,
             table: ResourceTable::new(),
             http: WasiHttpCtx::new(),
+            http_hooks: HttpCaps {
+                allow_network: self.caps.network_allowed(),
+            },
             pid: 0,
             caps: self.caps.clone(),
             rt: self.spawner.rt.clone(),

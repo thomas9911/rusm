@@ -29,3 +29,10 @@ strip = true
 wit-bindgen = "0.46"
 rquickjs = "0.9"
 getrandom = "0.3"
+# Outbound HTTP for the `fetch` polyfill: the battle-proven wasi:http client (same
+# version the serving fixtures use), driven synchronously via its `block_on` — each
+# poll suspends the fiber, like the actor host calls. `http-body-util` streams the
+# response body frame-by-frame (no buffering — token-by-token LLM responses work).
+wstd = "0.6.6"
+http-body-util = "0.1"
+bytes = "1"

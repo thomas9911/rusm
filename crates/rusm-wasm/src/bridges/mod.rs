@@ -19,7 +19,12 @@ use std::sync::Arc;
 use rusm_otp::{Context, Runtime, StreamHandle, StreamWriter};
 use wasmtime::ResourceLimiter;
 use wasmtime_wasi::{ResourceTable, WasiCtx, WasiCtxView, WasiView};
-use wasmtime_wasi_http::p2::{WasiHttpCtxView, WasiHttpView};
+use wasmtime_wasi_http::p2::bindings::http::types::ErrorCode;
+use wasmtime_wasi_http::p2::body::HyperOutgoingBody;
+use wasmtime_wasi_http::p2::types::{HostFutureIncomingResponse, OutgoingRequestConfig};
+use wasmtime_wasi_http::p2::{
+    default_send_request, HttpResult, WasiHttpCtxView, WasiHttpHooks, WasiHttpView,
+};
 use wasmtime_wasi_http::WasiHttpCtx;
 
 use crate::caps::Capabilities;
@@ -36,6 +41,9 @@ pub(crate) struct WasiHost {
     /// `wasi:http` host context, for serving a component as an HTTP handler
     /// (Phase 11). Idle for non-HTTP guests.
     pub(crate) http: WasiHttpCtx,
+    /// Capability gate for *outbound* `wasi:http` (a guest's `fetch`): denies the
+    /// request unless this process was granted network access.
+    pub(crate) http_hooks: HttpCaps,
     /// The owning process's pid (for `own-pid`, `register`, `set-label`).
     pub(crate) pid: u64,
     /// This process's capabilities: the source of truth for its memory ceiling,
@@ -75,8 +83,30 @@ impl WasiHttpView for WasiHost {
         WasiHttpCtxView {
             ctx: &mut self.http,
             table: &mut self.table,
-            hooks: Default::default(),
+            hooks: &mut self.http_hooks,
         }
+    }
+}
+
+/// Capability gate for outbound `wasi:http`: refuses the request at the host unless
+/// the process was granted network access (default-deny). A refused request fails
+/// with `HttpRequestDenied` — the guest's `fetch` rejects cleanly, no host trap.
+pub(crate) struct HttpCaps {
+    pub(crate) allow_network: bool,
+}
+
+impl WasiHttpHooks for HttpCaps {
+    fn send_request(
+        &mut self,
+        request: hyper::Request<HyperOutgoingBody>,
+        config: OutgoingRequestConfig,
+    ) -> HttpResult<HostFutureIncomingResponse> {
+        if !self.allow_network {
+            return Ok(HostFutureIncomingResponse::ready(Ok(Err(
+                ErrorCode::HttpRequestDenied,
+            ))));
+        }
+        Ok(default_send_request(request, config))
     }
 }
 
@@ -114,6 +144,9 @@ mod tests {
             wasi: WasiCtxBuilder::new().build(),
             table: ResourceTable::new(),
             http: WasiHttpCtx::new(),
+            http_hooks: HttpCaps {
+                allow_network: false,
+            },
             pid: 0,
             caps: Capabilities::nothing(),
             rt: Runtime::new(),

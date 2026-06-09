@@ -19,8 +19,13 @@ wit_bindgen::generate!({
     path: "wit",
 });
 
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
+
+use http_body_util::BodyExt;
 use rquickjs::{Ctx, Exception, Function, Promise, TypedArray};
 use rusm::runtime::actor;
+use wstd::http::{Body, Client, Request};
 
 struct Component;
 
@@ -45,6 +50,93 @@ fn js_random_bytes(ctx: Ctx<'_>, len: f64) -> rquickjs::Result<TypedArray<'_, u8
     let mut buf = vec![0u8; len.max(0.0) as usize];
     getrandom::fill(&mut buf).expect("host entropy (wasi:random)");
     TypedArray::new(ctx, buf)
+}
+
+/// A `fetch` response body, streamed to the guest frame-by-frame. `Bytes`/`anyhow`
+/// come via `wstd`; we never buffer the whole body, so a token-by-token LLM response
+/// reaches the guest as it arrives.
+type FetchBody = http_body_util::combinators::UnsyncBoxBody<bytes::Bytes, wstd::http::Error>;
+
+thread_local! {
+    /// Response bodies of in-flight `fetch`es, keyed by the handle handed to JS.
+    static FETCH_BODIES: RefCell<HashMap<u64, FetchBody>> = RefCell::new(HashMap::new());
+    static FETCH_NEXT: Cell<u64> = const { Cell::new(1) };
+}
+
+/// Perform an outbound HTTP request (capability-gated at the host — a sandboxed guest
+/// is refused). Returns the response head as a flat list `[status, handle, k, v, …]`;
+/// the body then streams via `__fetch_read(handle)`. A transport error (incl. a denied
+/// request) throws into JS, so the `fetch()` promise rejects.
+fn js_fetch(
+    ctx: Ctx<'_>,
+    method: String,
+    url: String,
+    headers: String,
+    body: TypedArray<u8>,
+) -> rquickjs::Result<Vec<String>> {
+    let body = body.as_bytes().unwrap_or(&[]).to_vec();
+    let sent = wstd::runtime::block_on(async move {
+        let mut builder = Request::builder().method(method.as_str()).uri(url);
+        for line in headers.split('\n').filter(|l| !l.is_empty()) {
+            if let Some((k, v)) = line.split_once(':') {
+                builder = builder.header(k.trim(), v.trim());
+            }
+        }
+        let req = builder.body(Body::from(body)).map_err(|e| e.to_string())?;
+        Client::new().send(req).await.map_err(|e| e.to_string())
+    });
+    let resp = sent.map_err(|e| Exception::throw_message(&ctx, &e))?;
+
+    let handle = FETCH_NEXT.with(|c| {
+        let h = c.get();
+        c.set(h + 1);
+        h
+    });
+    let mut head = vec![resp.status().as_u16().to_string(), handle.to_string()];
+    for (name, value) in resp.headers() {
+        head.push(name.as_str().to_owned());
+        head.push(value.to_str().unwrap_or_default().to_owned());
+    }
+    FETCH_BODIES.with(|m| {
+        m.borrow_mut()
+            .insert(handle, resp.into_body().into_boxed_body())
+    });
+    Ok(head)
+}
+
+/// Read the next non-empty body chunk of a `fetch` response; `None` at end-of-stream
+/// (the body is then dropped, releasing the connection). Each read suspends the fiber
+/// until a frame arrives — natural back-pressure.
+fn js_fetch_read(ctx: Ctx<'_>, handle: f64) -> rquickjs::Result<Option<TypedArray<'_, u8>>> {
+    let key = handle as u64;
+    let Some(mut body) = FETCH_BODIES.with(|m| m.borrow_mut().remove(&key)) else {
+        return Ok(None);
+    };
+    let chunk = wstd::runtime::block_on(async {
+        loop {
+            match body.frame().await {
+                Some(Ok(frame)) => match frame.into_data() {
+                    Ok(data) if !data.is_empty() => return Some(data),
+                    _ => continue, // empty data or trailers — keep reading
+                },
+                _ => return None, // end-of-stream or transport error
+            }
+        }
+    });
+    match chunk {
+        Some(data) => {
+            FETCH_BODIES.with(|m| m.borrow_mut().insert(key, body));
+            Ok(Some(TypedArray::new(ctx, data.to_vec())?))
+        }
+        None => Ok(None),
+    }
+}
+
+/// Abandon a `fetch` response body (abort / GC), releasing its connection.
+fn js_fetch_close(handle: f64) {
+    FETCH_BODIES.with(|m| {
+        m.borrow_mut().remove(&(handle as u64));
+    });
 }
 // Spawn a registered component by name; a denied/unknown spawn throws into JS
 // (surfacing the host's error message) rather than returning a sentinel.
@@ -142,6 +234,10 @@ impl Guest for Component {
             def!("__print", |s: String| eprintln!("{s}"));
             // Secure randomness for the `crypto` polyfill (webapi.js).
             def!("__random_bytes", js_random_bytes);
+            // Outbound HTTP for the `fetch` polyfill (capability-gated at the host).
+            def!("__fetch", js_fetch);
+            def!("__fetch_read", js_fetch_read);
+            def!("__fetch_close", js_fetch_close);
 
             // Web API polyfills, the raw actor API, then the RPC/service layer.
             let _: () = ctx.eval(WEBAPI_JS).unwrap();

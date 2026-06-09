@@ -19,7 +19,7 @@ use wasmtime::component::{
 use wasmtime::{Engine, ResourceLimiter, Store};
 use wasmtime_wasi::ResourceTable;
 
-use super::WasiHost;
+use super::{HttpCaps, WasiHost};
 use crate::caps::{Capabilities, CapabilityProfile};
 use crate::{Spawner, WasmRuntime};
 
@@ -202,6 +202,9 @@ async fn run(spawner: Arc<Spawner>, prepared: PreparedComponent, caps: Capabilit
         wasi,
         table: ResourceTable::new(),
         http: wasmtime_wasi_http::WasiHttpCtx::new(),
+        http_hooks: HttpCaps {
+            allow_network: caps.network_allowed(),
+        },
         pid: pid.raw(),
         caps,
         rt,
@@ -300,6 +303,9 @@ mod tests {
             wasi: caps.build_wasi().unwrap(),
             table: ResourceTable::new(),
             http: wasmtime_wasi_http::WasiHttpCtx::new(),
+            http_hooks: HttpCaps {
+                allow_network: caps.network_allowed(),
+            },
             pid: 0,
             caps,
             rt: rt.clone(),
@@ -614,6 +620,81 @@ mod tests {
             String::from_utf8(rx.await.unwrap()).unwrap(),
             "true|8|5",
             "crypto.randomUUID is a v4 UUID and getRandomValues fills the array"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn fetch_reaches_a_server_when_granted_and_is_denied_when_sandboxed() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        // A minimal HTTP/1.1 server: answers every connection with a known body.
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 2048];
+                    let _ = stream.read(&mut buf).await; // consume the request head
+                    let body = "hello from server";
+                    let resp = format!(
+                        "HTTP/1.1 200 OK\r\ncontent-type: text/plain\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    let _ = stream.write_all(resp.as_bytes()).await;
+                    let _ = stream.flush().await;
+                });
+            }
+        });
+
+        const BUNDLE: &str = r#"
+            module.exports.default = async function () {
+                const replyTo = await Process.receiveText();
+                try {
+                    const resp = await fetch("__URL__");
+                    const text = await resp.text();
+                    Process.send(replyTo, resp.ok + "|" + resp.status + "|" + text);
+                } catch (e) {
+                    Process.send(replyTo, "ERR:" + ((e && e.message) || e));
+                }
+            };
+        "#;
+        let bundle = BUNDLE.replace("__URL__", &format!("http://{addr}/"));
+
+        let rt = Runtime::new();
+        let wr = WasmRuntime::new(rt.clone()).unwrap();
+
+        // Granted: a NetworkClient guest fetches and reads the streamed body.
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let collector = rt.spawn(move |mut ctx| async move {
+            let _ = tx.send(ctx.recv().await.message().unwrap());
+        });
+        let guest = wr.spawn_js_with(
+            bundle.as_bytes(),
+            CapabilityProfile::NetworkClient.capabilities(),
+        );
+        rt.send(guest.pid(), collector.pid().raw().to_string().into_bytes());
+        assert_eq!(
+            String::from_utf8(rx.await.unwrap()).unwrap(),
+            "true|200|hello from server",
+            "a granted guest's fetch reaches the server and streams the body"
+        );
+
+        // Denied: a sandboxed guest's fetch is refused at the host (default-deny).
+        let (tx2, rx2) = tokio::sync::oneshot::channel();
+        let collector2 = rt.spawn(move |mut ctx| async move {
+            let _ = tx2.send(ctx.recv().await.message().unwrap());
+        });
+        let sandboxed = wr.spawn_js(bundle.as_bytes());
+        rt.send(
+            sandboxed.pid(),
+            collector2.pid().raw().to_string().into_bytes(),
+        );
+        let denied = String::from_utf8(rx2.await.unwrap()).unwrap();
+        assert!(
+            denied.starts_with("ERR:"),
+            "a sandboxed guest's fetch is denied; got: {denied}"
         );
     }
 
