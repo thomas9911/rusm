@@ -15,6 +15,7 @@ const sections = [
     text: 'About RUSM',
     items: [
       { text: 'Why RUSM?', link: '/00-vision' },
+      { text: 'Features', link: '/features' },
       { text: 'RUSM vs Lunatic', link: '/lunatic-comparison' },
       { text: 'How RUSM compares', link: '/comparison' },
       { text: 'Design analysis', link: '/design-analysis' },
@@ -24,20 +25,44 @@ const sections = [
     ],
   },
   {
-    // Ordered by the phase each concept lands in (see the roadmap).
+    // Grouped into categories (see /features for the value-first map). One level of
+    // nesting renders as grouped sections in both the sidebar and the nav dropdown.
     text: 'Concepts',
     items: [
-      { text: 'The process model', link: '/concepts/wasm-instance-as-process' },
-      { text: 'Message passing', link: '/concepts/message-passing' },
-      { text: 'Links & supervision', link: '/concepts/links-and-supervision' },
-      { text: 'Fibers & blocking→async', link: '/concepts/fibers-and-blocking-to-async' },
-      { text: 'Epoch preemption', link: '/concepts/epoch-preemption' },
-      { text: 'Components & the actor world', link: '/concepts/components-and-the-actor-world' },
-      { text: 'Permissions & sandboxing', link: '/concepts/permissions-and-sandboxing' },
-      { text: 'Byte streams', link: '/concepts/byte-streams' },
-      { text: 'The app model', link: '/concepts/app-model' },
-      { text: 'Distributed nodes', link: '/concepts/distributed-nodes' },
-      { text: 'Live attach', link: '/concepts/live-attach' },
+      {
+        text: 'The actor model',
+        items: [
+          { text: 'The process model', link: '/concepts/wasm-instance-as-process' },
+          { text: 'Message passing', link: '/concepts/message-passing' },
+          { text: 'Links & supervision', link: '/concepts/links-and-supervision' },
+          { text: 'Fibers & blocking→async', link: '/concepts/fibers-and-blocking-to-async' },
+          { text: 'Epoch preemption', link: '/concepts/epoch-preemption' },
+          { text: 'Process management', link: '/concepts/process-management' },
+        ],
+      },
+      {
+        text: 'WebAssembly & safety',
+        items: [
+          { text: 'Components & the actor world', link: '/concepts/components-and-the-actor-world' },
+          { text: 'Permissions & sandboxing', link: '/concepts/permissions-and-sandboxing' },
+          { text: 'Guests: Rust & TypeScript', link: '/concepts/guests-rust-and-typescript' },
+        ],
+      },
+      {
+        text: 'Serving & streaming',
+        items: [
+          { text: 'The serving model', link: '/concepts/serving-model' },
+          { text: 'Byte streams', link: '/concepts/byte-streams' },
+        ],
+      },
+      {
+        text: 'Apps & clusters',
+        items: [
+          { text: 'The app model', link: '/concepts/app-model' },
+          { text: 'Distributed nodes', link: '/concepts/distributed-nodes' },
+          { text: 'Live attach', link: '/concepts/live-attach' },
+        ],
+      },
     ],
   },
   {
