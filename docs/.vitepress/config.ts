@@ -14,14 +14,29 @@ const sections = [
   {
     text: 'About RUSM',
     items: [
-      { text: 'Why RUSM?', link: '/00-vision' },
-      { text: 'Features', link: '/features' },
-      { text: 'RUSM vs Lunatic', link: '/lunatic-comparison' },
-      { text: 'How RUSM compares', link: '/comparison' },
-      { text: 'Design analysis', link: '/design-analysis' },
-      { text: 'Architecture', link: '/01-architecture' },
-      { text: 'Roadmap', link: '/02-roadmap' },
-      { text: 'Development', link: '/06-development' },
+      {
+        text: 'Overview',
+        items: [
+          { text: 'Why RUSM?', link: '/00-vision' },
+          { text: 'Features', link: '/features' },
+        ],
+      },
+      {
+        text: 'Comparisons',
+        items: [
+          { text: 'RUSM vs Lunatic', link: '/lunatic-comparison' },
+          { text: 'How RUSM compares', link: '/comparison' },
+          { text: 'Design analysis', link: '/design-analysis' },
+        ],
+      },
+      {
+        text: 'The project',
+        items: [
+          { text: 'Architecture', link: '/01-architecture' },
+          { text: 'Roadmap', link: '/02-roadmap' },
+          { text: 'Development', link: '/06-development' },
+        ],
+      },
     ],
   },
   {
@@ -68,11 +83,21 @@ const sections = [
   {
     text: 'Reference',
     items: [
-      { text: 'Benchmark & dashboard', link: '/03-benchmark-dashboard' },
-      { text: 'Host ABI', link: '/05-host-abi' },
-      { text: 'Distributed model', link: '/04-distributed-model' },
-      { text: 'Serving HTTP/WS/SSE (design)', link: '/serving-http-ws-sse' },
-      { text: 'Glossary', link: '/07-glossary' },
+      {
+        text: 'APIs & models',
+        items: [
+          { text: 'Host ABI', link: '/05-host-abi' },
+          { text: 'Distributed model', link: '/04-distributed-model' },
+          { text: 'Serving HTTP/WS/SSE', link: '/serving-http-ws-sse' },
+        ],
+      },
+      {
+        text: 'Tools & appendix',
+        items: [
+          { text: 'Benchmark & dashboard', link: '/03-benchmark-dashboard' },
+          { text: 'Glossary', link: '/07-glossary' },
+        ],
+      },
     ],
   },
   {

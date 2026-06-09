@@ -98,3 +98,36 @@
 /* let the search kbd shortcut + buttons inherit the palette nicely */
 .DocSearch-Button { border-radius: 9px; }
 :root { --vp-local-search-bg: var(--vp-c-bg-alt); }
+
+/* ── categorised sections: nav dropdown + sidebar ──────────────
+   Any section whose items are grouped (Concepts, About RUSM, Reference) gets the
+   same treatment: category labels stand out (display font, accent colour, small
+   uppercase) and the pages indent beneath them with a guide line. */
+
+/* nav flyout dropdowns: group titles + indented links */
+.VPMenuGroup .title {
+  font-family: var(--r-display);
+  font-weight: 700;
+  font-size: 11px;
+  letter-spacing: .05em;
+  text-transform: uppercase;
+  color: var(--vp-c-brand-1);
+  opacity: 1;
+}
+.VPMenuGroup .VPMenuLink .link { padding-left: 14px; }
+
+/* sidebar: a level-1 item that contains a sub-list is a category heading */
+.VPSidebarItem.level-1:has(> .items) > .item .text {
+  font-family: var(--r-display);
+  font-weight: 700;
+  font-size: 12px;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: var(--vp-c-brand-1);
+}
+/* indent + a guide line for the pages under each category */
+.VPSidebarItem.level-1:has(> .items) > .items {
+  margin-left: 10px;
+  padding-left: 8px;
+  border-left: 1px solid var(--vp-c-divider);
+}
