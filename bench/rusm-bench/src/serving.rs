@@ -37,7 +37,9 @@ const RS_HTTP: &[u8] =
 const TS_HTTP: &str = include_str!("../../../crates/rusm-wasm/tests/fixtures/ts_resident_count.js");
 const RS_WS: &[u8] =
     include_bytes!("../../../crates/rusm-wasm/tests/fixtures/rs_resident_ws_echo.wasm");
-const TS_WS: &str = include_str!("../../../crates/rusm-wasm/tests/fixtures/ts_resident_ws.js");
+// The TS **echo** handler (matches the RS echo: one send per frame), not the
+// broadcast chat room — so ws-echo-ts measures the same O(N) workload as ws-echo.
+const TS_WS: &str = include_str!("../../../crates/rusm-wasm/tests/fixtures/ts_resident_ws_echo.js");
 const RS_SSE: &[u8] =
     include_bytes!("../../../crates/rusm-wasm/tests/fixtures/rs_resident_sse.wasm");
 const TS_SSE: &str = include_str!("../../../crates/rusm-wasm/tests/fixtures/ts_resident_sse.js");
