@@ -260,6 +260,30 @@
     G.clearTimeout = (t) => cancelled.add(t);
   }
 
+  // crypto: secure randomness from the host (wasi:random), enough for the two members
+  // the web ecosystem (uuid/nanoid, ai-sdk) hard-depends on — getRandomValues + a v4
+  // randomUUID.
+  if (!G.crypto) {
+    G.crypto = {
+      getRandomValues(view) {
+        const bytes = __random_bytes(view.byteLength);
+        new Uint8Array(view.buffer, view.byteOffset, view.byteLength).set(bytes);
+        return view;
+      },
+      randomUUID() {
+        const b = __random_bytes(16);
+        b[6] = (b[6] & 0x0f) | 0x40; // version 4
+        b[8] = (b[8] & 0x3f) | 0x80; // variant 10x
+        let s = "";
+        for (let i = 0; i < 16; i++) {
+          if (i === 4 || i === 6 || i === 8 || i === 10) s += "-";
+          s += b[i].toString(16).padStart(2, "0");
+        }
+        return s;
+      },
+    };
+  }
+
   // fetch needs RUSM to host wasi:http (roadmap). Fail clearly until then.
   def("fetch", () =>
     Promise.reject(new Error("fetch() is unavailable: RUSM does not host wasi:http yet (roadmap)")));

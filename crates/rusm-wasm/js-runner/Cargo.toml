@@ -28,3 +28,4 @@ strip = true
 [dependencies]
 wit-bindgen = "0.46"
 rquickjs = "0.9"
+getrandom = "0.3"

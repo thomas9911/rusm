@@ -590,6 +590,34 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_javascript_bundle_has_crypto() {
+        // `crypto.getRandomValues` + `randomUUID` (backed by host wasi:random) work in
+        // a *sandboxed* guest — the entropy ecosystem (uuid/nanoid, ai-sdk) depends on.
+        const BUNDLE: &str = r#"
+            module.exports.default = async function () {
+                const replyTo = await Process.receiveText();
+                const u = crypto.randomUUID();
+                const arr = crypto.getRandomValues(new Uint8Array(8));
+                const v4 = u.length === 36 && u[14] === "4" && "89ab".includes(u[19]);
+                Process.send(replyTo, `${v4}|${arr.length}|${u.split("-").length}`);
+            };
+        "#;
+        let rt = Runtime::new();
+        let wr = WasmRuntime::new(rt.clone()).unwrap();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let collector = rt.spawn(move |mut ctx| async move {
+            let _ = tx.send(ctx.recv().await.message().unwrap());
+        });
+        let guest = wr.spawn_js(BUNDLE.as_bytes());
+        rt.send(guest.pid(), collector.pid().raw().to_string().into_bytes());
+        assert_eq!(
+            String::from_utf8(rx.await.unwrap()).unwrap(),
+            "true|8|5",
+            "crypto.randomUUID is a v4 UUID and getRandomValues fills the array"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_javascript_bundle_handles_binary_messages() {
         // JS receives a reply-to (text) and a binary message (Uint8Array), then
         // echoes the bytes back — proving binary marshalling both ways.

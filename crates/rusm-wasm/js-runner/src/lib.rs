@@ -39,6 +39,13 @@ fn js_stream_write(h: f64, data: TypedArray<u8>) -> bool {
 fn js_stream_read(ctx: Ctx<'_>, h: f64) -> Option<TypedArray<'_, u8>> {
     actor::stream_read(h as u64).map(|b| TypedArray::new(ctx, b).unwrap())
 }
+// Cryptographically-secure random bytes from the host (wasi:random) — the basis for
+// the `crypto.getRandomValues` / `randomUUID` polyfill the web ecosystem assumes.
+fn js_random_bytes(ctx: Ctx<'_>, len: f64) -> rquickjs::Result<TypedArray<'_, u8>> {
+    let mut buf = vec![0u8; len.max(0.0) as usize];
+    getrandom::fill(&mut buf).expect("host entropy (wasi:random)");
+    TypedArray::new(ctx, buf)
+}
 // Spawn a registered component by name; a denied/unknown spawn throws into JS
 // (surfacing the host's error message) rather than returning a sentinel.
 fn js_spawn(ctx: Ctx<'_>, name: String) -> rquickjs::Result<String> {
@@ -133,6 +140,8 @@ impl Guest for Component {
             // console output → WASI stderr (shown only if the `inherit_stdio`
             // capability is granted; discarded for a sandboxed guest).
             def!("__print", |s: String| eprintln!("{s}"));
+            // Secure randomness for the `crypto` polyfill (webapi.js).
+            def!("__random_bytes", js_random_bytes);
 
             // Web API polyfills, the raw actor API, then the RPC/service layer.
             let _: () = ctx.eval(WEBAPI_JS).unwrap();
