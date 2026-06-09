@@ -42,11 +42,12 @@ export interface ProcessApi {
 /** The result of a typed call: `await` it for the reply, or `for await` it to
  *  stream a generator handler's chunks. Function arguments become callbacks that
  *  stay in the caller — the service's invocations travel back as messages. */
-export type RusmCall<R> = R extends AsyncIterable<infer T>
-  ? AsyncIterable<T> & PromiseLike<void>
-  : R extends Iterable<infer T>
+export type RusmCall<R> =
+  R extends AsyncIterable<infer T>
     ? AsyncIterable<T> & PromiseLike<void>
-    : Promise<Awaited<R>>;
+    : R extends Iterable<infer T>
+      ? AsyncIterable<T> & PromiseLike<void>
+      : Promise<Awaited<R>>;
 
 /** A typed client over a spawned service: each exported function becomes a call
  *  (`await`) — or a stream (`for await`); `cast` is fire-and-forget. */
@@ -56,7 +57,9 @@ export type ServiceClient<T> = {
     : never;
 } & {
   readonly cast: {
-    [K in keyof T]: T[K] extends (...args: infer A) => any ? (...args: A) => void : never;
+    [K in keyof T]: T[K] extends (...args: infer A) => any
+      ? (...args: A) => void
+      : never;
   };
   readonly pid: bigint;
   stop(): void;
@@ -99,4 +102,46 @@ export const spawn = <T = Record<string, (...args: any[]) => any>>(
 
 /** Run a **supervisor**: spawn + monitor the given child components and restart
  *  them per the strategy when one dies. `await` it as your worker's body. */
-export const supervise = (opts: SupervisorOptions): Promise<void> => g.supervise(opts);
+export const supervise = (opts: SupervisorOptions): Promise<void> =>
+  g.supervise(opts);
+
+/** One live WebSocket connection. Reply to it with {@link Socket.send}; `id` is its
+ *  writer pid, should you want to address it directly (e.g. a registry of peers). */
+export interface Socket {
+  readonly id: bigint;
+  /** Send one frame back to this connection (a string is sent as UTF-8). */
+  send(data: string | Uint8Array): void;
+}
+
+/** Per-connection WebSocket handlers — the clean shape behind {@link websocket}. */
+export interface WebSocketHandlers {
+  /** A connection opened. */
+  open?(socket: Socket): void;
+  /** One inbound frame from a connection. */
+  message(socket: Socket, data: Uint8Array): void;
+  /** A connection closed. */
+  close?(socket: Socket): void;
+}
+
+/** Build a WebSocket component from per-connection handlers — no pids, no message
+ *  plumbing. Each connection is a {@link Socket} you reply to with `socket.send(…)`.
+ *  Export the result as the component's default:
+ *
+ *  ```ts
+ *  export default websocket({ message: (s, data) => s.send(data) }); // echo
+ *  ```
+ */
+export const websocket = (handlers: WebSocketHandlers) => {
+  const socket = (id: bigint): Socket => ({
+    id,
+    send: (data) => Process.send(id, data),
+  });
+  return {
+    websocket: {
+      open: (conn: bigint) => handlers.open?.(socket(conn)),
+      message: (conn: bigint, data: Uint8Array) =>
+        handlers.message(socket(conn), data),
+      close: (conn: bigint) => handlers.close?.(socket(conn)),
+    },
+  };
+};

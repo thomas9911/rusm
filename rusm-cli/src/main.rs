@@ -5,8 +5,8 @@ use anyhow::{anyhow, Context};
 use futures_util::{SinkExt, StreamExt};
 use rusm_bench::{serve, ClientCommand, Node, NodeConfig, ResourceProfile};
 use rusm_cli::{
-    normalize_target, parse, render_message, scaffold, serve_apps, spawn_components, ReplInput,
-    DEFAULT_HOST, HELP,
+    normalize_target, parse, parse_new_args, render_message, scaffold, serve_apps,
+    spawn_components, Protocol, ReplInput, DEFAULT_HOST, HELP,
 };
 use rusm_otp::Runtime;
 use rusm_wasm::WasmRuntime;
@@ -56,23 +56,29 @@ async fn main() {
             std::process::exit(1);
         }
     } else if command == Some("new") {
-        // Scaffold a new RUSM app in ./<name>.
-        match subcommand {
-            Some(name) => match scaffold(Path::new("."), name) {
+        // Scaffold a new RUSM app in ./<name> (language/protocol via flags).
+        match parse_new_args(&args[2..]) {
+            Ok(app) => match scaffold(Path::new("."), &app) {
                 Ok(_) => {
-                    println!("created {name}/");
+                    let probe = match app.protocol {
+                        Protocol::Http => "curl http://127.0.0.1:8080/",
+                        Protocol::Sse => "curl -N http://127.0.0.1:8080/",
+                        Protocol::Ws => "websocat ws://127.0.0.1:8080/",
+                    };
+                    println!("created {}/", app.name);
                     println!("\nnext:");
-                    println!("  cd {name}");
-                    println!("  rusm build      # bundle components/ -> wasm/");
+                    println!("  cd {}", app.name);
+                    println!("  rusm build      # compile components/ -> wasm/");
                     println!("  rusm serve      # http://127.0.0.1:8080");
+                    println!("  {probe}");
                 }
                 Err(error) => {
                     eprintln!("new failed: {error}");
                     std::process::exit(1);
                 }
             },
-            None => {
-                eprintln!("usage: rusm new <name>");
+            Err(error) => {
+                eprintln!("{error}");
                 std::process::exit(2);
             }
         }

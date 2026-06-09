@@ -14,17 +14,36 @@ rusm attach        # live REPL into a running node
 Config comes from `rusm.toml` (see **[configuration](./reference-configuration)**);
 the commands that start a node also accept the flags in the last section.
 
-## `rusm new <name>`
+## `rusm new <name> [--rust] [--protocol http|sse|ws]`
 
-Scaffold a new app in `./<name>` — a zero-dependency TypeScript HTTP component, a
-`rusm.toml` with a `[[serve]]` entry, `.gitignore`, and a README. From nothing to a
-live server in three commands.
+Scaffold a new app in `./<name>` — a component, a `rusm.toml` with a `[[serve]]`
+entry, `.gitignore`, and a README. From nothing to a live server in three commands.
 
 ```sh
 rusm new hello && cd hello
 rusm build
 rusm serve              # → http://127.0.0.1:8080
 ```
+
+Pick the **language** and **protocol** — a 2×3 matrix, all generating *pure handler
+code* (no `wit-bindgen`/`export!`, no `Process` frame plumbing):
+
+| Flag | Default | Choices |
+| --- | --- | --- |
+| `--rust` / `--lang <ts\|rust>` | TypeScript | `ts`, `rust` |
+| `--protocol <p>` / `-p <p>` | `http` | `http`, `sse`, `ws` |
+
+```sh
+rusm new chat --protocol ws            # a TypeScript WebSocket echo
+rusm new feed --protocol sse           # a TypeScript SSE stream
+rusm new api  --rust                   # a Rust HTTP handler
+rusm new api  --rust --protocol ws     # a Rust WebSocket handler
+```
+
+A **Rust** component is a `Handler` + `#[rusm_rs::main]` (the macro hides the world,
+`Guest`, and `export!` — no `wit/` dir). A **TypeScript** HTTP/SSE component is a
+zero-dependency web-standard `export default (request) => Response`; **WS** uses the
+`rusm` package's `websocket({ message })` helper.
 
 ## `rusm build`
 

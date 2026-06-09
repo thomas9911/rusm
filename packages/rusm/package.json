@@ -1,1 +1,1 @@
-{ "name": "rusm", "version": "0.1.0", "type": "module", "main": "index.ts", "types": "index.ts", "exports": { ".": "./index.ts" } }
+{ "name": "rusm", "version": "0.1.0", "type": "module", "main": "index.ts", "types": "index.ts", "exports": { ".": "./index.ts" }, "files": ["index.ts", "README.md"] }

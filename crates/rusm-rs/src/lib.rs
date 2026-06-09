@@ -25,7 +25,7 @@ use rusm::runtime::actor;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
-pub use rusm_rs_macros::service;
+pub use rusm_rs_macros::{main, service};
 pub use serde;
 pub use serde_json;
 
