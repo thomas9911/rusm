@@ -16,6 +16,9 @@ path = "src/main.rs"
 rusm-bench = { path = "../bench/rusm-bench" }
 rusm-otp = { path = "../crates/rusm-otp" }
 rusm-wasm = { path = "../crates/rusm-wasm" }
+# Build-time QuickJS bytecode compiler (version-locked to the js-runner) so
+# `rusm build` precompiles each TS bundle → wasm/<name>.qjsbc.
+rusm-jsc = { path = "../crates/rusm-jsc" }
 anyhow = { workspace = true }
 dotenvy = "0.15"
 tokio = { version = "1.52.3", features = ["rt-multi-thread", "macros", "io-std", "io-util", "signal"] }

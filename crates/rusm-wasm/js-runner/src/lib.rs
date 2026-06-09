@@ -57,8 +57,10 @@ const RPC_JS: &str = include_str!("../bridge/rpc.js");
 
 impl Guest for Component {
     fn run() {
-        // First message is the JS bundle to run.
-        let bundle = String::from_utf8(actor::receive()).unwrap_or_default();
+        // First message is the JS bundle: either raw JS source, or `rusm-jsc`
+        // precompiled QuickJS bytecode (prefixed with the `QJSB` magic). Kept as raw
+        // bytes so bytecode (not UTF-8) survives.
+        let bundle_bytes = actor::receive();
 
         let rt = rquickjs::Runtime::new().unwrap();
         let context = rquickjs::Context::full(&rt).unwrap();
@@ -141,15 +143,30 @@ impl Guest for Component {
             let _: () = ctx
                 .eval("globalThis.module={exports:{}};globalThis.exports=module.exports;")
                 .unwrap();
-            // The user's bundle, in a CommonJS module scope: wrapping it in a
-            // function keeps its top-level `var`s (e.g. a bundled `var spawn` from
-            // the `rusm` package) out of the global object, where a classic eval
-            // would leak them and clobber the runner's globals (Process/spawn/…).
-            // A bare script runs now; a service/worker registers its exports for
-            // __rusm_entry to drive.
-            let wrapped =
-                format!("(function(module,exports){{\n{bundle}\n}})(globalThis.module,globalThis.module.exports);");
-            let _: () = ctx.eval(wrapped).unwrap();
+            // The user's bundle, in a CommonJS module scope. Wrapping in a function
+            // keeps its top-level `var`s (e.g. a bundled `var spawn`) out of the
+            // global object, where a classic eval would leak them and clobber the
+            // runner's globals (Process/spawn/…). A bare script runs now; a
+            // service/worker registers its exports for __rusm_entry to drive.
+            //
+            // Two delivery forms: precompiled **bytecode** (`QJSB` magic — skip the
+            // parser, load the module + eval; the IIFE wrapper was applied at build
+            // time by `rusm-jsc`), or raw **source** (wrap + eval as before). Both end
+            // up populating `globalThis.module.exports` identically.
+            const BYTECODE_MAGIC: &[u8] = b"QJSB";
+            if let Some(bytecode) = bundle_bytes.strip_prefix(BYTECODE_MAGIC) {
+                // SAFETY: bytecode is produced by `rusm-jsc` with the same rquickjs
+                // version (0.9.0) the runner embeds; it is a valid module object.
+                let module = unsafe { rquickjs::Module::load(ctx.clone(), bytecode) }.unwrap();
+                let (_m, promise) = module.eval().unwrap();
+                let _ = promise.finish::<()>();
+            } else {
+                let bundle = String::from_utf8(bundle_bytes).unwrap_or_default();
+                let wrapped = format!(
+                    "(function(module,exports){{\n{bundle}\n}})(globalThis.module,globalThis.module.exports);"
+                );
+                let _: () = ctx.eval(wrapped).unwrap();
+            }
             // The host sets a serving role (e.g. "http") via the `RUSM_SERVE_ROLE`
             // env capability for a resident server; `__rusm_entry` reads it to pick
             // the serving loop. Absent for ordinary services/workers.

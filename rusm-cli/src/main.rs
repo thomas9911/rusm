@@ -348,16 +348,39 @@ fn ts_entrypoint(crate_dir: &Path) -> Option<std::path::PathBuf> {
 /// form (`--format=cjs`) so the runner sees its `export`s on `module.exports` — a
 /// service component's functions, or a worker's `export default`. Targets `browser`
 /// (no node/bun globals assumed); a bare script with no exports just runs.
+///
+/// Then **precompiles** the bundle to QuickJS bytecode → `wasm/<name>.qjsbc`
+/// (version-locked to the js-runner via `rusm-jsc`), so the runner skips parsing at
+/// load. The loader prefers the `.qjsbc`; the `.js` stays for debugging.
 fn build_ts_component(entry: &Path, name: &str, wasm_dir: &Path) -> anyhow::Result<()> {
     let dest = wasm_dir.join(format!("{name}.js"));
     let status = Command::new("bun")
-        .args(["build", "--target=browser", "--format=cjs", "--outfile"])
+        .args([
+            "build",
+            "--target=browser",
+            "--format=cjs",
+            "--minify",
+            "--outfile",
+        ])
         .arg(&dest)
         .arg(entry)
         .status()
         .with_context(|| "running bun (is Bun installed? https://bun.sh)")?;
     if !status.success() {
         return Err(anyhow!("`bun build` failed for component `{name}`"));
+    }
+    // Precompile to QuickJS bytecode (skip the parser at runtime). A compile error
+    // here is non-fatal: drop the stale .qjsbc so the loader falls back to source.
+    let source = std::fs::read_to_string(&dest)
+        .with_context(|| format!("reading bundled {}", dest.display()))?;
+    let bc_path = wasm_dir.join(format!("{name}.qjsbc"));
+    match rusm_jsc::compile(&source) {
+        Ok(bytecode) => std::fs::write(&bc_path, bytecode)
+            .with_context(|| format!("writing {}", bc_path.display()))?,
+        Err(error) => {
+            eprintln!("warning: bytecode precompile failed for `{name}` ({error}); using source");
+            let _ = std::fs::remove_file(&bc_path);
+        }
     }
     Ok(())
 }

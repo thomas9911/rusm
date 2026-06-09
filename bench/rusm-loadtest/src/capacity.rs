@@ -258,7 +258,6 @@ async fn sse_connection(shared: Arc<Shared>, url: String, lat_tx: UnboundedSende
     let client = reqwest::Client::new();
     shared.alive.fetch_add(1, Ordering::Relaxed);
     let mut n = 0u64;
-    let mut last_event = Instant::now();
     while !shared.stop.load(Ordering::Relaxed) {
         let Ok(resp) = client.get(&url).send().await else {
             tokio::time::sleep(Duration::from_millis(5)).await;
@@ -266,9 +265,8 @@ async fn sse_connection(shared: Arc<Shared>, url: String, lat_tx: UnboundedSende
         };
         let mut stream = resp.bytes_stream();
         let mut prev_newline = false;
-        // Reset the clock per connection so a reconnect gap isn't mis-sampled as an
-        // inter-event latency.
-        last_event = Instant::now();
+        // Per connection, so a reconnect gap isn't mis-sampled as inter-event latency.
+        let mut last_event = Instant::now();
         while !shared.stop.load(Ordering::Relaxed) {
             let Some(Ok(chunk)) = stream.next().await else {
                 break; // stream ended (finite resident burst) → reconnect

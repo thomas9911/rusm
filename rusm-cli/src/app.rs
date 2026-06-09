@@ -51,11 +51,15 @@ pub fn spawn_components(
     let mut handles = Vec::with_capacity(specs.len());
     for spec in specs {
         let caps = capabilities_for(&spec.capability, profiles);
+        // TypeScript component: prefer the precompiled QuickJS bytecode
+        // (`<name>.qjsbc`, no runtime parse) and fall back to the `.js` source. Both
+        // run on the shared js-runner, which detects the form by its magic prefix.
+        let bc_path = wasm_dir.join(format!("{}.qjsbc", spec.name));
         let js_path = wasm_dir.join(format!("{}.js", spec.name));
-        let handle = if js_path.is_file() {
-            // TypeScript component: a Bun-built bundle run on the shared js-runner.
-            let bundle = std::fs::read(&js_path)
-                .with_context(|| format!("reading {}", js_path.display()))?;
+        let bundle_path = [bc_path, js_path].into_iter().find(|p| p.is_file());
+        let handle = if let Some(path) = bundle_path {
+            let bundle =
+                std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
             // Register by name so a running sibling may `spawn` it as a TS service.
             wasm.register_js_component(spec.name.clone(), bundle.clone());
             wasm.spawn_js_with(bundle, caps)

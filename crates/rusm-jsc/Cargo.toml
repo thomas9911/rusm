@@ -1,0 +1,16 @@
+[package]
+name = "rusm-jsc"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Build-time QuickJS bytecode compiler for RUSM TS bundles (version-locked to the js-runner's rquickjs)."
+
+[dependencies]
+# EXACT pin: bytecode is version-locked, and this must match the js-runner's engine
+# (crates/rusm-wasm/js-runner uses rquickjs 0.9.0) byte-for-byte. Default features
+# = same bundled quickjs-ng as the runner → portable bytecode (LE, target-independent).
+rquickjs = "=0.9.0"
+anyhow = { workspace = true }

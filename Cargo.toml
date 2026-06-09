@@ -11,6 +11,7 @@ members = [
     "crates/rusm-wasm",
     "crates/rusm-wire",
     "crates/rusm-cluster",
+    "crates/rusm-jsc",
     "crates/rusm-metrics",
     "crates/rusm-observer",
     "bench/rusm-bench",
