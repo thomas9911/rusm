@@ -139,6 +139,7 @@ html[data-code-theme='one'].dark { --vp-code-block-bg: #282c34; --vp-code-tab-bg
   position: relative;
   display: flex;
   align-items: center;
+  margin-left: 12px;
 }
 .code-theme__btn {
   display: flex;
