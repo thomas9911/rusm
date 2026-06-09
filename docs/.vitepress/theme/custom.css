@@ -92,6 +92,20 @@
 .VPNavBarTitle .title { font-family: var(--r-display); font-weight: 800; letter-spacing: -.02em; }
 .vp-doc h1, .vp-doc h2, .vp-doc h3, .vp-doc h4 { font-family: var(--r-display); letter-spacing: -.02em; }
 
+/* code blocks wear the Dracula background (#282a36) in both modes, so the
+   dracula/dracula-soft token colours sit on their native canvas rather than the warm
+   site palette. The window-dot title bar gets a slightly deeper shade. */
+:root,
+.dark {
+  --vp-code-block-bg: #282a36;
+  --vp-code-tab-bg: #21222c;
+  --vp-code-tab-divider: rgba(255, 255, 255, .08);
+  --vp-code-tab-text-color: #b9bcca;
+  --vp-code-tab-active-text-color: #f8f8f2;
+  --vp-code-tab-hover-text-color: #f8f8f2;
+  --vp-code-tab-active-bar-color: var(--vp-c-brand-1);
+}
+
 /* the default home page chrome — neutralise padding since we inject our own home */
 .VPHome { padding-bottom: 0 !important; margin-bottom: 0 !important; }
 
