@@ -132,12 +132,11 @@
   border-left: 1px solid var(--vp-c-divider);
 }
 
-/* the active page: an accent left-bar + a small indent + soft tint, so where you
-   are stands out (the bar sits just inside the category guide line). */
-.VPSidebarItem.is-active > .item {
+/* active page in the nav dropdown: an accent left-bar (sidebar keeps its default
+   active styling — the bar belongs in the flyout menu). The base group links are
+   padded 14px, so 12px + a 2px bar keeps them aligned. */
+.VPMenu .VPMenuLink .link.active,
+.VPMenu .VPMenuLink a.active {
   border-left: 2px solid var(--vp-c-brand-1);
-  margin-left: -1px;
   padding-left: 12px;
-  background: var(--vp-c-brand-soft);
-  border-radius: 0 4px 4px 0;
 }

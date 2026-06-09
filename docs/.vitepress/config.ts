@@ -84,6 +84,13 @@ const sections = [
     text: 'Reference',
     items: [
       {
+        text: 'CLI & configuration',
+        items: [
+          { text: 'The rusm CLI', link: '/reference-cli' },
+          { text: 'Configuration', link: '/reference-configuration' },
+        ],
+      },
+      {
         text: 'APIs & models',
         items: [
           { text: 'Host ABI', link: '/05-host-abi' },
