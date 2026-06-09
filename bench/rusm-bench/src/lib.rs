@@ -24,7 +24,7 @@ mod streampipe;
 mod synthetic;
 
 pub use config::{
-    CapabilitySpec, ComponentSpec, NodeConfig, PreopenSpec, ServeProtocol, ServeSpec,
+    CapabilitySpec, ComponentSpec, NodeConfig, PreopenSpec, ServeMode, ServeProtocol, ServeSpec,
 };
 pub use profile::{ResourceProfile, ResourceProfileMeta};
 pub use protocol::{ClientCommand, Frame, ServerMessage};

@@ -26,7 +26,7 @@ use tokio_tungstenite::tungstenite::protocol::Role;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::WebSocketStream;
 
-use crate::bridges::resident::ResidentPool;
+use crate::bridges::resident::{ResidentPool, Shard};
 use crate::caps::Capabilities;
 use crate::{PreparedComponent, Spawner, WasmRuntime};
 
@@ -251,6 +251,7 @@ impl WsServer {
 #[derive(Clone)]
 pub struct ResidentWsServer {
     pool: ResidentPool,
+    shard: Shard,
 }
 
 impl WasmRuntime {
@@ -266,6 +267,7 @@ impl WasmRuntime {
     ) -> ResidentWsServer {
         ResidentWsServer {
             pool: ResidentPool::spawn(&self.spawner, prepared.clone(), caps, None, instances),
+            shard: Shard::RoundRobin,
         }
     }
 
@@ -289,11 +291,19 @@ impl WasmRuntime {
                 Some(bundle),
                 instances,
             ),
+            shard: Shard::RoundRobin,
         }
     }
 }
 
 impl ResidentWsServer {
+    /// Route connections by a `shard_by` spec (`"header:<name>"` → handshake-header
+    /// affinity; `None` → round-robin) so same-key connections land on one instance.
+    pub fn shard_by(mut self, spec: Option<&str>) -> Self {
+        self.shard = Shard::parse(spec);
+        self
+    }
+
     /// Serve WebSockets on `listener` until it closes — one task per connection,
     /// each routed to a resident instance.
     pub async fn serve(self, listener: TcpListener) {
@@ -324,8 +334,20 @@ impl ResidentWsServer {
         let Some(accept) = ws_accept(&req) else {
             return Ok(upgrade_required());
         };
-        // Pin the connection to an instance at connect (sticky for its lifetime).
-        let Some(resident) = self.pool.route() else {
+        // Pin the connection to an instance at connect (sticky for its lifetime):
+        // round-robin, or by a handshake header for session affinity.
+        let resident = match &self.shard {
+            Shard::RoundRobin => self.pool.route(),
+            Shard::Header(name) => {
+                let key = req
+                    .headers()
+                    .get(name)
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("");
+                self.pool.route_keyed(key)
+            }
+        };
+        let Some(resident) = resident else {
             return Ok(service_unavailable());
         };
         let rt = self.pool.runtime().clone();
