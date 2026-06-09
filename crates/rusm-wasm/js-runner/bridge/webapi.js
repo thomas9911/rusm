@@ -294,6 +294,11 @@
     async json() {
       return JSON.parse(await this.text());
     }
+    // A shallow clone (shares the body) — enough for ai-sdk, which clones a response
+    // to peek at it; matches the proven genius-wasmcloud bridge.
+    clone() {
+      return this;
+    }
   }
 
   def("TextEncoder", TextEncoderPF);
@@ -309,7 +314,13 @@
   def("Request", RequestPF);
   def("Response", ResponsePF);
 
-  // setTimeout/clearTimeout via microtasks (QuickJS has no event loop timers).
+  // setTimeout/clearTimeout via microtasks (QuickJS has no event-loop timers in this
+  // single-threaded blocking model). The **two** microtask hops are deliberate, not a
+  // delay: the Anthropic/ai-sdk pattern schedules a request-timeout abort *and* clears
+  // it in a `.finally()` when the request settles — deferring two hops lets that
+  // `clearTimeout` run first, so a completed request never spuriously aborts. (The
+  // proven genius-wasmcloud bridge uses this exact shape; do not "upgrade" it to a real
+  // timer without preserving that ordering.)
   if (!G.setTimeout) {
     let id = 0;
     const cancelled = new Set();
