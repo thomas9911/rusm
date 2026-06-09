@@ -24,8 +24,6 @@ pub use ws::ResidentWsServer;
 use std::convert::Infallible;
 use std::sync::Arc;
 
-use base64::engine::general_purpose::STANDARD;
-use base64::Engine;
 use http_body_util::{BodyExt, Full, StreamBody};
 use hyper::body::{Bytes, Frame};
 use hyper::{Response, StatusCode};
@@ -175,12 +173,19 @@ impl ResidentHttpServer {
         // one reply to it, so no ref-matching is needed on this side.
         let (tx, rx) = tokio::sync::oneshot::channel();
         let responder = spawn_responder(self.route.runtime(), tx);
+        // The shared `rusm_wire::Request` serializes the body as base64 — one wire
+        // definition for host and guest.
+        let request = rusm_wire::Request {
+            method,
+            url,
+            headers,
+            body,
+        };
         let envelope = serde_json::json!({
             "op": "fetch",
             "ref": 0,
             "from": responder.pid().raw().to_string(),
-            // Body crosses as base64 (compact + binary-safe), matching the guest SDK.
-            "args": [ { "method": method, "url": url, "headers": headers, "body": STANDARD.encode(&body) } ],
+            "args": [ request ],
         });
         self.route.runtime().send(
             lease.pid,
@@ -207,7 +212,7 @@ impl ResidentHttpServer {
 /// The resident's reply, as the responder hands it to the HTTP task.
 enum ResidentReply {
     /// A complete buffered response.
-    Buffered(WireResponse),
+    Buffered(rusm_wire::Response),
     /// A streaming response (SSE): the head, plus the guest's byte stream which the
     /// HTTP task drains directly into a chunked body — no intermediate channel.
     Streaming {
@@ -259,41 +264,17 @@ fn spawn_responder(rt: &Runtime, tx: tokio::sync::oneshot::Sender<ResidentReply>
     })
 }
 
-/// A reply envelope `{ref, ok|err}` as produced by the guest's `reply_ok`/`reply_err`.
+/// A reply envelope `{ref, ok|err}` as produced by the guest's `reply_ok`/`reply_err`;
+/// `ok` is the shared [`rusm_wire::Response`].
 #[derive(Deserialize)]
 struct WireReply {
     #[serde(default)]
-    ok: Option<WireResponse>,
+    ok: Option<rusm_wire::Response>,
     #[serde(default)]
     err: Option<String>,
 }
 
-/// The `ok` payload of a resident handler's reply — mirrors `rusm_rs::http::Response`,
-/// plus a `stream` flag the SSE path sets (the body then rides a byte stream).
-#[derive(Deserialize)]
-struct WireResponse {
-    status: u16,
-    #[serde(default)]
-    headers: Vec<(String, String)>,
-    #[serde(default, with = "body_b64")]
-    body: Vec<u8>,
-    #[serde(default)]
-    stream: bool,
-}
-
-/// Decode a base64 body string (the guest SDK encodes response bodies this way).
-mod body_b64 {
-    use base64::engine::general_purpose::STANDARD;
-    use base64::Engine;
-    use serde::{Deserialize, Deserializer};
-
-    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<u8>, D::Error> {
-        let encoded = String::deserialize(d)?;
-        STANDARD.decode(encoded).map_err(serde::de::Error::custom)
-    }
-}
-
-fn parse_reply(bytes: &[u8]) -> Result<WireResponse, String> {
+fn parse_reply(bytes: &[u8]) -> Result<rusm_wire::Response, String> {
     let reply: WireReply = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
     if let Some(err) = reply.err {
         return Err(err);
@@ -309,7 +290,7 @@ fn response_builder(status: u16, headers: Vec<(String, String)>) -> hyper::http:
     builder
 }
 
-fn build_response(resp: WireResponse) -> Response<ResBody> {
+fn build_response(resp: rusm_wire::Response) -> Response<ResBody> {
     response_builder(resp.status, resp.headers)
         .body(Full::new(Bytes::from(resp.body)).boxed())
         .unwrap_or_else(|_| error_response(StatusCode::INTERNAL_SERVER_ERROR, "invalid response"))

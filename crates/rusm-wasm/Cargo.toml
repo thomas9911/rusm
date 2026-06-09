@@ -23,7 +23,7 @@ futures-util = "0.3"
 http-body-util = "0.1"
 hyper-util = { version = "0.1", features = ["tokio"] }
 # The resident-serving gateway speaks the JSON actor wire (request/reply envelopes);
-# bodies cross as base64 (compact + binary-safe).
+# the request/response types (base64 bodies) are shared with the guest via rusm-wire.
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-base64 = "0.22"
+rusm-wire = { path = "../rusm-wire" }

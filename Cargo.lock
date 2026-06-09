@@ -2497,12 +2497,12 @@ name = "rusm-wasm"
 version = "0.0.0"
 dependencies = [
  "anyhow",
- "base64 0.22.1",
  "futures-util",
  "http-body-util",
  "hyper",
  "hyper-util",
  "rusm-otp",
+ "rusm-wire",
  "serde",
  "serde_json",
  "tokio",
@@ -2510,6 +2510,15 @@ dependencies = [
  "wasmtime",
  "wasmtime-wasi",
  "wasmtime-wasi-http",
+]
+
+[[package]]
+name = "rusm-wire"
+version = "0.0.0"
+dependencies = [
+ "base64 0.22.1",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

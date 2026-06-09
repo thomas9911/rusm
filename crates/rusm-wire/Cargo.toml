@@ -1,0 +1,19 @@
+# rusm-wire — the wire types shared by the host (rusm-wasm) and the Rust guest
+# (rusm-rs): one definition of the HTTP request/response envelope + its base64 body
+# encoding, so the two binaries can never drift. Pure serde; builds for the host and
+# for wasm32-wasip2. Self-contained (no workspace inheritance) so the wasm-only
+# guest, which is excluded from the workspace, builds it without friction.
+[package]
+name = "rusm-wire"
+version = "0.0.0"
+edition = "2021"
+publish = false
+license = "MIT"
+description = "Shared host/guest wire types for RUSM resident serving."
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+base64 = "0.22"
+
+[dev-dependencies]
+serde_json = "1"

@@ -1,91 +1,24 @@
 //! Ergonomics for a **resident** HTTP handler: implement [`Handler`] over your own
-//! state and [`serve`] it. Unlike the per-request `wasi:http` path (a fresh
-//! instance per request), a resident handler is one long-lived process — so
-//! `&mut self` state persists across requests. The host gateway turns each HTTP
-//! request into a `"fetch"` request on the actor wire and turns your [`Response`]
-//! back into the HTTP response; you just write `handle`.
+//! state and [`serve`] it. Unlike the per-request `wasi:http` path (a fresh instance
+//! per request), a resident handler is one long-lived process — so `&mut self` state
+//! persists across requests. The host gateway turns each HTTP request into a
+//! `"fetch"` request on the actor wire and turns your [`Response`] back into the HTTP
+//! response; you just write `handle`.
+//!
+//! The [`Request`]/[`Response`] types (and their base64 body encoding) are the shared
+//! [`rusm_wire`] definitions the host speaks — re-exported here so guest code never
+//! drifts from the host.
 
-use serde::{Deserialize, Serialize};
+pub use rusm_wire::{Request, Response};
 
 use crate::wire;
-
-/// (De)serialize a byte body as a base64 string on the JSON wire — compact (~1.33×
-/// vs ~3× for a number array) and binary-safe.
-mod b64 {
-    use base64::engine::general_purpose::STANDARD;
-    use base64::Engine;
-    use serde::{Deserialize, Deserializer, Serializer};
-
-    pub fn serialize<S: Serializer>(bytes: &[u8], s: S) -> Result<S::Ok, S::Error> {
-        s.serialize_str(&STANDARD.encode(bytes))
-    }
-
-    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<u8>, D::Error> {
-        let encoded = String::deserialize(d)?;
-        STANDARD.decode(encoded).map_err(serde::de::Error::custom)
-    }
-}
-
-/// An incoming HTTP request, as delivered to a resident [`Handler`].
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct Request {
-    /// The HTTP method (`GET`, `POST`, …).
-    pub method: String,
-    /// The request target — path and query (e.g. `/items?q=1`).
-    pub url: String,
-    /// Header name/value pairs, in arrival order.
-    #[serde(default)]
-    pub headers: Vec<(String, String)>,
-    /// The raw request body (base64 on the wire).
-    #[serde(default, with = "b64")]
-    pub body: Vec<u8>,
-}
-
-/// The response a [`Handler`] returns for a [`Request`].
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct Response {
-    /// HTTP status code.
-    pub status: u16,
-    /// Header name/value pairs.
-    #[serde(default)]
-    pub headers: Vec<(String, String)>,
-    /// The response body (base64 on the wire).
-    #[serde(default, with = "b64")]
-    pub body: Vec<u8>,
-}
-
-impl Response {
-    /// A `200 OK` `text/plain` response.
-    pub fn text(body: impl Into<String>) -> Self {
-        Self {
-            status: 200,
-            headers: vec![("content-type".into(), "text/plain; charset=utf-8".into())],
-            body: body.into().into_bytes(),
-        }
-    }
-
-    /// A response with an explicit status and raw body (no default headers).
-    pub fn new(status: u16, body: impl Into<Vec<u8>>) -> Self {
-        Self {
-            status,
-            headers: Vec::new(),
-            body: body.into(),
-        }
-    }
-
-    /// Adds a header, builder-style.
-    pub fn header(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
-        self.headers.push((name.into(), value.into()));
-        self
-    }
-}
 
 /// A resident HTTP handler. The receiver is `&mut self`, so the implementor owns
 /// state that lives across requests (a counter, a cache, sessions, …).
 pub trait Handler {
-    /// Handle one request and produce a response. Keep this fast: a resident
-    /// handler serves requests one at a time, so offload slow work to a spawned
-    /// helper rather than blocking here.
+    /// Handle one request and produce a response. Keep this fast: a resident handler
+    /// serves requests one at a time, so offload slow work to a spawned helper rather
+    /// than blocking here.
     fn handle(&mut self, request: Request) -> Response;
 }
 
@@ -109,15 +42,15 @@ pub fn serve<H: Handler>(mut handler: H) -> ! {
     }
 }
 
-/// Runs a resident **Server-Sent Events** handler: for each request, `handler`
-/// yields the event chunks (each already a full SSE event, e.g.
-/// `b"data: hi\n\n"`). The response is a streamed `text/event-stream` body — each
-/// chunk is flushed as it's produced, with the byte stream's natural back-pressure.
-/// `handler` is `FnMut`, so it can carry state across requests.
+/// Runs a resident **Server-Sent Events** handler: for each request, `handler` yields
+/// the event chunks (each already a full SSE event, e.g. `b"data: hi\n\n"`). The
+/// response is a streamed `text/event-stream` body — each chunk is flushed as it's
+/// produced, with the byte stream's natural back-pressure. `handler` is `FnMut`, so
+/// it can carry state across requests.
 ///
-/// A resident serves one request at a time; a long-lived stream blocks the
-/// instance, so an endless SSE feed should run in a process spawned per request
-/// that streams to the caller, leaving the resident's loop free.
+/// A resident serves one request at a time; a long-lived stream blocks the instance,
+/// so an endless SSE feed should run in a process spawned per request that streams to
+/// the caller, leaving the resident's loop free.
 pub fn serve_sse<F, I>(mut handler: F) -> !
 where
     F: FnMut(Request) -> I,
@@ -136,19 +69,17 @@ where
                 continue;
             }
         };
-        let (Some(reference), Some(caller)) = (req.reference, req.caller()) else {
+        let Some(caller) = req.caller() else {
             continue; // a cast can't receive a streamed body
         };
-        // Head: the streamed SSE response; the body then rides a byte stream.
-        let head = serde_json::json!({
-            "ref": reference,
-            "ok": {
-                "status": 200,
-                "headers": [["content-type", "text/event-stream"]],
-                "stream": true,
-            },
-        });
-        crate::send_bytes(caller, &serde_json::to_vec(&head).expect("head serializes"));
+        // Reply with a streamed head; the body then rides a byte stream to the caller.
+        let head = Response {
+            status: 200,
+            headers: vec![("content-type".into(), "text/event-stream".into())],
+            body: Vec::new(),
+            stream: true,
+        };
+        wire::reply_ok(&req, &head);
         if let Some(stream) = crate::Stream::open(caller) {
             for chunk in handler(request) {
                 if !stream.write(&chunk) {

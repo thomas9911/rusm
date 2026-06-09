@@ -235,8 +235,8 @@ dependencies = [
 name = "rusm-rs"
 version = "0.0.0"
 dependencies = [
- "base64",
  "rusm-rs-macros",
+ "rusm-wire",
  "serde",
  "serde_json",
  "wit-bindgen",
@@ -249,6 +249,14 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "rusm-wire"
+version = "0.0.0"
+dependencies = [
+ "base64",
+ "serde",
 ]
 
 [[package]]
