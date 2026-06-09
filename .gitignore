@@ -31,3 +31,6 @@ docs/.vitepress/cache
 # OS / editor
 .DS_Store
 *.swp
+
+# Claude Code local session state, plans, and settings (machine-local, not shared).
+.claude/
