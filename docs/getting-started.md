@@ -276,19 +276,24 @@ runs the receive→dispatch→reply loop around them:
 // components/calc/index.ts
 export function add(a: number, b: number): number { return a + b; }
 export async function greet({ name }: { name: string }) { return `hi ${name}`; }
+
+// Publish the contract — derived from the functions above, so it never drifts.
+export type Calc = typeof import("./index");
 ```
 
 A **worker** exports a `default` (async) function — RUSM runs it once. It reaches a
-service through the **typed client**: `spawn<typeof Calc>("calc")` returns a proxy
-whose calls are real cross-process messages, hidden behind `await`:
+service through the **typed client**: `spawn<Calc>("calc")` returns a proxy whose
+calls are real cross-process messages, hidden behind `await`. The caller imports only
+the service's **contract** — a `type`, erased at build, so `calc` is never bundled in;
+it stays a separate component reached over messages:
 
 ```ts
 // components/commander/index.ts
 import { spawn } from "rusm";
-import type * as Calc from "../calc/index";
+import type { Calc } from "../calc";          // type-only — the contract, not the code
 
 export default async function () {
-  const calc = spawn<typeof Calc>("calc");     // spawn-from-guest, capability-gated
+  const calc = spawn<Calc>("calc");            // spawn-from-guest, capability-gated
   console.log("2 + 3 =", await calc.add(2, 3)); // call: spawn + send + receive, hidden
 
   // A generator handler streams: `for await` its chunks.

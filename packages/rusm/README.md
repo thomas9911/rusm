@@ -6,9 +6,9 @@ crate.
 
 ```ts
 import { Process, spawn } from "rusm";
-import type * as Calc from "../calc/index";
+import type { Calc } from "../calc";       // type-only: the service's published contract
 
-const calc = spawn<typeof Calc>("calc");   // spawn a service by name, typed client
+const calc = spawn<Calc>("calc");          // spawn a service by name, typed client
 const sum = await calc.add(2, 3);          // a call
 for await (const n of calc.countTo(3)) {}  // a stream
 await calc.work((pct) => updateBar(pct));  // a callback (stays in the caller)

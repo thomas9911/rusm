@@ -22,9 +22,9 @@ the same story for Rust and TS, interoperable because they share one JSON wire.
    loop); a **worker** is `export default async function`. The `Process` actor API
    is **async** (`await Process.receive()` — the host call suspends the instance's
    fiber, so "blocking" stays cheap). Web APIs (`URL`, `TextEncoder`, `Headers`,
-   `ReadableStream`, `console`) are polyfilled; `fetch` rejects clearly until
-   `wasi:http` (Phase 11).
-2. **The concealed typed client** — `spawn<typeof Svc>("svc")` returns a proxy
+   `ReadableStream`, `console`) are polyfilled; *outbound* client `fetch` rejects
+   clearly (serving `wasi:http` works — it's the outbound client that's deferred).
+2. **The concealed typed client** — `spawn<Svc>("svc")` returns a proxy
    whose `await svc.method(args)` is a real cross-process call. Generator handlers
    **stream** (`for await (const x of svc.gen(...))`); function arguments are
    **callbacks** that stay in the caller (their invocations travel back as

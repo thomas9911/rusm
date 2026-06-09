@@ -91,8 +91,8 @@ const g = globalThis as unknown as {
 export const Process: ProcessApi = g.Process;
 
 /** Spawn a registered component and get a typed client — the concealed function
- *  call (spawn + send + receive, hidden). Type it with the service's exports:
- *  `spawn<typeof Calc>("calc")`. */
+ *  call (spawn + send + receive, hidden). Type it with the service's published
+ *  contract: `import type { Calc } from "../calc"` then `spawn<Calc>("calc")`. */
 export const spawn = <T = Record<string, (...args: any[]) => any>>(
   component: string,
 ): ServiceClient<T> => g.spawn<T>(component);

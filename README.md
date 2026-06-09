@@ -20,7 +20,7 @@ Wasmtime does the isolation.
 > **~440k component spawns/sec**. **Guest ergonomics (Phase 8):** write components
 > in **TypeScript** (the `rusm` npm package) or **Rust** (the `rusm-rs` crate) — a
 > service is just exported functions, called from another component through a
-> concealed **typed client** (`spawn<typeof Svc>("svc")` → `await svc.method(...)`,
+> concealed **typed client** (`spawn<Svc>("svc")` → `await svc.method(...)`,
 > with streaming + callbacks), with an in-guest **`Supervisor`** (one/all/rest-for-one)
 > and `rusm dev` watch+reload. An **app model** lets you
 > `rusm dev` a project: `rusm.toml` `[[components]]`, source under `components/`,
