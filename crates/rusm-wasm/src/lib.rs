@@ -50,13 +50,16 @@ pub const DEFAULT_MAX_INSTANCES: u32 = 1024;
 pub const DEFAULT_MAX_MEMORY: usize = 16 << 20;
 /// The prebuilt rquickjs **js-runner** component (rusm-ts), embedded so a TS/JS
 /// bundle can be spawned with no extra artifacts. Built from `js-runner/` with
-/// wasi-sdk (QuickJS is C); see that crate's README to regenerate.
-const JS_RUNNER_WASM: &[u8] = include_bytes!("../js-runner/js_runner.wasm");
+/// wasi-sdk (QuickJS is C); the artifact is checked in under `runtimes/` (a plain
+/// dir, not the nested `js-runner/` crate, so it ships in the published package).
+/// See `js-runner/Cargo.toml` to regenerate.
+const JS_RUNNER_WASM: &[u8] = include_bytes!("../runtimes/js_runner.wasm");
 
 /// The prebuilt rquickjs **js-http-runner** (`wasi:http`) component (rusm-ts),
 /// embedded so a TS/JS `fetch` handler can be served with no extra artifacts. Built
-/// from `js-http-runner/` with wasi-sdk; see that crate's README to regenerate.
-const JS_HTTP_RUNNER_WASM: &[u8] = include_bytes!("../js-http-runner/js_http_runner.wasm");
+/// from `js-http-runner/` with wasi-sdk; checked in under `runtimes/`. See
+/// `js-http-runner/Cargo.toml` to regenerate.
+const JS_HTTP_RUNNER_WASM: &[u8] = include_bytes!("../runtimes/js_http_runner.wasm");
 
 /// Counters shared by every instance of one [`WasmRuntime`], so host functions
 /// can report aggregate activity (e.g. guest progress for the fairness scenario).
