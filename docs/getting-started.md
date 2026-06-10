@@ -264,7 +264,7 @@ and it rebuilds + reloads it automatically (a dependency-free mtime watch).
 TypeScript guests are **first-class, sandboxed RUSM processes** — the
 `genius-wasmcloud` model, **no jco**. RUSM ships one **js-runner** component: it
 embeds [rquickjs](https://github.com/DelSkayn/rquickjs) (QuickJS, compiled to
-`wasm32-wasip2`, ~720 KB) and runs your JS, exposing a `Process` global bridged to
+`wasm32-wasip2`, ~920 KB) and runs your JS, exposing a `Process` global bridged to
 the actor world. You write TS; **Bun** bundles it to one `.js`; the runner
 executes it inside the same sandbox (capabilities, memory cap, epoch preemption)
 as a Rust component. A TS component is just a folder with an `index.ts`:
@@ -352,10 +352,11 @@ The Web APIs the runner polyfills (`URL`, `TextEncoder`, `Headers`,
 `tsconfig.json` (`"lib": ["ES2022", "DOM"]`). See the runnable `ts-app` example
 (Bun-built service + commander, with streaming + a callback) and `host_ts_component`.
 
-> **Outbound `fetch` is deferred.** *Serving* HTTP works today (§6 — a TS or Rust
-> handler answers requests over `wasi:http`). What's not wired yet is a guest making
-> an *outbound* client `fetch`: it rejects with a clear error rather than silently
-> failing.
+> **Outbound `fetch` works — capability-gated.** A guest granted network (the
+> `network-client` profile) can `fetch` over the host's `wasi:http` client — HTTPS,
+> streaming bodies, `AbortSignal`. A *sandboxed* guest's `fetch` is refused at the host
+> (default-deny) and rejects with a clear error. `crypto` (`getRandomValues`/
+> `randomUUID`) is available to every guest.
 
 **The Rust twin — `rusm-rs`.** A Rust guest gets the same story without raw
 wit-bindgen: `Pid`/`send`/`receive` (serde)/`spawn`/registry/`Stream`, plus a

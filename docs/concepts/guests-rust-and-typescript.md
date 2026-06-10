@@ -23,7 +23,7 @@ Bun into a small `.js`.
 
 ## The shared runner — tiny TS components (vs jco)
 
-A TypeScript component is **just its bundle** running on **one shared ~700 KB
+A TypeScript component is **just its bundle** running on **one shared ~920 KB
 rquickjs runner**: the JS engine is compiled once and shared by *every* TS process.
 Contrast jco / ComponentizeJS, which bakes a multi-megabyte JS engine (StarlingMonkey)
 into **every** component. Ship 50 TS components and RUSM ships the engine **once**,

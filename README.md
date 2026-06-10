@@ -9,7 +9,7 @@ core** (pure Rust); **WebAssembly is the sandboxed execution backend** that late
 runs each process as an isolated instance. Rust + Tokio do the scheduling;
 Wasmtime does the isolation.
 
-> **Status: Phases 0–10 complete (of 12); Phase 11 (serving) in progress, Phase 12 (hardening) planned.** RUSM **hosts real WASM components** as
+> **Status: Phases 0–11 functionally complete (of 12; the native `stream<u8>` signature is the one deferred refinement), Phase 12 (hardening) planned.** RUSM **hosts real WASM components** as
 > isolated, supervised processes. The Wasmtime backend (`rusm-wasm`) runs each
 > instance-per-process behind three bridges — **wasip1** (core modules + a raw
 > `rusm::*` actor ABI + cross-process byte streams), **wasip2** (components, the

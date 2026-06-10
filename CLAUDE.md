@@ -16,7 +16,8 @@ bounded mailboxes** (`Runtime::with_mailbox_capacity` — load-shed *user* messa
 never system signals), **mutual-TLS cluster security** (`ClusterCa` per-node certs,
 foreign-CA peers rejected), and **windowed supervisor restart-intensity** (both
 guests) — all with no spawn/message regression (~440k component spawns/s, ~21M
-msgs/s hold). **Phase 11 (serving) is underway**: a component runs as a
+msgs/s hold). **Phase 11 (serving & standard-WASI surface) is functionally complete**
+(native `stream<u8>` signature deferred): a component runs as a
 high-throughput **HTTP / WS / SSE** server, all in `rusm-wasm` (hyper +
 `tokio-tungstenite` + `wasi:http`; `rusm-otp` stays Wasm-free). `HttpServer`
 (instance-per-request `wasi:http` via `ProxyPre`, ~64.5k req/s lean), `WsServer` (one
@@ -118,7 +119,7 @@ streaming** (`stream_open`/`write`/`close`/`accept`/`read` over the Wasm-free
 modules (raw ABI) and **components** (the `rusm:runtime` WIT world:
 `stream-open`/`write`/`close`/`accept`/`read`, handle-based). **TS/JS guests**
 (Phase 8, rusm-ts core): the **js-runner** component embeds rquickjs (QuickJS →
-`wasm32-wasip2`, ~658 KB, built with wasi-sdk) and runs a Bun-bundled JS file,
+`wasm32-wasip2`, ~920 KB with crypto + outbound `fetch`, built with wasi-sdk) and runs a Bun-bundled JS file,
 bridging a `Process` global to the actor world — a JS guest is a first-class
 sandboxed process (proven by test). **Phase 8 (guest ergonomics) is complete**:
 **rusm-ts** (service components = exported functions; a worker = `export default`;
