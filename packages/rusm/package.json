@@ -1,1 +1,12 @@
-{ "name": "rusm", "version": "0.1.0", "type": "module", "main": "index.ts", "types": "index.ts", "exports": { ".": "./index.ts" }, "files": ["index.ts", "README.md"] }
+{
+  "name": "rusm",
+  "version": "0.1.0",
+  "description": "The TypeScript guest API for RUSM: the Process actor API, the spawn typed-client, websocket(), and types.",
+  "license": "MIT",
+  "repository": { "type": "git", "url": "https://github.com/archan937/rusm" },
+  "type": "module",
+  "main": "index.ts",
+  "types": "index.ts",
+  "exports": { ".": "./index.ts" },
+  "files": ["index.ts", "README.md"]
+}

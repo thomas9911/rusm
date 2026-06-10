@@ -5,11 +5,11 @@
 # guest, which is excluded from the workspace, builds it without friction.
 [package]
 name = "rusm-wire"
-version = "0.0.0"
+version = "0.1.0"
 edition = "2021"
-publish = false
 license = "MIT"
 description = "Shared host/guest wire types for RUSM resident serving."
+repository = "https://github.com/archan937/rusm"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
