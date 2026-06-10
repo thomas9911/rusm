@@ -15,6 +15,9 @@
       this.status = (init && init.status) || 200;
       this.statusText = (init && init.statusText) || "";
       this.headers = new G.Headers(init && init.headers);
+      if (typeof this.body === "string" && !this.headers.has("content-type")) {
+        this.headers.set("content-type", "text/plain;charset=UTF-8");
+      }
     }
   };
 

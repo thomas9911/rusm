@@ -267,7 +267,7 @@ fn ts_component(protocol: Protocol) -> &'static str {
 export default function handle(request: Request): Response {
   const url = new URL(request.url);
   return new Response(`Hello from RUSM \u{1F44B}  (you asked for ${url.pathname})\\n`, {
-    headers: { \"content-type\": \"text/plain\" },
+    headers: { \"content-type\": \"text/plain; charset=utf-8\" },
   });
 }
 "
@@ -285,7 +285,7 @@ export default function handle(_request: Request): Response {
       controller.enqueue(encoder.encode(`data: tick ${n++}\\n\\n`));
     },
   });
-  return new Response(body, { headers: { \"content-type\": \"text/event-stream\" } });
+  return new Response(body, { headers: { \"content-type\": \"text/event-stream; charset=utf-8\" } });
 }
 "
         }

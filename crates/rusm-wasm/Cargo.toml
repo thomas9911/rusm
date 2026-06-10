@@ -1,7 +1,6 @@
 [package]
 name = "rusm-wasm"
-# Patched ahead of the workspace for the UTF-8 TextEncoder hotfix (0.1.0 → 0.1.1).
-version = "0.1.1"
+version = "0.1.2"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true

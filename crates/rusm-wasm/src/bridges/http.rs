@@ -314,11 +314,14 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn a_typescript_handler_serves_utf8_astral_characters() {
-        // Regression: the js-runner's TextEncoder must encode astral code points
-        // (emoji — a UTF-16 surrogate pair) as one 4-byte UTF-8 sequence, not two
-        // bogus 3-byte ones. A wave emoji is the `rusm new` HTTP template's greeting,
-        // so this exact case shipped broken once (`👋` → `??????`).
+    async fn a_typescript_string_response_is_utf8_with_charset() {
+        // Two regressions in one bare-string Response (no Content-Type set):
+        //  1. the TextEncoder must encode an astral code point (emoji — a UTF-16
+        //     surrogate pair) as one 4-byte UTF-8 sequence, not two bogus 3-byte ones
+        //     (`👋` → `??????`);
+        //  2. a string body must default to `text/plain;charset=UTF-8`, or a browser
+        //     decodes the UTF-8 bytes as Latin-1 (`👋` → `ðŸ‘‹`).
+        // The `rusm new` HTTP template greets with 👋, so both shipped broken once.
         let wr = WasmRuntime::new(Runtime::new()).unwrap();
         let bundle = r#"module.exports = { default: () => new Response("wave \u{1F44B} done") };"#;
         let server = wr.http_server_js(bundle, CapabilityProfile::Trusted.capabilities());
@@ -334,6 +337,12 @@ mod tests {
             bytes.windows(wave.len()).any(|w| w == wave),
             "emoji must round-trip as 4-byte UTF-8; got: {}",
             String::from_utf8_lossy(&bytes)
+        );
+        // ...and the (ASCII) headers must declare the charset.
+        let head = String::from_utf8_lossy(&bytes).to_lowercase();
+        assert!(
+            head.contains("charset=utf-8"),
+            "a string Response must default to text/plain;charset=UTF-8; got: {head}"
         );
 
         handle.abort();

@@ -268,6 +268,9 @@
         init && init.headers instanceof HeadersPF
           ? init.headers
           : new HeadersPF(init && init.headers);
+      if (typeof this.body === "string" && !this.headers.has("content-type")) {
+        this.headers.set("content-type", "text/plain;charset=UTF-8");
+      }
     }
     get ok() {
       return this.status >= 200 && this.status < 300;

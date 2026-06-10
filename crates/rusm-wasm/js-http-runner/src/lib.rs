@@ -238,7 +238,7 @@ fn write_all(stream: &OutputStream, data: &[u8]) -> Result<()> {
 /// socket. Only valid before the response head has been handed off.
 fn fail(response_out: ResponseOutparam, message: &str) {
     let fields = Fields::new();
-    let _ = fields.append("content-type", b"text/plain");
+    let _ = fields.append("content-type", b"text/plain;charset=utf-8");
     let response = OutgoingResponse::new(fields);
     let _ = response.set_status_code(500);
     let body = response.body().ok();
