@@ -17,7 +17,8 @@ use wasmtime::component::{
     Component, ComponentExportIndex, InstancePre as ComponentInstancePre, Linker as ComponentLinker,
 };
 use wasmtime::{Engine, ResourceLimiter, Store};
-use wasmtime_wasi::ResourceTable;
+use wasmtime_wasi::p2::bindings::CommandPre;
+use wasmtime_wasi::{ResourceTable, WasiCtx};
 
 use super::{HttpCaps, WasiHost};
 use crate::caps::{Capabilities, CapabilityProfile};
@@ -113,6 +114,28 @@ impl WasmRuntime {
     ) -> ProcessHandle {
         self.spawner.spawn_component(prepared, caps)
     }
+
+    /// Spawns a **stock command component** (one exporting `wasi:cli/run` — any
+    /// language's wasip2 binary, no `rusm:runtime` required) as an isolated process
+    /// under the default-deny `Sandboxed` profile. It runs to completion, then exits.
+    pub fn spawn_command(&self, component: &Component) -> Result<ProcessHandle> {
+        self.spawn_command_with(component, CapabilityProfile::Sandboxed.capabilities())
+    }
+
+    /// Like [`spawn_command`](Self::spawn_command) but under explicit [`Capabilities`].
+    /// Errors if `component` doesn't satisfy the `wasi:cli` command world.
+    pub fn spawn_command_with(
+        &self,
+        component: &Component,
+        caps: Capabilities,
+    ) -> Result<ProcessHandle> {
+        let pre = CommandPre::new(self.component_linker.instantiate_pre(component)?)?;
+        let spawner = Arc::clone(&self.spawner);
+        Ok(self
+            .spawner
+            .rt
+            .spawn(move |ctx| run_command(spawner, pre, caps, ctx)))
+    }
 }
 
 impl Spawner {
@@ -185,6 +208,40 @@ fn select_tier(
 /// on any failure. The runtime handle is cloned exactly once (into the host) and
 /// the crash-exit reads it back through the store; the engine is borrowed from the
 /// `Arc<Spawner>` the host carries. Yields to the scheduler on each epoch tick.
+/// Builds the per-process store + [`WasiHost`] shared by the actor and command paths:
+/// the WASI context, memory limiter, and epoch deadline. The runtime handle is cloned
+/// exactly once (into the host); the crash-exit path reads it back through the store.
+fn build_store(
+    spawner: Arc<Spawner>,
+    engine: &Engine,
+    wasi: WasiCtx,
+    caps: Capabilities,
+    ctx: Context,
+) -> Store<WasiHost> {
+    let host = WasiHost {
+        wasi,
+        table: ResourceTable::new(),
+        http: wasmtime_wasi_http::WasiHttpCtx::new(),
+        http_hooks: HttpCaps {
+            allow_network: caps.network_allowed(),
+        },
+        pid: ctx.pid().raw(),
+        caps,
+        rt: spawner.rt.clone(),
+        ctx: Some(ctx),
+        spawner: Some(spawner),
+        out_streams: HashMap::new(),
+        in_streams: HashMap::new(),
+        next_stream: 0,
+    };
+    let mut store = Store::new(engine, host);
+    // Enforce the per-process memory ceiling (WasiHost is the ResourceLimiter).
+    store.limiter(|host| host as &mut dyn ResourceLimiter);
+    store.set_epoch_deadline(1);
+    store.epoch_deadline_async_yield_and_update(1);
+    store
+}
+
 async fn run(spawner: Arc<Spawner>, prepared: PreparedComponent, caps: Capabilities, ctx: Context) {
     let pid = ctx.pid();
     let wasi = match caps.build_wasi() {
@@ -197,28 +254,7 @@ async fn run(spawner: Arc<Spawner>, prepared: PreparedComponent, caps: Capabilit
     // Choose the pooled (fast) tier or the on-demand overflow tier. `_slot` holds a
     // pooled reservation for this process's lifetime (dropped when `run` returns).
     let (engine, pre, entry, _slot) = select_tier(&spawner, prepared);
-    let rt = spawner.rt.clone();
-    let host = WasiHost {
-        wasi,
-        table: ResourceTable::new(),
-        http: wasmtime_wasi_http::WasiHttpCtx::new(),
-        http_hooks: HttpCaps {
-            allow_network: caps.network_allowed(),
-        },
-        pid: pid.raw(),
-        caps,
-        rt,
-        ctx: Some(ctx),
-        spawner: Some(spawner),
-        out_streams: HashMap::new(),
-        in_streams: HashMap::new(),
-        next_stream: 0,
-    };
-    let mut store = Store::new(&engine, host);
-    // Enforce the per-process memory ceiling (WasiHost is the ResourceLimiter).
-    store.limiter(|host| host as &mut dyn ResourceLimiter);
-    store.set_epoch_deadline(1);
-    store.epoch_deadline_async_yield_and_update(1);
+    let mut store = build_store(spawner, &engine, wasi, caps, ctx);
 
     let outcome = async {
         let instance = pre.instantiate_async(&mut store).await?;
@@ -229,6 +265,41 @@ async fn run(spawner: Arc<Spawner>, prepared: PreparedComponent, caps: Capabilit
     .await;
     if outcome.is_err() {
         // The host (and its runtime handle) is still in the store — no extra clone.
+        store.data().rt.exit(pid, ExitReason::Crashed);
+    }
+}
+
+/// The process body for a **stock command component** (`wasi:cli/run`): instantiate the
+/// `Command` world and run it to completion. A host trap *or* a non-zero program exit
+/// leaves the process [`Crashed`](ExitReason::Crashed); a clean run exits normally.
+/// Commands use the pooled engine (no overflow tier — they're one-shot, not long-lived).
+async fn run_command(
+    spawner: Arc<Spawner>,
+    pre: CommandPre<WasiHost>,
+    caps: Capabilities,
+    ctx: Context,
+) {
+    let pid = ctx.pid();
+    let wasi = match caps.build_wasi() {
+        Ok(wasi) => wasi,
+        Err(_) => {
+            spawner.rt.exit(pid, ExitReason::Crashed);
+            return;
+        }
+    };
+    let engine = spawner.engine.clone();
+    let mut store = build_store(spawner, &engine, wasi, caps, ctx);
+
+    let outcome = async {
+        let command = pre.instantiate_async(&mut store).await?;
+        command
+            .wasi_cli_run()
+            .call_run(&mut store)
+            .await?
+            .map_err(|()| anyhow::anyhow!("command component exited with a failure status"))
+    }
+    .await;
+    if outcome.is_err() {
         store.data().rt.exit(pid, ExitReason::Crashed);
     }
 }
@@ -621,6 +692,35 @@ mod tests {
             "true|8|5",
             "crypto.randomUUID is a v4 UUID and getRandomValues fills the array"
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_stock_command_component_runs() {
+        // A standard `wasi:cli/run` component (no rusm:runtime, just std) runs as a RUSM
+        // process and does real WASI work — here, writing a marker to a preopened dir.
+        const CMD: &[u8] = include_bytes!("../../tests/fixtures/cmd_writes.wasm");
+        let dir = std::env::temp_dir().join(format!("rusm-cmd-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let rt = Runtime::new();
+        let wr = WasmRuntime::new(rt.clone()).unwrap();
+        let component = wr.compile_component(CMD).unwrap();
+        let caps = CapabilityProfile::Sandboxed
+            .capabilities()
+            .preopen(dir.clone(), "/out", false);
+        wr.spawn_command_with(&component, caps).unwrap();
+
+        let marker = dir.join("ran.txt");
+        for _ in 0..300 {
+            if marker.is_file() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let got = std::fs::read(&marker).expect("command component wrote its marker");
+        assert_eq!(got, b"command component ran");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

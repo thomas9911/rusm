@@ -1,0 +1,18 @@
+# A stock `wasi:cli/run` command component (no rusm:runtime, no wstd — just std).
+# Proves RUSM runs standard WASI command components unchanged (Phase 11): it writes a
+# marker to a preopened dir so a test can observe it ran to completion.
+[package]
+name = "cmd-writes"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "cmd_writes"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = "z"
+strip = true
+
+[workspace]

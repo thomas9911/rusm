@@ -70,10 +70,21 @@ pub fn spawn_components(
             let component = wasm
                 .compile_component(&bytes)
                 .with_context(|| format!("compiling component `{}`", spec.name))?;
-            let prepared = wasm.prepare_component(&component, "run")?;
-            // Register by name so a running sibling may `spawn` it (capability-gated).
-            wasm.register_component(spec.name.clone(), prepared.clone());
-            wasm.spawn_component_with(&prepared, caps)
+            // An actor component exports `run` (rusm:runtime); a stock component
+            // exports `wasi:cli/run`. Prefer the actor path (registrable + spawnable
+            // by siblings); otherwise run it unchanged as a standard command component.
+            match wasm.prepare_component(&component, "run") {
+                Ok(prepared) => {
+                    wasm.register_component(spec.name.clone(), prepared.clone());
+                    wasm.spawn_component_with(&prepared, caps)
+                }
+                Err(_) => wasm.spawn_command_with(&component, caps).with_context(|| {
+                    format!(
+                        "`{}` is neither a rusm actor component nor a wasi:cli command",
+                        spec.name
+                    )
+                })?,
+            }
         };
         handles.push((spec.name.clone(), handle));
     }
