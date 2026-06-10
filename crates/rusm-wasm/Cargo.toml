@@ -7,6 +7,10 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 description = "The Wasmtime backend for RUSM: each process runs as an isolated Wasm instance."
+# Keep the published crate lean: the ~3 MB of `tests/fixtures/*.wasm` are only used
+# by `#[cfg(test)]` code (never the library), so they don't belong in the package.
+# The embedded js-runner artifacts (js-runner/*.wasm) live outside tests/ and ship.
+exclude = ["tests/"]
 
 [dependencies]
 rusm-otp = { path = "../rusm-otp", version = "0.1.0" }
