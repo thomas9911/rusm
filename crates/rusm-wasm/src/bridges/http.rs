@@ -200,6 +200,18 @@ mod tests {
         String::from_utf8_lossy(&buf).into_owned()
     }
 
+    /// Like [`get`], but returns the raw response bytes — so a non-ASCII body can be
+    /// asserted exactly, not through a lossy (replacement-char) `String`.
+    async fn get_bytes(addr: std::net::SocketAddr) -> Vec<u8> {
+        let mut conn = tokio::net::TcpStream::connect(addr).await.unwrap();
+        conn.write_all(b"GET / HTTP/1.1\r\nHost: rusm\r\nConnection: close\r\n\r\n")
+            .await
+            .unwrap();
+        let mut buf = Vec::new();
+        conn.read_to_end(&mut buf).await.unwrap();
+        buf
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_wasm_component_serves_an_http_request() {
         let wr = WasmRuntime::new(Runtime::new()).unwrap();
@@ -296,6 +308,32 @@ mod tests {
         assert!(
             response.contains("hello from TS"),
             "the TS HTTP handler produced the body: {response}"
+        );
+
+        handle.abort();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_typescript_handler_serves_utf8_astral_characters() {
+        // Regression: the js-runner's TextEncoder must encode astral code points
+        // (emoji — a UTF-16 surrogate pair) as one 4-byte UTF-8 sequence, not two
+        // bogus 3-byte ones. A wave emoji is the `rusm new` HTTP template's greeting,
+        // so this exact case shipped broken once (`👋` → `??????`).
+        let wr = WasmRuntime::new(Runtime::new()).unwrap();
+        let bundle = r#"module.exports = { default: () => new Response("wave \u{1F44B} done") };"#;
+        let server = wr.http_server_js(bundle, CapabilityProfile::Trusted.capabilities());
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = tokio::spawn(server.serve(listener));
+
+        let bytes = get_bytes(addr).await;
+        // U+1F44B 👋 must appear as its exact 4-byte UTF-8 encoding in the body.
+        let wave = [0xF0u8, 0x9F, 0x91, 0x8B];
+        assert!(
+            bytes.windows(wave.len()).any(|w| w == wave),
+            "emoji must round-trip as 4-byte UTF-8; got: {}",
+            String::from_utf8_lossy(&bytes)
         );
 
         handle.abort();

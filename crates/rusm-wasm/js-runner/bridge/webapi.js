@@ -37,10 +37,24 @@
     encode(str) {
       const out = [];
       for (let i = 0; i < str.length; i++) {
-        const c = str.charCodeAt(i);
+        let c = str.charCodeAt(i);
         if (c < 0x80) out.push(c);
         else if (c < 0x800) out.push((c >> 6) | 0xc0, (c & 0x3f) | 0x80);
-        else out.push((c >> 12) | 0xe0, ((c >> 6) & 0x3f) | 0x80, (c & 0x3f) | 0x80);
+        else if (c < 0xd800 || c >= 0xe000)
+          out.push((c >> 12) | 0xe0, ((c >> 6) & 0x3f) | 0x80, (c & 0x3f) | 0x80);
+        else {
+          // A high surrogate (0xD800–0xDBFF) plus the following low surrogate is one
+          // astral code point (e.g. an emoji) — encode it as 4 UTF-8 bytes. Without
+          // this each surrogate became a bogus 3-byte sequence → mojibake.
+          const lo = str.charCodeAt(++i);
+          c = 0x10000 + (((c & 0x3ff) << 10) | (lo & 0x3ff));
+          out.push(
+            (c >> 18) | 0xf0,
+            ((c >> 12) & 0x3f) | 0x80,
+            ((c >> 6) & 0x3f) | 0x80,
+            (c & 0x3f) | 0x80,
+          );
+        }
       }
       return new Uint8Array(out);
     }
