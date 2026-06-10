@@ -49,8 +49,8 @@ the same story for Rust and TS, interoperable because they share one JSON wire.
    `rest_for_one`, with `max_restarts` (overload protection). The OTP supervision
    tree, written from inside a guest.
 6. **The `rusm-ts` npm package** — the TS guest API ships as an importable package
-   (`import { Process, spawn, supervise } from "rusm-ts"`), depended on by relative
-   path; `rusm build` runs `bun install` for you. (Root-caused a subtle hang doing
+   (`import { Process, spawn, supervise } from "rusm-ts"`), added with `bun add rusm-ts`;
+   `rusm build` runs `bun install` for you. (Root-caused a subtle hang doing
    this: the runner now wraps each bundle in a **CommonJS scope**, so a bundle's
    top-level `var` can never clobber the runtime globals — correct CJS isolation.)
 7. **Custom capability profiles** — `rusm.toml` accepts `[capabilities.<name>]`

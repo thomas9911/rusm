@@ -7,43 +7,51 @@ built is marked **Roadmap**.
 
 ## Install
 
-RUSM isn't published to crates.io yet, so you **clone the repo**:
+Install the `rusm` CLI — the app model (scaffold, build, serve):
 
 ```sh
-git clone https://github.com/archan937/rusm
-cd rusm
+cargo install rusm-cli
 ```
 
 Prerequisites:
 
-- **Rust** 1.94+ via [`rustup`](https://rustup.rs). To build guest
-  components/modules, add the Wasm targets:
-  ```sh
-  rustup target add wasm32-wasip2 wasm32-wasip1
-  ```
-  (`wasm32-wasip2` for components, `wasm32-wasip1` for core modules.)
-- **Bun** 1.3+ ([bun.sh](https://bun.sh)) — the dashboard and docs site use Bun,
-  never Node.js. Only needed for those.
+- **Rust** 1.94+ via [`rustup`](https://rustup.rs). To build guest components, add the
+  Wasm target: `rustup target add wasm32-wasip2` (and `wasm32-wasip1` for core modules).
+- **Bun** 1.3+ ([bun.sh](https://bun.sh)) — to build TypeScript components; never Node.js.
 
-Verify the build:
+Building *with* RUSM as a library (the OTP-core and embedding examples below)? Add the
+crates to your own project instead:
 
 ```sh
-cargo test          # the whole workspace
+cargo add rusm-otp           # the Wasm-free actor core
+cargo add rusm-wasm          # + the Wasmtime backend, to host components
 ```
 
 ## Quick start
 
-The fastest way to *see* RUSM is the live dashboard:
+From nothing to a live server:
 
 ```sh
+rusm new hello && cd hello   # scaffold a TS HTTP component + rusm.toml
+rusm build                   # components/ → wasm/
+rusm serve                   # → http://127.0.0.1:8080
+curl http://127.0.0.1:8080/  # "Hello from RUSM 👋"
+```
+
+`rusm new --rust` scaffolds a Rust component; `--protocol ws|sse` a WebSocket or SSE
+handler.
+
+### See it live — the dashboard
+
+The benchmark dashboard lives in the repo, so clone it to run:
+
+```sh
+git clone https://github.com/archan937/rusm && cd rusm
 make dashboard      # builds + starts a node, then the dashboard — open the printed URL
 ```
 
-Pick a scenario (e.g. **spawn storm**, **stream pipe**), hit **Run**, and watch
-real throughput, latency, and the live observer. Everything is driven by the real
-runtime.
-
-### Make commands
+Pick a scenario (e.g. **spawn storm**, **stream pipe**), hit **Run**, and watch real
+throughput, latency, and the live observer. Everything is driven by the real runtime.
 
 | Command | What it does |
 | --- | --- |
