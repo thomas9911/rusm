@@ -8,7 +8,7 @@
     "skipLibCheck": true,
     "noEmit": true,
     "types": [],
-    "paths": { "rusm": ["../../packages/rusm/index.ts"] }
+    "paths": { "rusm-ts": ["../../packages/rusm-ts/index.ts"] }
   },
   "include": ["components/**/*.ts"]
 }

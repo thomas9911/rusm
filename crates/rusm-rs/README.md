@@ -5,7 +5,7 @@ supervised WASM process on an Erlang-style actor runtime. `rusm-rs` wraps the ra
 `wit-bindgen` actor bindings into a small, idiomatic API (`Pid`, `send`/`receive`,
 `spawn`, the registry, `Stream`), adds HTTP/WS/SSE serving handlers, and hides the
 component boilerplate behind `#[rusm_rs::main]`. The TypeScript twin is the
-[`rusm`](https://www.npmjs.com/package/rusm) npm package — they share one JSON wire and
+[`rusm-ts`](https://www.npmjs.com/package/rusm-ts) npm package — they share one JSON wire and
 interoperate.
 
 Built for `wasm32-wasip2`. A component crate is a `cdylib` depending on `rusm-rs` and
@@ -90,7 +90,7 @@ for n in calc.count_to(3) { /* 1, 2, 3 */ }       // a stream
 let status = calc.work(|pct| println!("{pct}"))?; // a callback (closure stays here)
 ```
 
-The same JSON wire as the `rusm` TS package, so a Rust client and a TS service
+The same JSON wire as the `rusm-ts` package, so a Rust client and a TS service
 interoperate.
 
 ## What you get

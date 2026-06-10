@@ -18,7 +18,7 @@ Wasmtime does the isolation.
 > **wasip3** (the `@0.3.0` async WASI interfaces). **Default-deny capability
 > profiles** (fs/net/env/memory/spawn), epoch preemption, and a spawn path tuned to
 > **~440k component spawns/sec**. **Guest ergonomics (Phase 8):** write components
-> in **TypeScript** (the `rusm` npm package) or **Rust** (the `rusm-rs` crate) — a
+> in **TypeScript** (the `rusm-ts` npm package) or **Rust** (the `rusm-rs` crate) — a
 > service is just exported functions, called from another component through a
 > concealed **typed client** (`spawn<Svc>("svc")` → `await svc.method(...)`,
 > with streaming + callbacks), with an in-guest **`Supervisor`** (one/all/rest-for-one)

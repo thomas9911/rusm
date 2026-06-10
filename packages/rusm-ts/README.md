@@ -6,11 +6,11 @@ the types. The Rust twin is the [`rusm-rs`](https://crates.io/crates/rusm-rs) cr
 they share one JSON wire and interoperate.
 
 ```sh
-bun add rusm
+bun add rusm-ts
 ```
 
 ```ts
-import { Process, spawn } from "rusm";
+import { Process, spawn } from "rusm-ts";
 import type { Calc } from "../calc";       // type-only: the service's published contract
 
 const calc = spawn<Calc>("calc");          // spawn a service by name, typed client
@@ -40,7 +40,7 @@ WebSockets use the `websocket()` helper — one instance serves every connection
 `socket.send(…)`:
 
 ```ts
-import { websocket } from "rusm";
+import { websocket } from "rusm-ts";
 
 export default websocket({
   message(socket, data) {

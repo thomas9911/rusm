@@ -125,7 +125,7 @@ sandboxed process (proven by test). **Phase 8 (guest ergonomics) is complete**:
 **rusm-ts** (service components = exported functions; a worker = `export default`;
 the concealed typed client `spawn<Svc>("svc")` with call / `for await`
 streaming / callbacks / `.cast`; `rusm build` Bun→cjs; app-model loader; the
-importable **`rusm` npm package** for `Process`/`spawn`/types; custom capability
+importable **`rusm-ts` npm package** for `Process`/`spawn`/types; custom capability
 profiles) and **rusm-rs** (the Rust twin — `Pid`/`send`/`receive` (serde JSON) /
 `spawn` / registry / `Stream` over the wit-bindgen library/binary split, plus a
 `#[rusm_rs::service]` macro → dispatch loop + typed `Client` with

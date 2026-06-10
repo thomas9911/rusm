@@ -43,7 +43,7 @@ rusm new api  --rust --protocol ws     # a Rust WebSocket handler
 A **Rust** component is a `Handler` + `#[rusm_rs::main]` (the macro hides the world,
 `Guest`, and `export!` — no `wit/` dir). A **TypeScript** HTTP/SSE component is a
 zero-dependency web-standard `export default (request) => Response`; **WS** uses the
-`rusm` package's `websocket({ message })` helper.
+`rusm-ts` package's `websocket({ message })` helper.
 
 ## `rusm build`
 

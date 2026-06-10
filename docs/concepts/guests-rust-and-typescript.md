@@ -15,7 +15,7 @@ cargo-component, no jco.
 
 ## TypeScript guests (`rusm-ts`)
 
-Import the `rusm` package: a **service** is just exported functions, a **worker** is
+Import the `rusm-ts` package: a **service** is just exported functions, a **worker** is
 `export default`. The *concealed typed client* makes `await svc.method(...)` read
 like a local call — with `for await` streaming and callback arguments — while
 `spawn` / `send` / `receive` stay hidden. `rusm build` bundles each component with

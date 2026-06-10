@@ -2,7 +2,7 @@
 //!
 //! Produces a project whose component source is **pure developer logic** — no
 //! `wit-bindgen`/`export!` boilerplate (Rust hides it behind `#[rusm_rs::main]`) and
-//! no `Process`/frame plumbing (TS uses web standards and the `rusm` package). Pick a
+//! no `Process`/frame plumbing (TS uses web standards and the `rusm-ts` package). Pick a
 //! language (`--rust`, default TypeScript) and a protocol (`--protocol`, default
 //! `http`); from nothing to a live server in three commands:
 //!
@@ -213,7 +213,7 @@ fn rusm_toml(app: &NewApp) -> String {
 const GITIGNORE: &str = "/wasm/\n/node_modules/\n/target/\n";
 
 /// One tsconfig for any TS component: web-standard `Request`/`Response`/streams come
-/// from the DOM lib, and bundler resolution finds the `rusm` package (WS).
+/// from the DOM lib, and bundler resolution finds the `rusm-ts` package (WS).
 const TSCONFIG: &str = "\
 {
   \"compilerOptions\": {
@@ -232,7 +232,7 @@ const TSCONFIG: &str = "\
 
 fn package_json(name: &str) -> String {
     format!(
-        "{{\n  \"name\": \"{name}\",\n  \"private\": true,\n  \"type\": \"module\",\n  \"dependencies\": {{\n    \"rusm\": \"^0.1.0\"\n  }}\n}}\n"
+        "{{\n  \"name\": \"{name}\",\n  \"private\": true,\n  \"type\": \"module\",\n  \"dependencies\": {{\n    \"rusm-ts\": \"^0.1.0\"\n  }}\n}}\n"
     )
 }
 
@@ -293,7 +293,7 @@ export default function handle(_request: Request): Response {
             "\
 // A RUSM WebSocket component: one instance serves every connection. Reply with
 // `socket.send(...)`; keep shared state (rooms, presence) in the handler's closure.
-import { websocket } from \"rusm\";
+import { websocket } from \"rusm-ts\";
 
 export default websocket({
   open(socket) {
@@ -515,7 +515,7 @@ mod tests {
         assert!(
             std::fs::read_to_string(dir.path().join("demo/components/api/index.ts"))
                 .unwrap()
-                .contains("import { websocket } from \"rusm\"")
+                .contains("import { websocket } from \"rusm-ts\"")
         );
 
         let dir2 = tempfile::tempdir().unwrap();

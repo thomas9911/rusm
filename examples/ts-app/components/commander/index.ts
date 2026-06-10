@@ -1,4 +1,4 @@
-import { spawn } from "rusm";
+import { spawn } from "rusm-ts";
 import type { Calc } from "../calc"; // type-only: the service's published contract
 
 // A RUSM **worker** component: RUSM runs `default` once. It spawns the `calc`

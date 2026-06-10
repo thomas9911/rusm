@@ -4,7 +4,7 @@
 // factory as globals (and polyfills the Web APIs); this package re-exports them as
 // a normal module and ships the types, so a component writes:
 //
-//     import { Process, spawn } from "rusm";
+//     import { Process, spawn } from "rusm-ts";
 //
 // Pids are u64s, too large for a JS number, so they cross as `bigint`. Messages
 // and stream chunks are `Uint8Array`. `receive` / `Stream.read` are async.

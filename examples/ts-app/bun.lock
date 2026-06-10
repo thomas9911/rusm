@@ -5,11 +5,11 @@
     "": {
       "name": "ts-app",
       "dependencies": {
-        "rusm": "file:../../packages/rusm",
+        "rusm-ts": "file:../../packages/rusm-ts",
       },
     },
   },
   "packages": {
-    "rusm": ["rusm@file:../../packages/rusm", {}],
+    "rusm-ts": ["rusm-ts@file:../../packages/rusm-ts", {}],
   }
 }

@@ -7,7 +7,7 @@
 // completion (each `receive` suspends the fiber). Built with:
 //   bun build --target=browser --format=cjs --outfile ts_ws_echo.js index.ts
 
-// `Process` is the global actor API the js-runner injects (see packages/rusm).
+// `Process` is the global actor API the js-runner injects (see packages/rusm-ts).
 declare const Process: {
   receive(): Promise<Uint8Array>;
   receiveText(): Promise<string>;

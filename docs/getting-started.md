@@ -291,7 +291,7 @@ it stays a separate component reached over messages:
 
 ```ts
 // components/commander/index.ts
-import { spawn } from "rusm";
+import { spawn } from "rusm-ts";
 import type { Calc } from "../calc";          // type-only — the contract, not the code
 
 export default async function () {
@@ -323,11 +323,11 @@ name = "commander"
 capability = "orchestrator"
 ```
 
-The `Process` API and `spawn` come from the **`rusm` package** — add it to your
+The `Process` API and `spawn` come from the **`rusm-ts` package** — add it to your
 app's `package.json`:
 
 ```json
-{ "dependencies": { "rusm": "^0.1.0" } }
+{ "dependencies": { "rusm-ts": "^0.1.0" } }
 ```
 
 `rusm build` runs `bun install` (if needed), then detects each `index.ts` and runs
@@ -346,7 +346,7 @@ composes with Promises. The full `Process` API (`self`/`list`/`spawn`/`send`/
 `receive`/`receiveText`/`register`/`whereis`/`isAlive`/`kill`/`setLabel`/
 `openStream`/`acceptStream`), the `spawn<T>()` typed client (call / `for await`
 stream / callback args / `.cast` / `.stop()`), binary (`Uint8Array`) messages, and
-[byte streams](#streaming-from-a-component) are all typed by the **`rusm` package**.
+[byte streams](#streaming-from-a-component) are all typed by the **`rusm-ts` package**.
 The Web APIs the runner polyfills (`URL`, `TextEncoder`, `Headers`,
 `ReadableStream`, `console`) are typed by the standard `DOM` lib — add it to your
 `tsconfig.json` (`"lib": ["ES2022", "DOM"]`). See the runnable `ts-app` example

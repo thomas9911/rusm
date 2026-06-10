@@ -286,7 +286,7 @@ fn build_components(dir: &Path) -> anyhow::Result<Vec<String>> {
     let wasm_dir = dir.join("wasm");
     std::fs::create_dir_all(&wasm_dir)?;
 
-    // If the app declares JS dependencies (e.g. the `rusm` package), make sure
+    // If the app declares JS dependencies (e.g. the `rusm-ts` package), make sure
     // they're installed so a TS component's `import` resolves during bundling.
     if dir.join("package.json").is_file() && !dir.join("node_modules").is_dir() {
         let status = Command::new("bun")

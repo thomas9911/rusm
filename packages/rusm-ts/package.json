@@ -1,5 +1,5 @@
 {
-  "name": "rusm",
+  "name": "rusm-ts",
   "version": "0.1.0",
   "description": "The TypeScript guest API for RUSM: the Process actor API, the spawn typed-client, websocket(), and types.",
   "license": "MIT",
@@ -13,6 +13,7 @@
     "url": "https://github.com/archan937/rusm/issues"
   },
   "keywords": [
+    "typescript",
     "rusm",
     "webassembly",
     "wasm"

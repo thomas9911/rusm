@@ -48,8 +48,8 @@ the same story for Rust and TS, interoperable because they share one JSON wire.
    children and restart per strategy — `one_for_one` / `one_for_all` /
    `rest_for_one`, with `max_restarts` (overload protection). The OTP supervision
    tree, written from inside a guest.
-6. **The `rusm` npm package** — the TS guest API ships as an importable package
-   (`import { Process, spawn, supervise } from "rusm"`), depended on by relative
+6. **The `rusm-ts` npm package** — the TS guest API ships as an importable package
+   (`import { Process, spawn, supervise } from "rusm-ts"`), depended on by relative
    path; `rusm build` runs `bun install` for you. (Root-caused a subtle hang doing
    this: the runner now wraps each bundle in a **CommonJS scope**, so a bundle's
    top-level `var` can never clobber the runtime globals — correct CJS isolation.)
@@ -68,7 +68,7 @@ the same story for Rust and TS, interoperable because they share one JSON wire.
 - [Permissions & sandboxing](../concepts/permissions-and-sandboxing.md) — `spawn`,
   `monitor`, and custom `[capabilities.<name>]` profiles.
 - The full guest story (TS + Rust, service / client / supervisor) — see
-  [Getting started](../getting-started.md), the [`rusm`](https://github.com/archan937/rusm)
+  [Getting started](../getting-started.md), the [`rusm-ts`](https://github.com/archan937/rusm)
   package, and the `rusm-rs` crate.
 
 ## Play with it
