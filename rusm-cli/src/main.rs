@@ -121,6 +121,8 @@ async fn start_node(args: &[String]) -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
     let cfg = load_node_config(args);
     let rt = Runtime::new();
+    // `wasm` + `handles` stay bound for the whole function: they own the hosted
+    // components' runtime, so they must outlive the server below.
     let wasm = WasmRuntime::new(rt.clone())?;
     let handles = spawn_components(Path::new("."), &wasm, &cfg.components, &cfg.capabilities)?;
     let node = Node::new(rt.clone(), node_name(), cfg.ticks_per_second);
@@ -132,8 +134,6 @@ async fn start_node(args: &[String]) -> anyhow::Result<()> {
     );
     println!("attach with:  rusm attach {}", cfg.listen);
     serve(&cfg.listen, node).await?;
-    // Unreachable until the server stops; keeps the hosted components alive.
-    drop((wasm, handles));
     Ok(())
 }
 
