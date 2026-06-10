@@ -8,7 +8,7 @@ distributed clusters you can hook into live. See `README.md` for the pitch and
 
 ## Status
 
-**Phases 0–10 complete (of 12); Phase 11 (serving) in progress; Phase 12 (hardening) planned.** RUSM **hosts real WASM components** as isolated,
+**Phases 0–11 functionally complete (of 12; the native `stream<u8>` WIT signature is the one deferred refinement — handle-ABI byte streams work); Phase 12 (hardening) planned.** RUSM **hosts real WASM components** as isolated,
 supervised processes, **clusters across nodes**, and is **hardened for scale**:
 an opt-in **on-demand instance tier** (`WasmRuntime::with_overflow` — spawn past the
 pooled cap onto an on-demand engine, bounded by memory not a fixed size), **opt-in
@@ -134,9 +134,17 @@ rest-for-one over a `monitor` ABI; a dead child arrives as a `__down` message �
 polling), and **`rusm dev`** watches `./components` and rebuilds + reloads on edit.
 Spawn-from-guest is a capability-gated, non-escalating actor-ABI op (the runner
 wraps each bundle in a CommonJS scope so its top-level vars can't clobber the
-runtime globals). Deferred to Phase 11: a native p3-typed `stream<u8>` WIT
-signature (byte streams already work over a handle ABI). TLS folds into the Phase 9
-secure cluster transport. See
+runtime globals). **Phase 11 also closed the standard-WASI surface**: stock
+**`wasi:cli/run`** command components run unchanged (`WasmRuntime::spawn_command` —
+DRY-shared `build_store` with the actor path), and the TS runner gained a
+capability-gated streaming **outbound `fetch`** (over `wasi:http`, gated by
+`WasiHttpHooks::send_request` on the network capability — closing a latent ungated
+hole) and **`crypto`** (getRandomValues/randomUUID over `wasi:random`). The **one
+deferred** Phase-11 refinement is a native p3-typed `stream<u8>` WIT signature — the
+handle-ABI byte streams are functionally complete and load-bearing for WS/SSE serving,
+so the native signature is cosmetic standards-polish (a sweeping change to the shared
+actor world deliberately not rushed). TLS folds into the Phase 9 secure cluster
+transport. See
 `docs/02-roadmap.md`.
 
 ## Tech stack
