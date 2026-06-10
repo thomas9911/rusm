@@ -1,8 +1,13 @@
 # rusm — the TypeScript guest API
 
-The guest API for **RUSM** TypeScript components: the `Process` actor API, the
-`spawn` typed-client, and the types. The Rust twin is the [`rusm-rs`](../../crates/rusm-rs)
-crate.
+The guest API for [RUSM](https://github.com/archan937/rusm) **TypeScript components**:
+the `Process` actor API, the `spawn` typed-client, the `websocket()` serving helper, and
+the types. The Rust twin is the [`rusm-rs`](https://crates.io/crates/rusm-rs) crate —
+they share one JSON wire and interoperate.
+
+```sh
+bun add rusm
+```
 
 ```ts
 import { Process, spawn } from "rusm";
@@ -14,21 +19,40 @@ for await (const n of calc.countTo(3)) {}  // a stream
 await calc.work((pct) => updateBar(pct));  // a callback (stays in the caller)
 ```
 
-The js-runner injects `Process`/`spawn` as globals and polyfills the Web APIs
-(`URL`, `TextEncoder`, `Headers`, `ReadableStream`, `console`); this package
-re-exports them as a normal module and ships the types. `receive`/`Stream.read`
-are async (`await`); pids are `bigint`.
+The js-runner injects `Process`/`spawn` as globals and polyfills the Web APIs (`URL`,
+`TextEncoder`, `Headers`, `ReadableStream`, `AbortController`, `crypto`, `console`, and a
+capability-gated streaming `fetch`); this package re-exports `Process`/`spawn`/`supervise`
+as a normal module and ships the types. `receive`/`Stream.read` are async (`await`); pids
+are `bigint`.
 
-## Use it
+## Serving
 
-It isn't published yet, so depend on it by relative path in your app's
-`package.json`:
+A component is served by declaring it in `rusm.toml`; you just write the handler. HTTP/SSE
+are zero-dependency web-standard handlers:
 
-```json
-{ "dependencies": { "rusm": "file:../../packages/rusm" } }
+```ts
+export default function handle(request: Request): Response {
+  return new Response("hello\n", { headers: { "content-type": "text/plain" } });
+}
 ```
 
-`rusm build` runs `bun install` (if needed) and bundles each `components/<name>/index.ts`
-with Bun → `wasm/<name>.js`. Add the standard `DOM` lib to your `tsconfig.json`
-(`"lib": ["ES2022", "DOM"]`) so the polyfilled Web APIs are typed. See
-`examples/ts-app`.
+WebSockets use the `websocket()` helper — one instance serves every connection, reply with
+`socket.send(…)`:
+
+```ts
+import { websocket } from "rusm";
+
+export default websocket({
+  message(socket, data) {
+    socket.send(data); // echo
+  },
+});
+```
+
+## Building
+
+`rusm build` bundles each `components/<name>/index.ts` with Bun → `wasm/<name>.js`
+(precompiled to QuickJS bytecode), run on the shared rquickjs runner. Add the standard
+`DOM` lib to your `tsconfig.json` (`"lib": ["ES2022", "DOM"]`) so the polyfilled Web APIs
+are typed. See the [RUSM docs](https://archan937.github.io/rusm/) and `rusm new` to
+scaffold an app.

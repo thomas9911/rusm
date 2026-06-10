@@ -324,10 +324,10 @@ capability = "orchestrator"
 ```
 
 The `Process` API and `spawn` come from the **`rusm` package** — add it to your
-app's `package.json` (by relative path until it's published):
+app's `package.json`:
 
 ```json
-{ "dependencies": { "rusm": "file:../../packages/rusm" } }
+{ "dependencies": { "rusm": "^0.1.0" } }
 ```
 
 `rusm build` runs `bun install` (if needed), then detects each `index.ts` and runs
