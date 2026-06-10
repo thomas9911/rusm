@@ -14,7 +14,7 @@ use std::net::SocketAddr;
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use rusm_bench::{CapabilitySpec, ComponentSpec, ServeMode, ServeProtocol, ServeSpec};
+use rusm_node::{CapabilitySpec, ComponentSpec, ServeMode, ServeProtocol, ServeSpec};
 use rusm_otp::ProcessHandle;
 use rusm_wasm::{
     Capabilities, CapabilityProfile, HttpServer, ResidentHttpServer, ResidentWsServer, WasmRuntime,
@@ -324,7 +324,7 @@ mod tests {
     fn a_custom_profile_inherits_then_overrides() {
         // Starts from network-client (network on, spawn off), then turns spawn on
         // and tightens memory — only the set fields override the inherited base.
-        let cfg = rusm_bench::NodeConfig::from_toml(
+        let cfg = rusm_node::NodeConfig::from_toml(
             "[capabilities.worker]\ninherits = \"network-client\"\nspawn = true\nmax-memory-mb = 32\n",
         )
         .unwrap();

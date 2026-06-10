@@ -1,4 +1,4 @@
-use rusm_bench::ClientCommand;
+use rusm_node::ClientCommand;
 
 /// A parsed line of REPL input from `rusm attach`.
 #[derive(Debug, Clone, PartialEq)]
@@ -18,16 +18,9 @@ pub fn parse(line: &str) -> ReplInput {
     match verb {
         "help" | "?" => ReplInput::Help,
         "quit" | "exit" | "q" => ReplInput::Quit,
-        "stop" => ReplInput::Command(ClientCommand::Stop),
-        "run" => match parts.next() {
-            Some(scenario) => ReplInput::Command(ClientCommand::Run {
-                scenario: scenario.to_string(),
-            }),
-            None => ReplInput::Unknown("usage: run <scenario>".to_string()),
-        },
         "detail" => match parts.next() {
-            Some("on") => ReplInput::Command(ClientCommand::SetObserverDetail { enabled: true }),
-            Some("off") => ReplInput::Command(ClientCommand::SetObserverDetail { enabled: false }),
+            Some("on") => ReplInput::Command(ClientCommand::SetDetail { enabled: true }),
+            Some("off") => ReplInput::Command(ClientCommand::SetDetail { enabled: false }),
             _ => ReplInput::Unknown("usage: detail on|off".to_string()),
         },
         other => ReplInput::Unknown(format!("unknown command: {other}")),
@@ -36,9 +29,7 @@ pub fn parse(line: &str) -> ReplInput {
 
 pub const HELP: &str = "\
 commands:
-  run <scenario>   start a benchmark scenario on the node
-  stop             stop the running scenario
-  detail on|off    toggle the per-instance observer detail table
+  detail on|off    toggle the per-process detail table in snapshots
   help             show this help
   quit             leave the REPL";
 
@@ -63,33 +54,14 @@ mod tests {
     }
 
     #[test]
-    fn run_requires_a_scenario() {
-        assert_eq!(
-            parse("run connection-storm"),
-            ReplInput::Command(ClientCommand::Run {
-                scenario: "connection-storm".to_string()
-            })
-        );
-        assert_eq!(
-            parse("run"),
-            ReplInput::Unknown("usage: run <scenario>".to_string())
-        );
-    }
-
-    #[test]
-    fn stop_maps_to_command() {
-        assert_eq!(parse("stop"), ReplInput::Command(ClientCommand::Stop));
-    }
-
-    #[test]
     fn detail_on_off_and_misuse() {
         assert_eq!(
             parse("detail on"),
-            ReplInput::Command(ClientCommand::SetObserverDetail { enabled: true })
+            ReplInput::Command(ClientCommand::SetDetail { enabled: true })
         );
         assert_eq!(
             parse("detail off"),
-            ReplInput::Command(ClientCommand::SetObserverDetail { enabled: false })
+            ReplInput::Command(ClientCommand::SetDetail { enabled: false })
         );
         let usage = ReplInput::Unknown("usage: detail on|off".to_string());
         assert_eq!(parse("detail"), usage);
@@ -107,10 +79,8 @@ mod tests {
     #[test]
     fn extra_whitespace_is_tolerated() {
         assert_eq!(
-            parse("  run   ping-pong  "),
-            ReplInput::Command(ClientCommand::Run {
-                scenario: "ping-pong".to_string()
-            })
+            parse("  detail   on  "),
+            ReplInput::Command(ClientCommand::SetDetail { enabled: true })
         );
     }
 }

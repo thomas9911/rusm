@@ -13,7 +13,7 @@ name = "rusm"
 path = "src/main.rs"
 
 [dependencies]
-rusm-bench = { path = "../bench/rusm-bench", version = "0.1.0" }
+rusm-node = { path = "../crates/rusm-node", version = "0.1.0" }
 rusm-otp = { path = "../crates/rusm-otp", version = "0.1.0" }
 rusm-wasm = { path = "../crates/rusm-wasm", version = "0.1.0" }
 # Build-time QuickJS bytecode compiler (version-locked to the js-runner) so

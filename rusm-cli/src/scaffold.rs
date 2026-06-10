@@ -423,7 +423,7 @@ fn validate_name(name: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rusm_bench::{NodeConfig, ServeMode, ServeProtocol};
+    use rusm_node::{NodeConfig, ServeMode, ServeProtocol};
 
     fn app(lang: Lang, protocol: Protocol) -> NewApp {
         NewApp {

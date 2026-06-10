@@ -3,7 +3,7 @@ use std::process::Command;
 
 use anyhow::{anyhow, Context};
 use futures_util::{SinkExt, StreamExt};
-use rusm_bench::{serve, ClientCommand, Node, NodeConfig, ResourceProfile};
+use rusm_node::{serve, ClientCommand, Node, NodeConfig, ServerMessage};
 use rusm_cli::{
     normalize_target, parse, parse_new_args, render_message, scaffold, serve_apps,
     spawn_components, Protocol, ReplInput, DEFAULT_HOST, HELP,
@@ -20,32 +20,9 @@ async fn main() {
     let subcommand = args.get(2).map(String::as_str);
 
     if command == Some("node") && subcommand == Some("start") {
-        let cfg = load_node_config(&args);
-        let node = Node::new(rusm_bench::runner_config(&cfg));
-        // Apply the startup profile (sets the spawn tuning and is reflected in frames).
-        let _ = node.apply(ClientCommand::SetResourceProfile {
-            profile: cfg.profile.id().to_string(),
-        });
-        println!(
-            "rusm node listening on ws://{} (profile: {}, {} Hz)",
-            cfg.listen,
-            cfg.profile.id(),
-            cfg.ticks_per_second
-        );
-        // Wasm pool ceiling (reserved): the most concurrent Wasm instances and the
-        // per-instance heap cap. The reservation is lazy virtual memory; real RSS
-        // tracks live instances (the dashboard Observer shows live vs this cap).
-        let (cap, mem) = (
-            rusm_wasm::DEFAULT_MAX_INSTANCES,
-            rusm_wasm::DEFAULT_MAX_MEMORY,
-        );
-        println!(
-            "Wasm pool: {cap} instances x {} MiB  (~{} GiB virtual reserved)",
-            mem >> 20,
-            (cap as usize * mem) >> 30
-        );
-        if let Err(error) = serve(&cfg.listen, node).await {
-            eprintln!("node error: {error}");
+        // Host the app's components and expose a live attach/observe endpoint.
+        if let Err(error) = start_node(&args).await {
+            eprintln!("node start failed: {error}");
             std::process::exit(1);
         }
     } else if command == Some("attach") {
@@ -121,7 +98,7 @@ async fn main() {
         eprintln!("usage:");
         eprintln!("  rusm new <name>            scaffold a new RUSM app in ./<name>");
         eprintln!(
-            "  rusm node start [--config <file>] [--listen <addr>] [--profile light|balanced|max]"
+            "  rusm node start [--config <file>] [--listen <addr>]   host the app + a live attach endpoint"
         );
         eprintln!("  rusm build                 compile ./components/* -> ./wasm/*.wasm");
         eprintln!(
@@ -134,6 +111,39 @@ async fn main() {
         eprintln!("  rusm attach [<host | host:port | ws-url>]   (defaults to 127.0.0.1:4000)");
         std::process::exit(2);
     }
+}
+
+/// `rusm node start`: host the app's `[[components]]` (like `rusm run`) and expose
+/// a live **attach** endpoint on `cfg.listen`, so `rusm attach` can observe the
+/// node's processes. The served runtime + held handles keep everything alive for
+/// the lifetime of the server (which runs until Ctrl-C or a bind error).
+async fn start_node(args: &[String]) -> anyhow::Result<()> {
+    dotenvy::dotenv().ok();
+    let cfg = load_node_config(args);
+    let rt = Runtime::new();
+    let wasm = WasmRuntime::new(rt.clone())?;
+    let handles = spawn_components(Path::new("."), &wasm, &cfg.components, &cfg.capabilities)?;
+    let node = Node::new(rt.clone(), node_name(), cfg.ticks_per_second);
+    println!(
+        "rusm node listening on ws://{} ({} component(s), {} Hz)",
+        cfg.listen,
+        handles.len(),
+        cfg.ticks_per_second
+    );
+    println!("attach with:  rusm attach {}", cfg.listen);
+    serve(&cfg.listen, node).await?;
+    // Unreachable until the server stops; keeps the hosted components alive.
+    drop((wasm, handles));
+    Ok(())
+}
+
+/// The node's display name for `attach`: the app directory's name (e.g. `hello`),
+/// falling back to `rusm`.
+fn node_name() -> String {
+    std::env::current_dir()
+        .ok()
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+        .unwrap_or_else(|| "rusm".to_string())
 }
 
 /// Runs the app's components: load `.env` (process env wins), then spawn each
@@ -400,30 +410,13 @@ fn flag(args: &[String], name: &str) -> Option<String> {
 fn load_node_config(args: &[String]) -> NodeConfig {
     let explicit = flag(args, "--config");
     let path = explicit.clone().unwrap_or_else(|| "rusm.toml".to_string());
-    let text = match std::fs::read_to_string(&path) {
-        Ok(text) => Some(text),
-        // A missing default rusm.toml is fine; a missing explicit --config is not.
-        Err(_) if explicit.is_none() => None,
-        Err(error) => {
-            eprintln!("cannot read {path}: {error}");
-            std::process::exit(2);
-        }
-    };
-    let mut cfg = match text {
-        Some(text) => NodeConfig::from_toml(&text).unwrap_or_else(|error| {
-            eprintln!("invalid {path}: {error}");
-            std::process::exit(2);
-        }),
-        None => NodeConfig::default(),
-    };
-    if let Some(listen) = flag(args, "--listen") {
-        cfg.listen = listen;
-    }
-    if let Some(profile) = flag(args, "--profile") {
-        cfg.profile = ResourceProfile::from_id(&profile).unwrap_or_else(|| {
-            eprintln!("unknown profile: {profile} (use light | balanced | max)");
+    let mut cfg =
+        NodeConfig::load(Path::new(&path), explicit.is_some()).unwrap_or_else(|error| {
+            eprintln!("{error}");
             std::process::exit(2);
         });
+    if let Some(listen) = flag(args, "--listen") {
+        cfg.listen = listen;
     }
     cfg
 }
@@ -438,7 +431,7 @@ async fn attach(url: &str) -> Result<(), Box<dyn std::error::Error>> {
         tokio::select! {
             incoming = read.next() => match incoming {
                 Some(Ok(Message::Text(text))) => {
-                    if let Ok(message) = rusm_bench::ServerMessage::from_json(text.as_str()) {
+                    if let Ok(message) = ServerMessage::from_json(text.as_str()) {
                         println!("{}", render_message(&message));
                     }
                 }

@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::Path;
 
 use serde::Deserialize;
 
@@ -183,6 +184,20 @@ impl NodeConfig {
     pub fn from_toml(text: &str) -> Result<Self, toml::de::Error> {
         toml::from_str(text)
     }
+
+    /// Loads a manifest from `path`. A `required` (explicitly requested) file that
+    /// is missing is an error; a missing optional file (the default `rusm.toml`)
+    /// yields [`NodeConfig::default`]. Invalid TOML is always an error. The
+    /// returned message is human-readable, ready to print.
+    pub fn load(path: &Path, required: bool) -> Result<Self, String> {
+        match std::fs::read_to_string(path) {
+            Ok(text) => {
+                Self::from_toml(&text).map_err(|e| format!("invalid {}: {e}", path.display()))
+            }
+            Err(_) if !required => Ok(Self::default()),
+            Err(e) => Err(format!("cannot read {}: {e}", path.display())),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -192,6 +207,25 @@ mod tests {
     #[test]
     fn empty_file_is_all_defaults() {
         assert_eq!(NodeConfig::from_toml("").unwrap(), NodeConfig::default());
+    }
+
+    #[test]
+    fn load_reads_file_defaults_when_optional_and_errors_when_required() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rusm.toml");
+        std::fs::write(&path, "listen = \"0.0.0.0:9000\"\n").unwrap();
+        // An explicit, valid file is parsed.
+        assert_eq!(NodeConfig::load(&path, true).unwrap().listen, "0.0.0.0:9000");
+        // A missing optional file → defaults; a missing required file → error.
+        let missing = dir.path().join("absent.toml");
+        assert_eq!(
+            NodeConfig::load(&missing, false).unwrap(),
+            NodeConfig::default()
+        );
+        assert!(NodeConfig::load(&missing, true).is_err());
+        // Invalid TOML always errors.
+        std::fs::write(&path, "nope = 1\n").unwrap();
+        assert!(NodeConfig::load(&path, true).is_err());
     }
 
     #[test]
