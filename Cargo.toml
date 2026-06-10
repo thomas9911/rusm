@@ -14,6 +14,7 @@ members = [
     "crates/rusm-jsc",
     "crates/rusm-metrics",
     "crates/rusm-observer",
+    "crates/rusm-node",
     "bench/rusm-bench",
     "bench/rusm-loadtest",
     "rusm-cli",

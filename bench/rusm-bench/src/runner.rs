@@ -10,6 +10,7 @@ use crate::faultrecovery::FaultRecoveryEngine;
 use crate::modulestorm::ModuleStormEngine;
 use crate::pingpong::PingPongEngine;
 use crate::profile::ResourceProfile;
+use crate::profile_tuning::ProfileTuning;
 use crate::protocol::Frame;
 use crate::sample::Sample;
 use crate::scenario::Scenario;
@@ -50,6 +51,16 @@ impl Default for RunnerConfig {
             spawn_workers,
             spawn_max_in_flight,
         }
+    }
+}
+
+/// The runner config implied by a node manifest (just the sampling rate; the
+/// `profile` is applied to the running node separately, so it shows up in frames
+/// and can be changed live).
+pub fn runner_config(cfg: &rusm_node::NodeConfig) -> RunnerConfig {
+    RunnerConfig {
+        ticks_per_second: cfg.ticks_per_second.max(1),
+        ..RunnerConfig::default()
     }
 }
 
@@ -393,6 +404,12 @@ mod tests {
 
     fn runner() -> Runner {
         Runner::new(RunnerConfig::default())
+    }
+
+    #[test]
+    fn runner_config_carries_the_tick_rate() {
+        let cfg = rusm_node::NodeConfig::from_toml("ticks_per_second = 30").unwrap();
+        assert_eq!(runner_config(&cfg).ticks_per_second, 30);
     }
 
     #[test]

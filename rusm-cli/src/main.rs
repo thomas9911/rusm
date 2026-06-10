@@ -21,7 +21,7 @@ async fn main() {
 
     if command == Some("node") && subcommand == Some("start") {
         let cfg = load_node_config(&args);
-        let node = Node::new(cfg.runner_config());
+        let node = Node::new(rusm_bench::runner_config(&cfg));
         // Apply the startup profile (sets the spawn tuning and is reflected in frames).
         let _ = node.apply(ClientCommand::SetResourceProfile {
             profile: cfg.profile.id().to_string(),

@@ -2439,6 +2439,7 @@ dependencies = [
  "rusm-cluster",
  "rusm-loadtest",
  "rusm-metrics",
+ "rusm-node",
  "rusm-observer",
  "rusm-otp",
  "rusm-wasm",
@@ -2508,6 +2509,19 @@ dependencies = [
  "hdrhistogram",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "rusm-node"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "rusm-otp",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-tungstenite 0.29.0",
+ "toml 1.1.2+spec-1.1.0",
 ]
 
 [[package]]

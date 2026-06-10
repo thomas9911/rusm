@@ -2,8 +2,12 @@
 //! a runner that aggregates ticks into transportable frames, and the WebSocket
 //! server feeding the dashboard and the `rusm attach` REPL.
 
+// `config` (the `rusm.toml` manifest) and `profile` (the resource tier) are the
+// benchmark-free node types — they live in `rusm-node`; we re-export them and
+// build on top (the benchmark interpretation of a profile is `profile_tuning`).
+use rusm_node::{config, profile};
+
 mod componentstorm;
-mod config;
 mod connectionscale;
 mod connectionstorm;
 mod distributedfanout;
@@ -11,7 +15,7 @@ mod fairness;
 mod faultrecovery;
 mod modulestorm;
 mod pingpong;
-mod profile;
+mod profile_tuning;
 mod protocol;
 mod report;
 mod runner;
@@ -29,7 +33,7 @@ pub use config::{
 pub use profile::{ResourceProfile, ResourceProfileMeta};
 pub use protocol::{ClientCommand, Frame, ServerMessage};
 pub use report::summarize_frame;
-pub use runner::{Runner, RunnerConfig};
+pub use runner::{runner_config, Runner, RunnerConfig};
 pub use sample::Sample;
 pub use scenario::{MetricUnit, Scenario, ScenarioMeta};
 pub use server::{serve, serve_on, Node};

@@ -23,12 +23,52 @@ use rusm_wasm::{
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
 
+/// Resolves a [`CapabilitySpec`] to concrete [`Capabilities`]: start from the
+/// inherited built-in base (default `sandboxed`), then apply each set override.
+/// Env keys are resolved from the process environment (process env, then `.env`).
+///
+/// This is the `rusm-wasm` conversion of the manifest's `[capabilities.<name>]`
+/// table; it lives here, the only place that links the Wasm backend, so the
+/// `rusm-node` manifest crate stays Wasm-free.
+fn to_capabilities(spec: &CapabilitySpec) -> Capabilities {
+    let mut caps = spec
+        .inherits
+        .as_deref()
+        .and_then(CapabilityProfile::from_id)
+        .unwrap_or(CapabilityProfile::Sandboxed)
+        .capabilities();
+    if let Some(v) = spec.network {
+        caps = caps.allow_network(v);
+    }
+    if let Some(v) = spec.spawn {
+        caps = caps.allow_spawn(v);
+    }
+    if let Some(v) = spec.process_control {
+        caps = caps.allow_process_control(v);
+    }
+    if let Some(v) = spec.stdio {
+        caps = caps.inherit_stdio(v);
+    }
+    if let Some(mb) = spec.max_memory_mb {
+        caps = caps.max_memory(mb << 20);
+    }
+    for key in &spec.env {
+        if let Ok(value) = std::env::var(key) {
+            caps = caps.env(key, value);
+        }
+    }
+    for p in &spec.preopen {
+        caps = caps.preopen(&p.host, &p.guest, p.read_only);
+    }
+    caps
+}
+
 /// Resolves a capability id to its [`Capabilities`]: a custom `[capabilities.<id>]`
 /// profile first, then a built-in (`sandboxed` / `network-client` / `trusted`),
 /// falling back to the secure `Sandboxed` default (default-deny) for an unknown id.
 pub fn capabilities_for(id: &str, profiles: &HashMap<String, CapabilitySpec>) -> Capabilities {
     if let Some(spec) = profiles.get(id) {
-        return spec.to_capabilities();
+        return to_capabilities(spec);
     }
     CapabilityProfile::from_id(id)
         .unwrap_or(CapabilityProfile::Sandboxed)
@@ -279,6 +319,34 @@ mod tests {
     use rusm_otp::Runtime;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpStream;
+
+    #[test]
+    fn a_custom_profile_inherits_then_overrides() {
+        // Starts from network-client (network on, spawn off), then turns spawn on
+        // and tightens memory — only the set fields override the inherited base.
+        let cfg = rusm_bench::NodeConfig::from_toml(
+            "[capabilities.worker]\ninherits = \"network-client\"\nspawn = true\nmax-memory-mb = 32\n",
+        )
+        .unwrap();
+        let caps = to_capabilities(&cfg.capabilities["worker"]);
+        assert!(caps.can_spawn(), "override turned spawn on");
+        assert_eq!(caps.memory_limit(), 32 << 20, "override tightened memory");
+        // An omitted base → the most restrictive default (sandboxed): no spawn.
+        let bare = CapabilitySpec {
+            inherits: None,
+            network: None,
+            spawn: None,
+            process_control: None,
+            stdio: None,
+            max_memory_mb: None,
+            env: Vec::new(),
+            preopen: Vec::new(),
+        };
+        assert!(
+            !to_capabilities(&bare).can_spawn(),
+            "default base is sandboxed"
+        );
+    }
 
     // A minimal component (WAT text — accepted by compile_component) standing in
     // for a built `wasm/<name>.wasm`; it just runs and returns.

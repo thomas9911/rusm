@@ -3,7 +3,6 @@ use std::collections::HashMap;
 use serde::Deserialize;
 
 use crate::profile::ResourceProfile;
-use crate::runner::RunnerConfig;
 
 /// Node startup configuration, loaded from `rusm.toml`.
 ///
@@ -74,43 +73,9 @@ pub struct PreopenSpec {
     pub read_only: bool,
 }
 
-impl CapabilitySpec {
-    /// Resolves this spec to concrete [`Capabilities`]: start from the inherited
-    /// built-in base (default `sandboxed`), then apply each set override. Env keys
-    /// are resolved from the process environment (process env, then `.env`).
-    pub fn to_capabilities(&self) -> rusm_wasm::Capabilities {
-        let mut caps = self
-            .inherits
-            .as_deref()
-            .and_then(rusm_wasm::CapabilityProfile::from_id)
-            .unwrap_or(rusm_wasm::CapabilityProfile::Sandboxed)
-            .capabilities();
-        if let Some(v) = self.network {
-            caps = caps.allow_network(v);
-        }
-        if let Some(v) = self.spawn {
-            caps = caps.allow_spawn(v);
-        }
-        if let Some(v) = self.process_control {
-            caps = caps.allow_process_control(v);
-        }
-        if let Some(v) = self.stdio {
-            caps = caps.inherit_stdio(v);
-        }
-        if let Some(mb) = self.max_memory_mb {
-            caps = caps.max_memory(mb << 20);
-        }
-        for key in &self.env {
-            if let Ok(value) = std::env::var(key) {
-                caps = caps.env(key, value);
-            }
-        }
-        for p in &self.preopen {
-            caps = caps.preopen(&p.host, &p.guest, p.read_only);
-        }
-        caps
-    }
-}
+// `CapabilitySpec::to_capabilities()` (the conversion to a concrete
+// `rusm_wasm::Capabilities`) lives in the CLI, the only consumer that links
+// `rusm-wasm` — keeping this manifest crate free of the Wasm backend.
 
 /// One `[[components]]` entry: a component to load from `./wasm/<name>.wasm` and
 /// run as a supervised process under a capability profile.
@@ -218,16 +183,6 @@ impl NodeConfig {
     pub fn from_toml(text: &str) -> Result<Self, toml::de::Error> {
         toml::from_str(text)
     }
-
-    /// The runner config implied by this file (just the sampling rate; the
-    /// `profile` is applied to the running node separately, so it shows up in
-    /// frames and can be changed live).
-    pub fn runner_config(&self) -> RunnerConfig {
-        RunnerConfig {
-            ticks_per_second: self.ticks_per_second.max(1),
-            ..RunnerConfig::default()
-        }
-    }
 }
 
 #[cfg(test)]
@@ -269,12 +224,6 @@ mod tests {
     #[test]
     fn invalid_profile_is_an_error() {
         assert!(NodeConfig::from_toml("profile = \"turbo\"").is_err());
-    }
-
-    #[test]
-    fn runner_config_carries_the_tick_rate() {
-        let cfg = NodeConfig::from_toml("ticks_per_second = 30").unwrap();
-        assert_eq!(cfg.runner_config().ticks_per_second, 30);
     }
 
     #[test]
@@ -333,34 +282,6 @@ mod tests {
         assert_eq!(spec.max_memory_mb, Some(256));
         assert_eq!(spec.preopen.len(), 1);
         assert!(!spec.preopen[0].read_only);
-    }
-
-    #[test]
-    fn a_custom_profile_inherits_then_overrides() {
-        // Starts from network-client (network on, spawn off), then turns spawn on
-        // and tightens memory — only the set fields override the inherited base.
-        let cfg = NodeConfig::from_toml(
-            "[capabilities.worker]\ninherits = \"network-client\"\nspawn = true\nmax-memory-mb = 32\n",
-        )
-        .unwrap();
-        let caps = cfg.capabilities["worker"].to_capabilities();
-        assert!(caps.can_spawn(), "override turned spawn on");
-        assert_eq!(caps.memory_limit(), 32 << 20, "override tightened memory");
-        // An omitted base → the most restrictive default (sandboxed): no spawn.
-        let bare = CapabilitySpec {
-            inherits: None,
-            network: None,
-            spawn: None,
-            process_control: None,
-            stdio: None,
-            max_memory_mb: None,
-            env: Vec::new(),
-            preopen: Vec::new(),
-        };
-        assert!(
-            !bare.to_capabilities().can_spawn(),
-            "default base is sandboxed"
-        );
     }
 
     #[test]

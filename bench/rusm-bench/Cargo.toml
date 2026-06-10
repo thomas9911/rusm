@@ -7,10 +7,14 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 description = "Load harness and synthetic data source driving the RUSM benchmark dashboard."
+# The benchmark harness is a repo/dev tool — never published. It is also the one
+# crate that embeds cross-crate test fixtures (see scenario.rs/serving.rs).
+publish = false
 
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
+rusm-node = { path = "../../crates/rusm-node", version = "0.1.0" }
 rusm-metrics = { path = "../../crates/rusm-metrics", version = "0.1.0" }
 rusm-observer = { path = "../../crates/rusm-observer", version = "0.1.0" }
 rusm-otp = { path = "../../crates/rusm-otp", version = "0.1.0" }
