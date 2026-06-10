@@ -3,10 +3,28 @@
   "version": "0.1.0",
   "description": "The TypeScript guest API for RUSM: the Process actor API, the spawn typed-client, websocket(), and types.",
   "license": "MIT",
-  "repository": { "type": "git", "url": "https://github.com/archan937/rusm" },
+  "author": "Paul Engel",
+  "homepage": "https://archan937.github.io/rusm",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/archan937/rusm"
+  },
+  "bugs": {
+    "url": "https://github.com/archan937/rusm/issues"
+  },
+  "keywords": [
+    "rusm",
+    "webassembly",
+    "wasm"
+  ],
   "type": "module",
   "main": "index.ts",
   "types": "index.ts",
-  "exports": { ".": "./index.ts" },
-  "files": ["index.ts", "README.md"]
+  "exports": {
+    ".": "./index.ts"
+  },
+  "files": [
+    "index.ts",
+    "README.md"
+  ]
 }
