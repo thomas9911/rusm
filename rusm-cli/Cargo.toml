@@ -1,6 +1,7 @@
 [package]
 name = "rusm-cli"
-version.workspace = true
+# Patched ahead of the workspace to ship the rusm-wasm UTF-8 hotfix (0.1.0 → 0.1.1).
+version = "0.1.1"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -15,7 +16,7 @@ path = "src/main.rs"
 [dependencies]
 rusm-node = { path = "../crates/rusm-node", version = "0.1.0" }
 rusm-otp = { path = "../crates/rusm-otp", version = "0.1.0" }
-rusm-wasm = { path = "../crates/rusm-wasm", version = "0.1.0" }
+rusm-wasm = { path = "../crates/rusm-wasm", version = "0.1.1" }   # requires the UTF-8 fix
 # Build-time QuickJS bytecode compiler (version-locked to the js-runner) so
 # `rusm build` precompiles each TS bundle → wasm/<name>.qjsbc.
 rusm-jsc = { path = "../crates/rusm-jsc", version = "0.1.0" }
