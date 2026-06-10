@@ -3,8 +3,8 @@
 //! server feeding the dashboard and the `rusm attach` REPL.
 
 // `config` (the `rusm.toml` manifest) and `profile` (the resource tier) are the
-// benchmark-free node types — they live in `rusm-node`; we re-export them and
-// build on top (the benchmark interpretation of a profile is `profile_tuning`).
+// shared node types — they live in `rusm-node`; we re-export them and build on
+// top (the benchmark interpretation of a profile is `profile_tuning`).
 use rusm_node::{config, profile};
 
 mod componentstorm;

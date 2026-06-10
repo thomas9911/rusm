@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-description = "App manifest (rusm.toml), resource profiles, and the live attach/observe protocol + node for RUSM. Benchmark-free."
+description = "The RUSM node layer: the rusm.toml app manifest, resource profiles, and the live attach/observe protocol + node (process introspection over WebSocket)."
 
 [dependencies]
 serde = { workspace = true }

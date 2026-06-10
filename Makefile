@@ -12,15 +12,14 @@ help: ## Show this help
 		awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
 
 .PHONY: dashboard
-dashboard: ## Start a node + the dashboard, then open the printed URL — "the money"
-	@cargo build --release -p rusm-cli
+dashboard: ## Start the benchmark node + the dashboard, then open the printed URL — "the money"
+	@cargo build --release -p rusm-bench
 	@# Kill any stale node still holding the port — otherwise the new node fails to
 	@# bind, the dashboard silently talks to the OLD node, and you debug a ghost.
-	@# Broad match: release, debug, or `cargo run` — any RUSM node, gone.
-	@pkill -f "rusm node start" 2>/dev/null && sleep 1 || true
+	@pkill -f "rusm-bench start" 2>/dev/null && sleep 1 || true
 	@lsof -nP -iTCP:4000 -sTCP:LISTEN -t 2>/dev/null | xargs -r kill 2>/dev/null || true
 	@echo "→ starting node (log: /tmp/rusm-node.log) + dashboard…"
-	@./target/release/rusm node start >/tmp/rusm-node.log 2>&1 & \
+	@./target/release/rusm-bench start >/tmp/rusm-node.log 2>&1 & \
 		NODE=$$!; \
 		trap 'kill $$NODE 2>/dev/null' EXIT INT TERM; \
 		sleep 1; \
@@ -31,16 +30,12 @@ dashboard: ## Start a node + the dashboard, then open the printed URL — "the m
 		cd $(DASHBOARD) && { test -d node_modules || bun install; } && bun run dev
 
 .PHONY: node
-node: ## Start a RUSM node on ws://127.0.0.1:4000 (release — Wasm perf is ~3-4x debug)
-	cargo run --release -p rusm-cli -- node start
+node: ## Start the benchmark node on ws://127.0.0.1:4000 (release — Wasm perf is ~3-4x debug)
+	cargo run --release -p rusm-bench -- start
 
 .PHONY: ui
 ui: ## Start only the dashboard dev server (expects a node already running)
 	cd $(DASHBOARD) && { test -d node_modules || bun install; } && bun run dev
-
-.PHONY: attach
-attach: ## Attach a live REPL to the local node
-	cargo run -p rusm-cli -- attach
 
 .PHONY: run
 run: ## Run a scenario in the terminal (SCENARIO=… SECONDS=…)

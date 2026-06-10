@@ -1,7 +1,7 @@
 //! The **benchmark** interpretation of a [`ResourceProfile`]: how many spawn
 //! workers a tier drives the machine with. This is benchmark-specific (it sets
-//! the spawn-storm's spawner/reaper balance), so it lives here rather than in the
-//! generic, benchmark-free `rusm-node`.
+//! the spawn-storm's spawner/reaper balance), so it lives here rather than on the
+//! shared [`ResourceProfile`] in `rusm-node`.
 
 use rusm_node::ResourceProfile;
 

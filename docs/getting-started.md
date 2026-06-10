@@ -55,10 +55,9 @@ throughput, latency, and the live observer. Everything is driven by the real run
 
 | Command | What it does |
 | --- | --- |
-| `make dashboard` | Build + start a node, then the dashboard (the headline demo). |
-| `make node` | Start a node on `ws://127.0.0.1:4000` (release). |
+| `make dashboard` | Build + start the benchmark node, then the dashboard (the headline demo). |
+| `make node` | Start the benchmark node on `ws://127.0.0.1:4000` (release). |
 | `make ui` | Start only the dashboard (expects a node already running). |
-| `make attach` | Attach a live REPL to the local node (like `iex --remsh`). |
 | `make run SCENARIO=… SECONDS=…` | Run a benchmark scenario in the terminal. |
 | `make example EX=…` | Run a bundled example (`host_components`, …). |
 | `make test` / `make cov` | All Rust + dashboard tests / coverage. |
@@ -569,10 +568,19 @@ Grants map onto standard WASI plus a `StoreLimiter` memory cap. A breach traps
 
 ## Observe a running node
 
+**Your app** — start it as an attachable node, then attach a REPL to watch its
+live processes:
+
 ```sh
-make node                 # start a node
-make attach               # a live REPL: run <scenario>, detail off, stop, quit
-make ui                   # or the visual dashboard against the same node
+rusm node start           # hosts your rusm.toml components + a live attach endpoint
+rusm attach               # stream the live process table; `detail off` for just counts
+```
+
+**The benchmark dashboard** — the visual observer + scenario runner (repo-only):
+
+```sh
+make dashboard            # the benchmark node + the React dashboard ("the money")
+# or run them separately:  make node   then   make ui
 ```
 
 The dashboard's **Observer** shows the live process count and per-tick activity;

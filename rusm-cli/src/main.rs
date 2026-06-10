@@ -3,11 +3,11 @@ use std::process::Command;
 
 use anyhow::{anyhow, Context};
 use futures_util::{SinkExt, StreamExt};
-use rusm_node::{serve, ClientCommand, Node, NodeConfig, ServerMessage};
 use rusm_cli::{
     normalize_target, parse, parse_new_args, render_message, scaffold, serve_apps,
     spawn_components, Protocol, ReplInput, DEFAULT_HOST, HELP,
 };
+use rusm_node::{serve, ClientCommand, Node, NodeConfig, ServerMessage};
 use rusm_otp::Runtime;
 use rusm_wasm::WasmRuntime;
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -410,11 +410,10 @@ fn flag(args: &[String], name: &str) -> Option<String> {
 fn load_node_config(args: &[String]) -> NodeConfig {
     let explicit = flag(args, "--config");
     let path = explicit.clone().unwrap_or_else(|| "rusm.toml".to_string());
-    let mut cfg =
-        NodeConfig::load(Path::new(&path), explicit.is_some()).unwrap_or_else(|error| {
-            eprintln!("{error}");
-            std::process::exit(2);
-        });
+    let mut cfg = NodeConfig::load(Path::new(&path), explicit.is_some()).unwrap_or_else(|error| {
+        eprintln!("{error}");
+        std::process::exit(2);
+    });
     if let Some(listen) = flag(args, "--listen") {
         cfg.listen = listen;
     }

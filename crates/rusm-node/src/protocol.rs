@@ -1,6 +1,6 @@
 //! The **attach** wire protocol: what a [`Node`](crate::Node) streams to attached
-//! clients (`rusm attach`, a dashboard) and the commands they send back. Plain
-//! process observability — no benchmark scenarios.
+//! clients (`rusm attach`, a dashboard) and the commands they send back — a live
+//! view of the node's processes.
 
 use serde::{Deserialize, Serialize};
 

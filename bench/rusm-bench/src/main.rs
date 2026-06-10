@@ -2,8 +2,8 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use rusm_bench::{
-    runner_config, serve, summarize_frame, ClientCommand, NodeConfig, Node, ResourceProfile, Runner,
-    RunnerConfig, Scenario,
+    runner_config, serve, summarize_frame, ClientCommand, Node, NodeConfig, ResourceProfile,
+    Runner, RunnerConfig, Scenario,
 };
 
 #[tokio::main]

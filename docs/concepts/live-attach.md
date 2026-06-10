@@ -6,15 +6,18 @@ this to WebAssembly.
 
 ## What it is
 
-A node exposes a secure **control channel**. A client that attaches can:
+An attachable node exposes a live **observe channel** over WebSocket. A client
+that attaches today can:
 
-- list processes and see their status, mailbox depth, memory, reductions;
-- send a message to a process, or spawn one;
-- run/stop benchmark scenarios and toggle observer detail;
-- (later) hot-reload a module.
+- watch the live process count and a per-process table (label, registry names,
+  mailbox depth, links) stream in;
+- toggle that detail table (`detail on|off`);
+- (later) send a message to a process or spawn one; hot-reload a module.
 
-Two clients speak this channel: the dashboard's **observer view** (GUI) and the
-**`rusm attach <node>`** REPL (terminal).
+`rusm node start` serves this channel; the **`rusm attach <node>`** REPL renders
+it in the terminal. The **benchmark dashboard** is a *separate* node (`rusm-bench
+start`, repo-only) with its own richer channel — the scenario-driving
+observer GUI behind [the dashboard](../03-benchmark-dashboard).
 
 ## This is new — Rust doesn't give it to us
 
@@ -29,9 +32,10 @@ REPL you can spawn and message through.
 
 Two layers are real:
 
-- **Local channel (Phase 0+):** `rusm node start` serves a control/observer channel
-  over WebSocket; the dashboard and `rusm attach` connect to it to run scenarios,
-  toggle observer detail, and watch live process samples.
+- **Local channel (Phase 0+):** `rusm node start` serves an observe channel over
+  WebSocket; `rusm attach` connects to it to watch live process samples and toggle
+  the detail table. (The benchmark dashboard runs the same idea over its own node,
+  `rusm-bench start`, with scenario controls layered on.)
 - **Cross-node primitive (Phase 9):** over the cluster transport, a node's
   control-plane RPC answers `remote_pids(node)` — list the processes alive on a
   *peer*. That's the building block behind attaching to a remote node; richer

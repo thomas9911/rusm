@@ -215,7 +215,10 @@ mod tests {
         let path = dir.path().join("rusm.toml");
         std::fs::write(&path, "listen = \"0.0.0.0:9000\"\n").unwrap();
         // An explicit, valid file is parsed.
-        assert_eq!(NodeConfig::load(&path, true).unwrap().listen, "0.0.0.0:9000");
+        assert_eq!(
+            NodeConfig::load(&path, true).unwrap().listen,
+            "0.0.0.0:9000"
+        );
         // A missing optional file → defaults; a missing required file → error.
         let missing = dir.path().join("absent.toml");
         assert_eq!(

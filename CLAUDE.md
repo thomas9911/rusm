@@ -179,10 +179,11 @@ transport. See
 cargo test                                  # all Rust tests
 cargo llvm-cov --workspace --ignore-filename-regex 'main\.rs' --summary-only
 cargo fmt --check
-cargo run -p rusm-cli -- node start         # start a node
-cargo run -p rusm-cli -- attach             # local node; or attach host[:port]
+cargo run -p rusm-cli -- node start         # host the app as an attachable node
+cargo run -p rusm-cli -- attach             # observe a node; local or host[:port]
 cargo run -p rusm-cli -- new hello          # scaffold an app
 cargo run -p rusm-cli -- serve              # host rusm.toml [[serve]] entries on real ports
+cargo run -p rusm-bench -- start            # the benchmark/dashboard node (repo-only)
 cargo run -p rusm-bench -- run connection-storm 5
 cargo run -p rusm-bench --example headless_run
 cargo run -p rusm-loadtest -- --help        # out-of-process serving load test (vs a live `rusm serve` port)
@@ -194,7 +195,8 @@ cd bench/dashboard && bun test --coverage             # dashboard tests
 ## Layout
 
 `crates/rusm-otp`, `crates/rusm-wasm`, `crates/rusm-cluster`,
-`crates/rusm-metrics`, `crates/rusm-observer`, `bench/rusm-bench` (lib+bin),
+`crates/rusm-metrics`, `crates/rusm-observer`, `crates/rusm-node` (manifest +
+profiles + the attach protocol/node), `bench/rusm-bench` (lib+bin),
 `bench/rusm-loadtest` (out-of-process serving load test),
 `rusm-cli` (`rusm`), `bench/dashboard` (Bun/React), `examples/`, `docs/`.
 Per-crate purpose: see `README.md` → Crates.

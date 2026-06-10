@@ -7,6 +7,8 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 description = "Out-of-process load driver for a `rusm serve` node (balter saturation testing)."
+# A repo/dev benchmark tool — never published.
+publish = false
 
 [lib]
 name = "rusm_loadtest"

@@ -1,7 +1,7 @@
-//! `rusm-node` — the benchmark-free node layer shared by the `rusm` CLI and any
-//! tooling that hosts or observes a running node.
+//! `rusm-node` — the node layer shared by the `rusm` CLI and any tooling that
+//! hosts or observes a running node.
 //!
-//! It owns three things, none of them benchmark-aware:
+//! It owns three things:
 //! - [`config`] — the `rusm.toml` app manifest (components, servers, capabilities).
 //! - [`profile`] — [`ResourceProfile`], the machine-usage tier.
 //! - the live **attach** layer (`protocol` + `node`) — a node streams plain

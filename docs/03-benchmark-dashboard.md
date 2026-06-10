@@ -94,8 +94,9 @@ run away), **not** a per-tier knob — the population self-limits well below it.
 sustained-throughput peak. Pushing spawners higher does **not** go faster — it
 just starves the reapers and piles processes up. So `Max` is the fastest profile
 *and* keeps the live population to a few hundred (no pile-up). The default is
-**Balanced** — fast, with headroom, and easy on the laptop. Defined in
-`rusm-bench` `profile.rs` (`ResourceProfile`).
+**Balanced** — fast, with headroom, and easy on the laptop. The tier
+(`ResourceProfile`) lives in `rusm-node` `profile.rs`; the benchmark's spawn-worker
+tuning for each tier is in `rusm-bench` `profile_tuning.rs`.
 
 ## Protocol
 

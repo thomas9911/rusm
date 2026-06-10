@@ -41,7 +41,7 @@ numbers, with no new plumbing.
 
 ```sh
 cargo run -p rusm-bench --example headless_run        # print sampled ticks
-cargo run -p rusm-cli -- node start                   # then open the dashboard
+cargo run -p rusm-bench -- start                      # the dashboard node (or: make dashboard)
 cargo run -p rusm-bench --example observer_overhead   # detail on vs off
 ```
 

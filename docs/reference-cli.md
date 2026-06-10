@@ -93,28 +93,32 @@ rusm dev
 
 ## `rusm node start`
 
-Start the **benchmark/observer node** — the WebSocket server the dashboard and
-`rusm attach` connect to. This is the node behind the live dashboard, not an app
-server.
+Start an **attachable node**: host the app's `[[components]]` (like `rusm run`)
+**and** expose a live observe/attach endpoint on `listen`, so `rusm attach` can
+watch the node's processes. The hosted components keep running until Ctrl-C.
 
 ```sh
-rusm node start --profile max
-# rusm node listening on ws://127.0.0.1:4000 (profile: max, 20 Hz)
+rusm node start
+# rusm node listening on ws://127.0.0.1:4000 (2 component(s), 20 Hz)
+# attach with:  rusm attach 127.0.0.1:4000
 ```
+
+> The **benchmark/observer node** behind the live dashboard is a separate,
+> repo-only tool — `rusm-bench start` (see [the dashboard](./03-benchmark-dashboard)
+> / `make dashboard`), not the installed `rusm`.
 
 ## `rusm attach [target]`
 
 Open a live REPL into a running node (defaults to `127.0.0.1:4000`; accepts
-`host`, `host:port`, or a full `ws://` URL — local or remote). Run scenarios, stop
-them, toggle the observer, switch the profile, and watch frames stream in. See
-[live attach](./concepts/live-attach).
+`host`, `host:port`, or a full `ws://` URL — local or remote). Watch the node's
+live processes stream in (count + a per-process detail table), and toggle the
+detail table. See [live attach](./concepts/live-attach).
 
 ```sh
 rusm attach                 # local node
 rusm attach 10.0.0.7:4000   # a remote node
 # attached — type `help` for commands
-> run spawn-storm
-> stop
+> detail off                # just the live count, no per-process table
 ```
 
 ## Flags
@@ -124,8 +128,7 @@ Applied by the node-starting commands (layered over `rusm.toml`):
 | Flag | Commands | Meaning |
 | --- | --- | --- |
 | `--config <file>` | `node start`, `run`, `serve`, `dev` | Use a specific manifest instead of `./rusm.toml`. |
-| `--listen <addr>` | `node start` | Override the node's WebSocket address. |
-| `--profile light\|balanced\|max` | `node start` | Override the startup throughput profile. |
+| `--listen <addr>` | `node start` | Override the node's attach (WebSocket) address. |
 
 > `rusm new` takes the app name; `rusm attach` takes the target as a positional
 > argument; `rusm build` takes no flags.

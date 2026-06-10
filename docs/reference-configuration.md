@@ -12,9 +12,9 @@ default. Unknown keys are **rejected** (a typo is an error, not a silent no-op).
 ## The file at a glance
 
 ```toml
-# Node (dashboard / `rusm node start`)
-listen = "127.0.0.1:4000"     # WebSocket address the dashboard + `rusm attach` use
-profile = "balanced"          # light | balanced | max  — the throughput dial
+# Node — the attach endpoint (`rusm node start`) and the benchmark node (`rusm-bench start`)
+listen = "127.0.0.1:4000"     # WebSocket address the node's attach endpoint binds
+profile = "balanced"          # light | balanced | max  — the benchmark node's throughput dial
 ticks_per_second = 20         # snapshot rate, 10–60 Hz
 
 # A custom capability profile (default-deny; inherits a built-in, overrides grants)
@@ -47,8 +47,8 @@ max-inflight = 256            # per-instance overload cap → 503 (optional)
 
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `listen` | string | `"127.0.0.1:4000"` | The WebSocket address the dashboard and `rusm attach` connect to. |
-| `profile` | enum | `balanced` | Throughput dial — see below. |
+| `listen` | string | `"127.0.0.1:4000"` | The WebSocket address a node's attach endpoint binds (`rusm node start` / `rusm-bench start`). |
+| `profile` | enum | `balanced` | The benchmark node's throughput dial — see below. |
 | `ticks_per_second` | int (10–60) | `20` | How often the node samples + broadcasts a snapshot. |
 
 **`profile`** is the spawn-throughput dial, relative to your CPU count:
