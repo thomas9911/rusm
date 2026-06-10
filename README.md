@@ -9,59 +9,73 @@ core** (pure Rust); **WebAssembly is the sandboxed execution backend** that late
 runs each process as an isolated instance. Rust + Tokio do the scheduling;
 Wasmtime does the isolation.
 
-> **Status: Phases 0–11 functionally complete (of 12; the native `stream<u8>` signature is the one deferred refinement), Phase 12 (hardening) planned.** RUSM **hosts real WASM components** as
-> isolated, supervised processes. The Wasmtime backend (`rusm-wasm`) runs each
-> instance-per-process behind three bridges — **wasip1** (core modules + a raw
-> `rusm::*` actor ABI + cross-process byte streams), **wasip2** (components, the
-> `rusm:runtime` **WIT actor world** — `self`/`spawn`/`monitor`/`send`/`receive`/
-> `list`/`info`/`kill`/`register`, the Erlang `Process` API in any language), and
-> **wasip3** (the `@0.3.0` async WASI interfaces). **Default-deny capability
-> profiles** (fs/net/env/memory/spawn), epoch preemption, and a spawn path tuned to
-> **~440k component spawns/sec**. **Guest ergonomics (Phase 8):** write components
-> in **TypeScript** (the `rusm-ts` npm package) or **Rust** (the `rusm-rs` crate) — a
-> service is just exported functions, called from another component through a
-> concealed **typed client** (`spawn<Svc>("svc")` → `await svc.method(...)`,
-> with streaming + callbacks), with an in-guest **`Supervisor`** (one/all/rest-for-one)
-> and `rusm dev` watch+reload. An **app model** lets you
-> `rusm dev` a project: `rusm.toml` `[[components]]`, source under `components/`,
-> built to `./wasm/`, spawned under their capabilities — env the Rust way (process
-> env, then `.env`). Underneath, the Wasm-free OTP core (`rusm-otp`) spawns,
-> schedules, kills, messages, **supervises**, **manages**, and **connects** **real**
-> lightweight processes — links, monitors, `trap_exit`, exit cascades, a named
-> registry, timers, graceful shutdown, and **TCP** (one process per connection).
-> Sixteen dashboard scenarios show real numbers (release) — *every* scenario now runs
-> on live data: spawn-storm **~2.4M spawns/sec**,
-> ping-pong **~21M messages/sec** (round-trip p50 <1 µs), fault-recovery
-> **~285k restarts/sec**, fairness keeping bystanders at **~50M+ ops/sec**
-> (peaking past **400M** when cores are free) under tight-loop spinners,
-> module-storm **~475k wasip1 core-module spawns/sec** (the direct Lunatic
-> head-to-head), component-storm **~440k component spawns/sec**, stream-pipe
-> piping bytes between processes at **multiple GB/sec**, connection-storm
-> holding **thousands of concurrent connections** (connect p50 sub-millisecond) —
-> the connection ceiling is the OS, not RUSM — and distributed-fanout doing
-> **~550k cross-node messages/sec** over QUIC+TLS. These are measured under everyday
-> load and scale up with free CPU. **Distributed clusters (Phase 9):** the
-> Wasm-free `rusm-cluster` crate connects nodes over **QUIC + TLS** so processes
-> message across machines — cross-node `send`, a gossiped **global registry**,
-> **remote spawn**, and **live attach** — at **~550k cross-node messages/sec**
-> (~39µs p50 round-trip, loopback). **Hardened for scale (Phase 10):** an on-demand
-> instance tier (live count bounded by RAM, not a fixed pool), opt-in bounded
-> mailboxes (overload load-shed), per-node certs under a cluster CA + mutual TLS,
-> and windowed supervisor restart-intensity — with no spawn/message regression.
-> **Serving (Phase 11):** a component runs as a high-throughput **HTTP / WS / SSE**
-> server. **`rusm serve`** hosts `rusm.toml [[serve]]` entries (`name`, `protocol`,
-> `listen`, `capability`) on real TCP ports, and **`rusm new <name>`** scaffolds a
-> ready-to-serve TS HTTP app (`rusm new hello && cd hello && rusm build && rusm
-> serve`). Serving is benchmarked two ways: the **fair, credible headline numbers**
-> come **out-of-process** from `rusm-loadtest` against a live `rusm serve` port —
-> loopback: HTTP **~46k req/s** (0% errors), WS **~146k round-trips/s** (256 held),
-> SSE **~609k events/s** (256 held), and **~34k sandboxed-process-per-connection WS
-> establishments/sec** (the `conn` mode — each connection spawns a full component).
-> The six serving dashboard tiles (`http-throughput`, `ws-echo`, `sse-fanout` and
-> their `*-ts` twins) are **co-resident live demos**: the same real in-process WASM
-> server, driven through the same load path (balter for HTTP request-rate, a
-> connection-capacity harness for WS/SSE held connections), with the load generator
-> and server sharing the node process. See the [roadmap](docs/02-roadmap.md).
+> **Status:** Phases 0–11 of 12 are functionally complete (the native `stream<u8>`
+> WIT signature is the one deferred refinement); Phase 12 (edge & cluster hardening)
+> is planned. See the [roadmap](docs/02-roadmap.md).
+
+## Prerequisites
+
+- **Rust** 1.94+ — [rustup](https://rustup.rs).
+- **Bun** 1.3+ — [bun.sh](https://bun.sh) (builds TypeScript components; runs the dashboard).
+
+## Quick start
+
+Install the CLI — no clone needed (you only clone to hack on RUSM itself or run its
+dashboard):
+
+```sh
+cargo install rusm-cli            # the `rusm` command
+rustup target add wasm32-wasip2   # only to build Rust guest components
+```
+
+**Build your own — from nothing to a live server in four commands:**
+
+```sh
+rusm new hello && cd hello   # scaffold a TS HTTP component + rusm.toml
+rusm build                   # components/ → wasm/
+rusm serve                   # → http://127.0.0.1:8080
+curl http://127.0.0.1:8080/  # "Hello from RUSM 👋"
+```
+
+## Live benchmarks dashboard
+
+To watch the runtime flexed live, clone the repo and run the dashboard:
+
+```sh
+git clone https://github.com/archan937/rusm.git && cd rusm
+make dashboard   # builds + starts a node, launches the dashboard, opens your browser
+```
+
+Pick a scenario (spawn-storm, stream-pipe, the HTTP/WS/SSE serving tiles, …), hit
+**Run**, and watch real throughput, latency percentiles, and the host/instance
+observer — every scenario runs a real engine (headline numbers in
+[Benchmarks](#benchmarks) below).
+
+## A taste
+
+A *service* is just exported functions; call it from another sandboxed process and the
+cross-process round-trip reads like a local call — fully typed, even across languages:
+
+```ts
+// commander.ts — talks to the `calc` service running in its own WASM process
+import { spawn } from "rusm-ts";
+import type { Calc } from "../calc";
+
+const calc = spawn<Calc>("calc");        // spawn (or attach to) a process by name
+console.log(await calc.add(2, 3));       // 5 — a real message round-trip, reads local
+for await (const n of calc.countTo(3))   // generator handlers stream back
+  console.log(n);                        // 1, 2, 3
+```
+
+Write the same service in Rust with [`rusm-rs`](crates/rusm-rs) — a Rust client and a
+TS service interoperate over one wire. Each process is a **sandboxed WASM instance**,
+supervised and hot-reloadable, and you never write `async` in a guest. Or skip
+components entirely and use the pure-Rust [`rusm-otp`](crates/rusm-otp) core directly.
+
+**New here?** The [Getting Started guide](docs/getting-started.md) walks from the
+pure-Rust OTP core to hosting a `.wasm`, the app model, and writing components in
+TypeScript and Rust — then the [Concepts](docs/) and the
+[`rusm` CLI reference](docs/reference-cli.md). `make help` lists every dev command.
 
 ## Why
 
@@ -87,68 +101,67 @@ Wasmtime map onto the BEAM, and the [RUSM vs Lunatic
 comparison](docs/lunatic-comparison.md) for where we borrow and where we aim to
 beat the runtime that inspired this.
 
-## Installation
+## What's there
 
-Prerequisites:
+- **A Wasm-free OTP core** (`rusm-otp`) — real lightweight processes: `spawn`,
+  message passing, links / monitors / `trap_exit`, supervision, a named registry,
+  timers, graceful shutdown, and TCP (one process per connection).
+- **Wasmtime as the per-process sandbox** (`rusm-wasm`) — instance-per-process behind
+  three bridges: **wasip1** (core modules + a raw `rusm::*` ABI), **wasip2** (the
+  component model + the `rusm:runtime` WIT actor world — the Erlang `Process` API in
+  any language), and **wasip3** (`@0.3.0` async WASI). Default-deny capabilities
+  (fs / net / env / memory / spawn) and epoch preemption.
+- **Guests in TypeScript or Rust** — a *service* is just exported functions, called
+  through a concealed typed client (`spawn<Svc>("svc")` → `await svc.method(…)`, with
+  streaming + callbacks), an in-guest `Supervisor`, and `rusm dev` watch + reload. The
+  [`rusm-ts`](packages/rusm-ts) npm package and [`rusm-rs`](crates/rusm-rs) crate share
+  one wire and interoperate.
+- **An app model** — `rusm.toml [[components]]`, source under `components/`, built to
+  `./wasm/`, spawned under their capabilities; env the Rust way (process env, then
+  `.env`).
+- **Serving** — a component runs as a high-throughput **HTTP / WS / SSE** server
+  (`rusm serve` + `rusm.toml [[serve]]`), and `rusm new <name>` scaffolds a
+  ready-to-serve app. Guests get a capability-gated, streaming **`fetch`** + **`crypto`**.
+- **Distributed clusters** (`rusm-cluster`) — nodes connect over **QUIC + TLS**:
+  cross-node `send`, a gossiped global registry, remote spawn, and live attach.
+- **Hardened for scale** — an on-demand instance tier (bounded by RAM, not a fixed
+  pool), opt-in bounded mailboxes, per-node certs under a cluster CA + mutual TLS, and
+  windowed supervisor restart-intensity.
 
-- **Rust** 1.94+ (`rustup`). To build guest components/modules add the Wasm
-  targets: `rustup target add wasm32-wasip2 wasm32-wasip1` (`rusm build` uses
-  `wasm32-wasip2` for components; `wasm32-wasip1` for core modules).
-- **Bun** 1.3+ (the dashboard and docs site use Bun — never Node.js).
+## Benchmarks
 
-```sh
-git clone https://github.com/archan937/rusm.git
-cd rusm
-cargo build
-```
+Sixteen dashboard scenarios run on **live data** — release builds, measured under
+everyday machine load; they scale up with free CPU.
 
-## Quick start
+| Scenario | Result |
+| --- | --- |
+| spawn-storm | ~2.4M spawns/sec |
+| ping-pong | ~21M msgs/sec · round-trip p50 < 1 µs |
+| fault-recovery | ~285k restarts/sec |
+| fairness | bystanders ~50M+ ops/sec (past 400M on free cores) |
+| module-storm (wasip1 core modules) | ~475k spawns/sec |
+| component-storm | ~440k spawns/sec |
+| stream-pipe | multiple GB/sec between processes |
+| connection-storm | thousands concurrent · connect p50 sub-ms |
+| distributed-fanout (QUIC + TLS) | ~550k cross-node msgs/sec · ~39 µs p50 |
 
-**See it in action — one command:**
-
-```sh
-make dashboard
-```
-
-That builds the CLI, starts a node, launches the dashboard, and opens your
-browser. Pick a scenario, press **Run**, and watch live throughput, latency
-percentiles, and the host/instance observer. All sixteen dashboard scenarios now run
-**real** engines — none are synthetic. The six serving tiles (HTTP/WS/SSE and their
-`*-ts` twins) are **co-resident live demos**: a real in-process WASM server driven
-through the same load path as `rusm-loadtest`. The **fair, credible headline
-numbers** for serving are still the ones measured **out-of-process** by
-`rusm-loadtest` against a live `rusm serve` port; see below.
-
-Prefer to drive the pieces yourself? (`make help` lists everything)
-
-```sh
-make node       # start a node on ws://127.0.0.1:4000
-make ui         # the dashboard only, in another terminal
-make attach     # a live REPL into the node (like iex --remsh)
-make run        # run a scenario in the terminal (SCENARIO=… SECONDS=…)
-make example    # run an example app (EX=headless_run)
-```
+**Serving** headline numbers are measured **out-of-process** by `rusm-loadtest`
+against a live `rusm serve` port (loopback): HTTP **~46k req/s** (0% errors) · WS
+**~146k round-trips/s** (256 held) · SSE **~609k events/s** (256 held) · **~34k**
+sandboxed-process-per-connection WS establishments/sec. The six serving dashboard
+tiles are co-resident live demos (in-process server + load generator on one node).
 
 ## Configuration
 
-`rusm node start` reads an optional **`rusm.toml`** from the working directory
-(or `--config <file>`). Layering is **built-in defaults → `rusm.toml` → CLI
-flags**:
+Your app's `rusm.toml` declares what to run: `[[serve]]` (HTTP/WS/SSE endpoints),
+`[[components]]` (supervised processes), and custom `[capabilities.<name>]` profiles
+(default-deny). Env is resolved the Rust way — process env first, then `.env`. Full
+reference: **[configuration](docs/reference-configuration)**.
 
-```toml
-listen = "127.0.0.1:4000"   # WebSocket address
-profile = "balanced"        # light | balanced | max — how hard a storm drives the machine
-ticks_per_second = 20       # snapshot / sampling rate (Hz)
-```
-
-```sh
-rusm node start                                    # uses ./rusm.toml if present, else defaults
-rusm node start --config prod.toml                 # an explicit config file
-rusm node start --profile max --listen 0.0.0.0:80  # flags override the file
-```
-
-The `profile` can also be switched **live** from the dashboard — see
-[`docs/03-benchmark-dashboard.md`](docs/03-benchmark-dashboard.md).
+> The benchmark/dashboard node (`rusm node start`) has its own, separate knobs —
+> `listen`, `profile` (`light`/`balanced`/`max`), `ticks_per_second` — set via
+> `rusm.toml`/`--config`/flags and switchable live from the dashboard
+> ([details](docs/03-benchmark-dashboard.md)).
 
 ## Running tests
 
