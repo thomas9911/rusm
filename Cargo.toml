@@ -25,7 +25,7 @@ members = [
 exclude = ["crates/rusm-wasm/tests/fixtures", "crates/rusm-rs", "crates/rusm-rs-macros"]
 
 [workspace.package]
-version = "0.0.0"
+version = "0.1.0"
 edition = "2021"
 rust-version = "1.94"
 license = "MIT"

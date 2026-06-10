@@ -11,14 +11,14 @@ description = "Load harness and synthetic data source driving the RUSM benchmark
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
-rusm-metrics = { path = "../../crates/rusm-metrics" }
-rusm-observer = { path = "../../crates/rusm-observer" }
-rusm-otp = { path = "../../crates/rusm-otp" }
-rusm-wasm = { path = "../../crates/rusm-wasm" }
-rusm-cluster = { path = "../../crates/rusm-cluster" }
+rusm-metrics = { path = "../../crates/rusm-metrics", version = "0.1.0" }
+rusm-observer = { path = "../../crates/rusm-observer", version = "0.1.0" }
+rusm-otp = { path = "../../crates/rusm-otp", version = "0.1.0" }
+rusm-wasm = { path = "../../crates/rusm-wasm", version = "0.1.0" }
+rusm-cluster = { path = "../../crates/rusm-cluster", version = "0.1.0" }
 # The out-of-process load lib, reused by the live serving-scenario engines so the
 # dashboard drives load through the same balter/capacity path as `rusm-loadtest`.
-rusm-loadtest = { path = "../rusm-loadtest" }
+rusm-loadtest = { path = "../rusm-loadtest", version = "0.1.0" }
 anyhow = { workspace = true }
 tokio = { version = "1.52.3", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util"] }
 tokio-tungstenite = "0.29.0"

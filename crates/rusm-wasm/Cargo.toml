@@ -9,7 +9,7 @@ repository.workspace = true
 description = "The Wasmtime backend for RUSM: each process runs as an isolated Wasm instance."
 
 [dependencies]
-rusm-otp = { path = "../rusm-otp" }
+rusm-otp = { path = "../rusm-otp", version = "0.1.0" }
 anyhow = { workspace = true }
 tokio = { version = "1.52.3", features = ["rt", "rt-multi-thread", "macros", "time", "net"] }
 wasmtime = "45.0.1"
@@ -26,4 +26,4 @@ hyper-util = { version = "0.1", features = ["tokio"] }
 # the request/response types (base64 bodies) are shared with the guest via rusm-wire.
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-rusm-wire = { path = "../rusm-wire" }
+rusm-wire = { path = "../rusm-wire", version = "0.1.0" }
