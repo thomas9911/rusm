@@ -9,9 +9,13 @@
 //!   `rusm attach` renders it.
 
 pub mod config;
+pub mod node;
 pub mod profile;
+pub mod protocol;
 
 pub use config::{
     CapabilitySpec, ComponentSpec, NodeConfig, PreopenSpec, ServeMode, ServeProtocol, ServeSpec,
 };
+pub use node::{serve, serve_on, Node};
 pub use profile::{ResourceProfile, ResourceProfileMeta};
+pub use protocol::{ClientCommand, NodeSnapshot, ProcessInfo, ServerMessage};
