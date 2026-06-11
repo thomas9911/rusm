@@ -1,0 +1,24 @@
+# A resident SSE *acceptor*: per connection it replies a streaming head and offloads
+# the live feed to a spawned `sse-pump`, so the acceptor's loop is never head-of-line
+# blocked (the documented endless-SSE pattern). Built for wasm32-wasip2, checked in.
+#   cargo build --target wasm32-wasip2 --release
+#   cp target/wasm32-wasip2/release/sse_acceptor.wasm ../sse_acceptor.wasm
+[workspace]
+
+[package]
+name = "sse-acceptor"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+name = "sse_acceptor"
+
+[profile.release]
+opt-level = "z"
+strip = true
+
+[dependencies]
+rusm-rs = { path = "../../../../rusm-rs" }
+wit-bindgen = "0.46"

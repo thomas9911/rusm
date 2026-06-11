@@ -591,4 +591,154 @@ mod tests {
         assert!(get(addr).await.contains("hit #2"));
         assert!(get(addr).await.contains("hit #3"));
     }
+
+    /// Open a keep-alive SSE connection and return the live socket.
+    async fn open_sse(addr: std::net::SocketAddr) -> tokio::net::TcpStream {
+        let mut conn = tokio::net::TcpStream::connect(addr).await.unwrap();
+        conn.set_nodelay(true).ok();
+        conn.write_all(b"GET /events HTTP/1.1\r\nHost: rusm\r\nAccept: text/event-stream\r\n\r\n")
+            .await
+            .unwrap();
+        conn
+    }
+
+    /// Read from `conn` into `acc` until `marker` appears (or time out, failing).
+    async fn read_until(conn: &mut tokio::net::TcpStream, acc: &mut String, marker: &str) {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut buf = [0u8; 1024];
+        while !acc.contains(marker) {
+            let n = tokio::time::timeout_at(deadline, conn.read(&mut buf))
+                .await
+                .unwrap_or_else(|_| panic!("timed out waiting for {marker:?}; got:\n{acc}"))
+                .unwrap();
+            assert!(n > 0, "connection closed before {marker:?}; got:\n{acc}");
+            acc.push_str(&String::from_utf8_lossy(&buf[..n]));
+        }
+    }
+
+    /// Query the broker's live subscriber count (`[2][reply pid]` → `[count]`).
+    async fn broker_count(rt: &Runtime, broker: Pid) -> u8 {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let qrt = rt.clone();
+        rt.spawn(move |mut ctx| async move {
+            let mut query = vec![2u8];
+            query.extend_from_slice(&ctx.pid().raw().to_le_bytes());
+            qrt.send(broker, query);
+            if let Received::Message(m) = ctx.recv().await {
+                let _ = tx.send(m.first().copied().unwrap_or(0));
+            }
+        });
+        rx.await.unwrap_or(0)
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn live_sse_fan_out_broadcasts_to_every_connection() {
+        // The endless-SSE pattern `serve_sse`'s docs prescribe, proven end-to-end: a
+        // resident *acceptor* offloads each connection to a *pump* process that
+        // subscribes to a broker and live-tails it to the client's stream. One publish
+        // must reach *every* open connection — 1-publisher → N-subscriber fan-out, with
+        // a single acceptor instance never head-of-line blocked. (In genius-rusm the
+        // broker is meta-json; here it's a small native process.)
+        const ACCEPTOR: &[u8] = include_bytes!("../../../tests/fixtures/sse_acceptor.wasm");
+        const PUMP: &[u8] = include_bytes!("../../../tests/fixtures/sse_pump.wasm");
+        let rt = Runtime::new();
+        let wr = WasmRuntime::new(rt.clone()).unwrap();
+
+        // Broker: subscribe `[0][pid]` (and **monitor** it, so a dead subscriber is
+        // pruned — the crash-safe OTP cleanup), publish `[1][payload]` (fan out), and
+        // a count query `[2][reply pid]` → `[count]` (for the test to observe pruning).
+        let broker_rt = rt.clone();
+        let broker = rt.spawn(move |mut ctx| async move {
+            let me = ctx.pid();
+            let mut subs: Vec<Pid> = Vec::new();
+            loop {
+                match ctx.recv().await {
+                    Received::Message(m) => match m.first() {
+                        Some(0) if m.len() >= 9 => {
+                            let pid =
+                                Pid::from_raw(u64::from_le_bytes(m[1..9].try_into().unwrap()));
+                            broker_rt.monitor(me, pid); // prune it when it dies
+                            subs.push(pid);
+                        }
+                        Some(1) => {
+                            let payload = m[1..].to_vec();
+                            for sub in &subs {
+                                broker_rt.send(*sub, payload.clone());
+                            }
+                        }
+                        Some(2) if m.len() >= 9 => {
+                            let to = Pid::from_raw(u64::from_le_bytes(m[1..9].try_into().unwrap()));
+                            broker_rt.send(to, vec![subs.len() as u8]);
+                        }
+                        _ => {}
+                    },
+                    // A subscriber exited (clean disconnect or crash) — prune it.
+                    Received::Down { pid, .. } => subs.retain(|s| *s != pid),
+                    _ => {}
+                }
+            }
+        });
+        assert!(rt.register("broker".to_string(), broker.pid()));
+
+        // The pump is spawnable by name; the acceptor is a resident SSE server granted
+        // exactly `spawn` (least privilege) — the pump inherits it (non-escalating).
+        let pump = wr
+            .prepare_component(&wr.compile_component(PUMP).unwrap(), "run")
+            .unwrap();
+        wr.register_component("sse-pump", pump);
+        let acceptor = wr
+            .prepare_component(&wr.compile_component(ACCEPTOR).unwrap(), "run")
+            .unwrap();
+        let server =
+            wr.resident_http_server(&acceptor, Capabilities::nothing().allow_spawn(true), 1);
+        let addr = serve_on(server).await;
+
+        // Two concurrent SSE clients. Wait for each pump's `ready` (sent only after it
+        // subscribes) so the publish can't race subscription — fully deterministic.
+        let (mut a, mut b) = (open_sse(addr).await, open_sse(addr).await);
+        let (mut sa, mut sb) = (String::new(), String::new());
+        read_until(&mut a, &mut sa, "data: ready").await;
+        read_until(&mut b, &mut sb, "data: ready").await;
+
+        // One publish → both connections receive it live.
+        let mut publish = vec![1u8];
+        publish.extend_from_slice(b"hello");
+        rt.send(broker.pid(), publish);
+
+        read_until(&mut a, &mut sa, "data: hello").await;
+        read_until(&mut b, &mut sb, "data: hello").await;
+        assert!(
+            sa.to_lowercase().contains("text/event-stream"),
+            "A is an SSE stream"
+        );
+        assert!(
+            sb.to_lowercase().contains("text/event-stream"),
+            "B is an SSE stream"
+        );
+
+        // Cleanup (the second caveat, closed): disconnect A. The broker monitors its
+        // subscribers, so pump A's exit — its next write fails once the socket is gone —
+        // fires a `Down` that prunes it. The survivor keeps receiving; the count drops.
+        assert_eq!(broker_count(&rt, broker.pid()).await, 2, "both subscribed");
+        drop(a); // close A's socket
+        let mut publish = vec![1u8];
+        publish.extend_from_slice(b"p2");
+        rt.send(broker.pid(), publish); // pump A's write now fails → it exits
+        read_until(&mut b, &mut sb, "data: p2").await; // the survivor is unaffected
+
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        let pruned = loop {
+            if broker_count(&rt, broker.pid()).await == 1 {
+                break true;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                break false;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        };
+        assert!(
+            pruned,
+            "the disconnected subscriber is pruned (broker monitor → Down)"
+        );
+    }
 }

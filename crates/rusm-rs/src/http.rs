@@ -90,3 +90,108 @@ where
         }
     }
 }
+
+// ── Offloaded SSE: endless feeds & live fan-out ───────────────────────────────
+//
+// [`serve_sse`] pumps inline, so the resident serving it is busy for that one
+// connection's whole lifetime — fine for a short finite stream, wrong for an
+// endless feed (it would serve one client at a time). The offloaded pattern fixes
+// that: a resident **acceptor** ([`serve_sse_offloaded`]) replies the SSE head and
+// hands each connection to a freshly-spawned **pump** process, then loops on —
+// never head-of-line blocked. Each pump owns one connection ([`SseConnection`]):
+// it subscribes to an app event source, live-tails it to the client, heartbeats on
+// idle, and exits on disconnect — a broker that `monitor`s its subscribers prunes
+// it on the resulting `Down` (the crash-safe OTP cleanup, no unsubscribe needed).
+
+/// The acceptor side of offloaded SSE: for each connection reply a streaming
+/// `text/event-stream` head, then **offload** the feed to a freshly-spawned
+/// `pump_component` (a registered component whose `run` drives an [`SseConnection`]),
+/// and loop on — the acceptor is never head-of-line blocked, so one instance serves
+/// many concurrent live streams. Requires the `spawn` capability; the pump inherits
+/// the acceptor's capabilities (non-escalating). Never returns — call it from `run`.
+pub fn serve_sse_offloaded(pump_component: &str) -> ! {
+    loop {
+        let req = wire::next_request();
+        if req.op != "fetch" {
+            wire::reply_err(&req, &format!("unsupported op: {}", req.op));
+            continue;
+        }
+        let Some(responder) = req.caller() else {
+            continue; // a cast can't receive a streamed body
+        };
+        // Head first, so it reaches the responder before the pump's byte stream
+        // (the responder expects the head message, then the stream).
+        let head = Response {
+            status: 200,
+            headers: vec![("content-type".into(), "text/event-stream".into())],
+            body: Vec::new(),
+            stream: true,
+        };
+        wire::reply_ok(&req, &head);
+        if let Ok(pump) = crate::spawn(pump_component) {
+            crate::send_bytes(pump, &responder.0.to_le_bytes());
+        }
+    }
+}
+
+/// One accepted SSE connection, held by a pump process: write framed events to the
+/// client until it disconnects. Pairs with [`serve_sse_offloaded`].
+pub struct SseConnection {
+    stream: crate::Stream,
+}
+
+impl SseConnection {
+    /// Accept the connection handed over by [`serve_sse_offloaded`] — the first
+    /// message is the responder pid; open the outbound stream to it. Call once,
+    /// first, in the pump component's `run` (before subscribing / sending a snapshot).
+    pub fn accept() -> Self {
+        let msg = crate::receive_bytes();
+        let raw = msg.get(..8).and_then(|b| b.try_into().ok()).unwrap_or([0; 8]);
+        let responder = crate::Pid(u64::from_le_bytes(raw));
+        let stream = crate::Stream::open(responder).expect("responder stream is open");
+        Self { stream }
+    }
+
+    /// Write a raw SSE frame (e.g. `b"data: hi\n\n"`). `false` once the client is gone.
+    pub fn write(&self, frame: &[u8]) -> bool {
+        self.stream.write(frame)
+    }
+
+    /// Write a `data:` event carrying `payload` (a snapshot / one-off event).
+    pub fn data(&self, payload: &[u8]) -> bool {
+        self.write(&data_frame(payload))
+    }
+
+    /// Live-tail until the client disconnects: each inbound message goes to `map`
+    /// (return a frame to emit, or `None` to skip it); an idle `heartbeat_ms` writes
+    /// a heartbeat comment. Returns on disconnect — let the pump's `run` then end so
+    /// the process exits and a monitoring broker prunes this subscriber.
+    pub fn run(self, heartbeat_ms: u64, mut map: impl FnMut(Vec<u8>) -> Option<Vec<u8>>) {
+        loop {
+            match crate::receive_bytes_timeout(heartbeat_ms) {
+                Some(msg) => {
+                    if let Some(frame) = map(msg) {
+                        if !self.write(&frame) {
+                            return;
+                        }
+                    }
+                }
+                None => {
+                    if !self.write(b": ping\n\n") {
+                        return;
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Build a `data: <payload>\n\n` SSE frame — the common case for [`SseConnection::run`]'s
+/// `map` (`|msg| Some(data_frame(&msg))`).
+pub fn data_frame(payload: &[u8]) -> Vec<u8> {
+    let mut frame = Vec::with_capacity(payload.len() + b"data: \n\n".len());
+    frame.extend_from_slice(b"data: ");
+    frame.extend_from_slice(payload);
+    frame.extend_from_slice(b"\n\n");
+    frame
+}
