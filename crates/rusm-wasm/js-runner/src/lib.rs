@@ -144,6 +144,30 @@ fn js_fetch_close(handle: f64) {
         m.borrow_mut().remove(&(handle as u64));
     });
 }
+
+// Durable key-value storage over the `kv-*` actor ABI (gated by `storage`). A
+// denied/failed op throws into JS (the `kv.js` bridge surfaces these as a thrown
+// Error); `get` returns `undefined` (→ null in JS) when the key is absent.
+fn js_kv_get(ctx: Ctx<'_>, bucket: String, key: String) -> rquickjs::Result<Option<TypedArray<'_, u8>>> {
+    match actor::kv_get(&bucket, &key) {
+        Ok(Some(bytes)) => Ok(Some(TypedArray::new(ctx, bytes)?)),
+        Ok(None) => Ok(None),
+        Err(e) => Err(Exception::throw_message(&ctx, &e)),
+    }
+}
+fn js_kv_set(ctx: Ctx<'_>, bucket: String, key: String, value: TypedArray<u8>) -> rquickjs::Result<()> {
+    actor::kv_set(&bucket, &key, value.as_bytes().unwrap_or(&[]))
+        .map_err(|e| Exception::throw_message(&ctx, &e))
+}
+fn js_kv_delete(ctx: Ctx<'_>, bucket: String, key: String) -> rquickjs::Result<bool> {
+    actor::kv_delete(&bucket, &key).map_err(|e| Exception::throw_message(&ctx, &e))
+}
+fn js_kv_exists(ctx: Ctx<'_>, bucket: String, key: String) -> rquickjs::Result<bool> {
+    actor::kv_exists(&bucket, &key).map_err(|e| Exception::throw_message(&ctx, &e))
+}
+fn js_kv_list(ctx: Ctx<'_>, bucket: String) -> rquickjs::Result<Vec<String>> {
+    actor::kv_list(&bucket).map_err(|e| Exception::throw_message(&ctx, &e))
+}
 // Spawn a registered component by name; a denied/unknown spawn throws into JS
 // (surfacing the host's error message) rather than returning a sentinel.
 fn js_spawn(ctx: Ctx<'_>, name: String) -> rquickjs::Result<String> {
@@ -158,6 +182,7 @@ fn js_spawn(ctx: Ctx<'_>, name: String) -> rquickjs::Result<String> {
 /// primitives). Both are evaluated before the user's bundle.
 const WEBAPI_JS: &str = include_str!("../bridge/webapi.js");
 const PROCESS_JS: &str = include_str!("../bridge/process.js");
+const KV_JS: &str = include_str!("../bridge/kv.js");
 const RPC_JS: &str = include_str!("../bridge/rpc.js");
 
 impl Guest for Component {
@@ -246,10 +271,18 @@ impl Guest for Component {
             def!("__fetch", js_fetch);
             def!("__fetch_read", js_fetch_read);
             def!("__fetch_close", js_fetch_close);
+            // Durable key-value storage for the `kv` polyfill (capability-gated).
+            def!("__kv_get", js_kv_get);
+            def!("__kv_set", js_kv_set);
+            def!("__kv_delete", js_kv_delete);
+            def!("__kv_exists", js_kv_exists);
+            def!("__kv_list", js_kv_list);
 
-            // Web API polyfills, the raw actor API, then the RPC/service layer.
+            // Web API polyfills, the raw actor API, durable storage, then the
+            // RPC/service layer.
             let _: () = ctx.eval(WEBAPI_JS).unwrap();
             let _: () = ctx.eval(PROCESS_JS).unwrap();
+            let _: () = ctx.eval(KV_JS).unwrap();
             let _: () = ctx.eval(RPC_JS).unwrap();
             // A CommonJS surface so a Bun-bundled (`--format=cjs`) service/worker can
             // populate `module.exports`; a bare script just ignores it.

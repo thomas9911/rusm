@@ -1,0 +1,19 @@
+# A guest test fixture exercising the `kv-*` actor ABI (durable key-value storage).
+# Built separately for wasm32-wasip2 and checked in as a prebuilt .wasm so
+# `cargo test` stays hermetic. Regenerate with:
+#   cd crates/rusm-wasm/tests/fixtures/actor-kv
+#   cargo build --target wasm32-wasip2 --release
+#   cp target/wasm32-wasip2/release/actor_kv.wasm ../actor_kv.wasm
+[workspace]
+
+[package]
+name = "actor-kv"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen = "0.46"

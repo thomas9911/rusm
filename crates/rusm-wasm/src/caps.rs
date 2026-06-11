@@ -62,6 +62,7 @@ impl CapabilityProfile {
                 inherit_stdio: true,
                 allow_process_control: true,
                 allow_spawn: true,
+                allow_storage: true,
                 ..Capabilities::nothing()
             },
         }
@@ -88,6 +89,7 @@ pub struct Capabilities {
     inherit_stdio: bool,
     allow_process_control: bool,
     allow_spawn: bool,
+    allow_storage: bool,
 }
 
 impl Capabilities {
@@ -101,6 +103,7 @@ impl Capabilities {
             inherit_stdio: false,
             allow_process_control: false,
             allow_spawn: false,
+            allow_storage: false,
         }
     }
 
@@ -184,6 +187,20 @@ impl Capabilities {
         self.allow_spawn
     }
 
+    /// Allows this process to use **durable key-value storage** via the actor ABI
+    /// (`kv-*`). Default-deny: a sandboxed process has no persistence. The store
+    /// itself is configured on the runtime ([`WasmRuntime::with_store`]); this grant
+    /// only decides whether the guest may reach it.
+    pub fn allow_storage(mut self, allow: bool) -> Self {
+        self.allow_storage = allow;
+        self
+    }
+
+    /// Whether this process may use durable key-value storage via the actor ABI.
+    pub fn storage_allowed(&self) -> bool {
+        self.allow_storage
+    }
+
     /// The memory ceiling, for the runtime's `StoreLimiter`.
     pub fn memory_limit(&self) -> usize {
         self.max_memory
@@ -249,19 +266,25 @@ mod tests {
             "sandboxed: no control of others"
         );
         assert!(!sandbox.can_spawn(), "sandboxed: cannot spawn components");
+        assert!(!sandbox.storage_allowed(), "sandboxed: no durable storage");
         let client = CapabilityProfile::NetworkClient.capabilities();
         assert!(client.allow_network && !client.inherit_stdio && !client.process_control());
         assert!(!client.can_spawn(), "network-client: cannot spawn");
+        assert!(!client.storage_allowed(), "network-client: no storage");
         let trusted = CapabilityProfile::Trusted.capabilities();
         assert!(trusted.allow_network && trusted.inherit_stdio);
         assert!(trusted.process_control(), "trusted: may control others");
         assert!(trusted.can_spawn(), "trusted: may spawn components");
+        assert!(trusted.storage_allowed(), "trusted: may use storage");
         assert!(trusted.memory_limit() > sandbox.memory_limit());
         // The builder grants each explicitly too.
         assert!(Capabilities::nothing()
             .allow_process_control(true)
             .process_control());
         assert!(Capabilities::nothing().allow_spawn(true).can_spawn());
+        assert!(Capabilities::nothing()
+            .allow_storage(true)
+            .storage_allowed());
     }
 
     #[test]

@@ -30,6 +30,7 @@ pub use serde;
 pub use serde_json;
 
 pub mod http;
+pub mod kv;
 pub mod supervisor;
 pub mod wire;
 pub mod ws;

@@ -31,6 +31,12 @@ pub struct NodeConfig {
     /// component's `capability = "<name>"` resolves to one of these first, then to
     /// the built-in profiles (`sandboxed` / `network-client` / `trusted`).
     pub capabilities: HashMap<String, CapabilitySpec>,
+    /// Path to the node's durable key-value store (one embedded file the node owns,
+    /// resolved relative to the app directory). Omitted → no store: a component
+    /// granted `storage` then gets an error if it uses `kv`. Set it to give resident
+    /// state somewhere to survive a restart.
+    #[serde(default)]
+    pub store: Option<String>,
 }
 
 /// A custom capability profile (`[capabilities.<name>]`) — mirrors Cargo's
@@ -52,6 +58,9 @@ pub struct CapabilitySpec {
     pub process_control: Option<bool>,
     /// Inherit the host's stdio.
     pub stdio: Option<bool>,
+    /// Allow durable key-value storage (the `kv-*` actor ABI), if the node has a
+    /// `store` configured. Default-deny.
+    pub storage: Option<bool>,
     /// Per-process memory ceiling in MiB.
     pub max_memory_mb: Option<usize>,
     /// Environment-variable keys to grant; values are resolved from the process
@@ -176,6 +185,7 @@ impl Default for NodeConfig {
             components: Vec::new(),
             serve: Vec::new(),
             capabilities: HashMap::new(),
+            store: None,
         }
     }
 }
@@ -319,6 +329,25 @@ mod tests {
         assert_eq!(spec.max_memory_mb, Some(256));
         assert_eq!(spec.preopen.len(), 1);
         assert!(!spec.preopen[0].read_only);
+        assert_eq!(spec.storage, None, "storage defaults to unset (deny)");
+    }
+
+    #[test]
+    fn parses_store_and_storage_capability() {
+        let cfg = NodeConfig::from_toml(
+            r#"
+            store = "data/app.redb"
+
+            [capabilities.stateful]
+            inherits = "trusted"
+            storage = true
+            "#,
+        )
+        .unwrap();
+        assert_eq!(cfg.store.as_deref(), Some("data/app.redb"));
+        assert_eq!(cfg.capabilities["stateful"].storage, Some(true));
+        // Default: no store configured.
+        assert!(NodeConfig::from_toml("").unwrap().store.is_none());
     }
 
     #[test]

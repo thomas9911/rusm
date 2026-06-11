@@ -90,16 +90,40 @@ export interface SupervisorOptions {
   maxSeconds?: number;
 }
 
+/** One namespace in the node's durable key-value store (gated by the `storage`
+ *  capability). Values are bytes; `set` also accepts a string (UTF-8). A denied or
+ *  failed op throws. See {@link kv}. */
+export interface KvBucket {
+  /** The stored value, or `null` if absent. */
+  get(key: string): Uint8Array | null;
+  set(key: string, value: string | Uint8Array): void;
+  /** Remove `key`; returns whether it existed. */
+  delete(key: string): boolean;
+  exists(key: string): boolean;
+  /** Every key in this bucket, sorted. */
+  list(): string[];
+}
+
+/** Durable, embedded key-value storage — the node owns one store; guests granted
+ *  the `storage` capability open buckets within it. */
+export interface Kv {
+  bucket(name: string): KvBucket;
+}
+
 // The runner installs these globals before the bundle runs (and wraps the bundle
 // in a CommonJS scope, so this module's bindings never clobber them).
 const g = globalThis as unknown as {
   Process: ProcessApi;
   spawn: <T>(component: string) => ServiceClient<T>;
   supervise: (opts: SupervisorOptions) => Promise<void>;
+  kv: Kv;
 };
 
 /** The actor API for this process. */
 export const Process: ProcessApi = g.Process;
+
+/** The node's durable key-value store (gated by the `storage` capability). */
+export const kv: Kv = g.kv;
 
 /** Spawn a registered component and get a typed client — the concealed function
  *  call (spawn + send + receive, hidden). Type it with the service's published

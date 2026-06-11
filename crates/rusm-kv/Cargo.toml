@@ -1,0 +1,18 @@
+[package]
+name = "rusm-kv"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "The Wasm-free embedded key-value store of RUSM: durable buckets over redb."
+
+# Invariant: like `rusm-otp`, this crate must NOT depend on `wasmtime` — it is the
+# durable-storage primitive, exposed to guests by `rusm-wasm`. A single, embedded,
+# ACID store (no external daemon); the host application owns the file path.
+[dependencies]
+redb = "4.1"
+
+[dev-dependencies]
+tempfile = "3"

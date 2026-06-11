@@ -103,6 +103,10 @@ pub(crate) struct Spawner {
     pub(crate) pooled_live: AtomicU32,
     /// The pooled-tier capacity (`pooled_live`'s ceiling).
     pub(crate) pooled_cap: u32,
+    /// The node's durable key-value store (`None` unless built with
+    /// [`WasmRuntime::with_store`]). Shared with every guest; the `kv-*` actor ABI
+    /// reaches it, gated by the `storage` capability.
+    pub(crate) store: Option<Arc<rusm_kv::Store>>,
 }
 
 impl Spawner {
@@ -167,7 +171,21 @@ impl WasmRuntime {
     /// `max_memory` for components that need larger heaps.
     pub fn with_limits(rt: Runtime, max_instances: u32, max_memory: usize) -> Result<Self> {
         let engine = Engine::new(&Self::pooled_config(max_instances, max_memory))?;
-        Self::assemble(rt, engine, None, max_instances)
+        Self::assemble(rt, engine, None, max_instances, None)
+    }
+
+    /// Like [`new`](Self::new) but with a durable **key-value store** at `path`
+    /// (created if absent): guests granted the `storage` capability reach it through
+    /// the actor ABI (`kv-*`). One embedded redb file the node owns — no external
+    /// daemon. Uses the default pool limits; a store + overflow combo isn't needed
+    /// today, so it's deliberately not offered (add a variant if it ever is).
+    pub fn with_store(rt: Runtime, path: impl AsRef<std::path::Path>) -> Result<Self> {
+        let store = Arc::new(rusm_kv::Store::open(path)?);
+        let engine = Engine::new(&Self::pooled_config(
+            DEFAULT_MAX_INSTANCES,
+            DEFAULT_MAX_MEMORY,
+        ))?;
+        Self::assemble(rt, engine, None, DEFAULT_MAX_INSTANCES, Some(store))
     }
 
     /// Like [`with_limits`](Self::with_limits) but adds an **on-demand overflow
@@ -179,7 +197,7 @@ impl WasmRuntime {
         let engine = Engine::new(&Self::pooled_config(max_instances, max_memory))?;
         // Same compile config, but the default (on-demand) allocator: no fixed cap.
         let overflow = Engine::new(&Self::base_config())?;
-        Self::assemble(rt, engine, Some(overflow), max_instances)
+        Self::assemble(rt, engine, Some(overflow), max_instances, None)
     }
 
     /// The compile/runtime config shared by both engines: epoch interruption (the
@@ -213,6 +231,7 @@ impl WasmRuntime {
         engine: Engine,
         overflow: Option<Engine>,
         max_instances: u32,
+        store: Option<Arc<rusm_kv::Store>>,
     ) -> Result<Self> {
         let linker = bridges::wasip1::build_linker(&engine)?;
         let component_linker = bridges::wasip2::build_linker(&engine)?;
@@ -248,6 +267,7 @@ impl WasmRuntime {
                 overflow,
                 pooled_live: AtomicU32::new(0),
                 pooled_cap: max_instances,
+                store,
             }),
             linker,
             component_linker,

@@ -49,6 +49,9 @@ fn to_capabilities(spec: &CapabilitySpec) -> Capabilities {
     if let Some(v) = spec.stdio {
         caps = caps.inherit_stdio(v);
     }
+    if let Some(v) = spec.storage {
+        caps = caps.allow_storage(v);
+    }
     if let Some(mb) = spec.max_memory_mb {
         caps = caps.max_memory(mb << 20);
     }
@@ -338,6 +341,7 @@ mod tests {
             spawn: None,
             process_control: None,
             stdio: None,
+            storage: None,
             max_memory_mb: None,
             env: Vec::new(),
             preopen: Vec::new(),
@@ -346,6 +350,20 @@ mod tests {
             !to_capabilities(&bare).can_spawn(),
             "default base is sandboxed"
         );
+    }
+
+    #[test]
+    fn storage_grant_maps_through() {
+        // `storage = true` on a profile turns the durable-KV grant on…
+        let cfg = rusm_node::NodeConfig::from_toml(
+            "[capabilities.stateful]\ninherits = \"trusted\"\nstorage = true\n",
+        )
+        .unwrap();
+        assert!(to_capabilities(&cfg.capabilities["stateful"]).storage_allowed());
+        // …and omitting it inherits the base (sandboxed → no storage).
+        let cfg = rusm_node::NodeConfig::from_toml("[capabilities.x]\ninherits = \"sandboxed\"\n")
+            .unwrap();
+        assert!(!to_capabilities(&cfg.capabilities["x"]).storage_allowed());
     }
 
     // A minimal component (WAT text — accepted by compile_component) standing in
@@ -366,6 +384,7 @@ mod tests {
                 spawn: Some(true),
                 process_control: None,
                 stdio: None,
+                storage: None,
                 max_memory_mb: Some(16),
                 env: Vec::new(),
                 preopen: Vec::new(),

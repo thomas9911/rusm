@@ -123,7 +123,7 @@ async fn start_node(args: &[String]) -> anyhow::Result<()> {
     let rt = Runtime::new();
     // `wasm` + `handles` stay bound for the whole function: they own the hosted
     // components' runtime, so they must outlive the server below.
-    let wasm = WasmRuntime::new(rt.clone())?;
+    let wasm = wasm_runtime(rt.clone(), &cfg)?;
     let handles = spawn_components(Path::new("."), &wasm, &cfg.components, &cfg.capabilities)?;
     let node = Node::new(rt.clone(), node_name(), cfg.ticks_per_second);
     println!(
@@ -155,7 +155,7 @@ async fn run_app(args: &[String]) -> anyhow::Result<()> {
 
     let cfg = load_node_config(args);
     let rt = Runtime::new();
-    let wasm = WasmRuntime::new(rt.clone())?;
+    let wasm = wasm_runtime(rt.clone(), &cfg)?;
     let handles = spawn_components(Path::new("."), &wasm, &cfg.components, &cfg.capabilities)?;
     if handles.is_empty() {
         println!("no [[components]] in rusm.toml — nothing to run");
@@ -183,7 +183,7 @@ async fn serve_app(args: &[String]) -> anyhow::Result<()> {
 
     let cfg = load_node_config(args);
     let rt = Runtime::new();
-    let wasm = WasmRuntime::new(rt.clone())?;
+    let wasm = wasm_runtime(rt.clone(), &cfg)?;
     let endpoints = serve_apps(Path::new("."), &wasm, &cfg.serve, &cfg.capabilities).await?;
     if endpoints.is_empty() {
         println!("no [[serve]] entries in rusm.toml — nothing to serve");
@@ -207,7 +207,7 @@ async fn dev(args: &[String]) -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
     let cfg = load_node_config(args);
     let rt = Runtime::new();
-    let wasm = WasmRuntime::new(rt.clone())?;
+    let wasm = wasm_runtime(rt.clone(), &cfg)?;
     let root = Path::new(".");
 
     build_components(root)?;
@@ -418,6 +418,23 @@ fn load_node_config(args: &[String]) -> NodeConfig {
         cfg.listen = listen;
     }
     cfg
+}
+
+/// Build the Wasm runtime for an app, opening the configured durable key-value
+/// store (`store = "..."` in rusm.toml, relative to the app dir) when set — so
+/// components granted `storage` can persist; otherwise a store-less runtime. The
+/// store's parent dir is created so a fresh app's first run doesn't trip on it.
+fn wasm_runtime(rt: Runtime, cfg: &NodeConfig) -> anyhow::Result<WasmRuntime> {
+    match &cfg.store {
+        Some(rel) => {
+            let path = Path::new(".").join(rel);
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).ok();
+            }
+            Ok(WasmRuntime::with_store(rt, &path)?)
+        }
+        None => Ok(WasmRuntime::new(rt)?),
+    }
 }
 
 async fn attach(url: &str) -> Result<(), Box<dyn std::error::Error>> {

@@ -1425,6 +1425,129 @@ mod tests {
         guest.join().await;
     }
 
+    /// Run a kv fixture (`wasm`) against `wr` with `caps`, returning the flags byte
+    /// it reports. DRY across the kv scenarios below — the raw-ABI `actor-kv` and the
+    /// `rusm-rs`-SDK `rs-kv` fixtures share the same `[pid][flags]` protocol.
+    async fn run_kv_fixture(wr: &WasmRuntime, rt: &Runtime, caps: Capabilities, wasm: &[u8]) -> u8 {
+        let pre = wr
+            .prepare_component(&wr.compile_component(wasm).unwrap(), "run")
+            .unwrap();
+        let guest = wr.spawn_component_with(&pre, caps);
+        let guest_pid = guest.pid();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let driver_rt = rt.clone();
+        rt.spawn(move |mut ctx| async move {
+            driver_rt.send(guest_pid, ctx.pid().raw().to_le_bytes().to_vec());
+            let _ = tx.send(ctx.recv().await.message().unwrap());
+        });
+        let reply = rx.await.unwrap();
+        guest.join().await;
+        reply[8]
+    }
+
+    /// A unique store path for a test (distinct per test so parallel runs never
+    /// share redb's exclusive file lock); removed first to start from a clean slate.
+    fn kv_test_path(tag: &str) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!("rusm-kv-{tag}-{}.redb", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        path
+    }
+
+    const ACTOR_KV: &[u8] = include_bytes!("../../tests/fixtures/actor_kv.wasm");
+    const RS_KV: &[u8] = include_bytes!("../../tests/fixtures/rs_kv.wasm");
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_component_uses_kv_when_storage_is_granted() {
+        // Storage capability + a configured store → the full CRUD sequence works,
+        // both via the raw ABI (actor-kv) and the ergonomic rusm-rs kv module (rs-kv).
+        for wasm in [ACTOR_KV, RS_KV] {
+            let rt = Runtime::new();
+            let path = kv_test_path("granted");
+            let wr = WasmRuntime::with_store(rt.clone(), &path).unwrap();
+            let flags =
+                run_kv_fixture(&wr, &rt, CapabilityProfile::Trusted.capabilities(), wasm).await;
+            assert_eq!(
+                flags, 0b11_1111,
+                "every kv op should succeed when storage is granted and a store is configured"
+            );
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn kv_is_denied_without_the_storage_capability() {
+        // A store is configured, but a sandboxed guest lacks the storage grant, so
+        // even `kv-set` is refused — no bit is set.
+        let rt = Runtime::new();
+        let path = kv_test_path("denied");
+        let wr = WasmRuntime::with_store(rt.clone(), &path).unwrap();
+        let flags = run_kv_fixture(
+            &wr,
+            &rt,
+            CapabilityProfile::Sandboxed.capabilities(),
+            ACTOR_KV,
+        )
+        .await;
+        assert_eq!(flags, 0, "kv must be denied without the storage capability");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn kv_errors_when_no_store_is_configured() {
+        // The storage capability is granted, but the runtime was built without a
+        // store, so kv ops err (the other arm of the host's gate).
+        let rt = Runtime::new();
+        let wr = WasmRuntime::new(rt.clone()).unwrap();
+        let flags = run_kv_fixture(
+            &wr,
+            &rt,
+            CapabilityProfile::Trusted.capabilities(),
+            ACTOR_KV,
+        )
+        .await;
+        assert_eq!(
+            flags, 0,
+            "kv must err when no store is configured on the node"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_javascript_bundle_uses_kv_when_granted() {
+        // The TS `kv` bridge over the host kv ABI: a full CRUD cycle on the `specs`
+        // bucket, reported as a flags integer (63 = all six steps correct).
+        const BUNDLE: &str = r#"
+            module.exports.default = async function () {
+                const replyTo = await Process.receiveText();
+                const b = kv.bucket("specs");
+                let flags = 0;
+                b.set("k", "v1"); flags |= 1;
+                const got = b.get("k");
+                if (got && new TextDecoder().decode(got) === "v1") flags |= 2;
+                if (b.exists("k")) flags |= 4;
+                const ks = b.list();
+                if (ks.length === 1 && ks[0] === "k") flags |= 8;
+                if (b.delete("k")) flags |= 16;
+                if (b.get("k") === null) flags |= 32;
+                Process.send(replyTo, String(flags));
+            };
+        "#;
+        let rt = Runtime::new();
+        let path = kv_test_path("ts-granted");
+        let wr = WasmRuntime::with_store(rt.clone(), &path).unwrap();
+        let guest = wr.spawn_js_with(BUNDLE.as_bytes(), CapabilityProfile::Trusted.capabilities());
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let collector = rt.spawn(move |mut ctx| async move {
+            let _ = tx.send(ctx.recv().await.message().unwrap());
+        });
+        rt.send(guest.pid(), collector.pid().raw().to_string().into_bytes());
+        assert_eq!(
+            String::from_utf8(rx.await.unwrap()).unwrap(),
+            "63",
+            "the TS kv bridge performs a full CRUD cycle when storage is granted"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_component_can_receive_with_a_timeout() {
         // A guest that calls `receive-timeout` (Erlang's `receive … after`): once

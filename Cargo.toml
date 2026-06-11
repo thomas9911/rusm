@@ -10,6 +10,7 @@ members = [
     "crates/rusm-otp",
     "crates/rusm-wasm",
     "crates/rusm-wire",
+    "crates/rusm-kv",
     "crates/rusm-cluster",
     "crates/rusm-jsc",
     "crates/rusm-metrics",
