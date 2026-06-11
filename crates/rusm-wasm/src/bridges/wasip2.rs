@@ -667,6 +667,41 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_javascript_bundle_can_receive_with_a_timeout() {
+        // `Process.receive(ms)` is Erlang's `receive … after`: it resolves to null
+        // on an idle timeout, and to the message when one arrives before the
+        // deadline. Same handshake as the Rust `actor-timeout` fixture.
+        const BUNDLE: &str = r#"
+            module.exports.default = async function () {
+                const replyTo = await Process.receiveText();
+                const timedOut = (await Process.receive(30)) === null;
+                Process.send(replyTo, "armed");
+                const got = (await Process.receiveText(5000)) === "ping";
+                Process.send(replyTo, (timedOut ? "1" : "0") + (got ? "1" : "0"));
+            };
+        "#;
+        let rt = Runtime::new();
+        let wr = WasmRuntime::new(rt.clone()).unwrap();
+        let guest = wr.spawn_js(BUNDLE.as_bytes());
+        let guest_pid = guest.pid();
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let driver_rt = rt.clone();
+        rt.spawn(move |mut ctx| async move {
+            driver_rt.send(guest_pid, ctx.pid().raw().to_string().into_bytes());
+            assert_eq!(ctx.recv().await.message().unwrap(), b"armed");
+            driver_rt.send(guest_pid, b"ping".to_vec());
+            let _ = tx.send(ctx.recv().await.message().unwrap());
+        });
+
+        assert_eq!(
+            String::from_utf8(rx.await.unwrap()).unwrap(),
+            "11",
+            "Process.receive(ms) times out when idle and returns a message before the deadline"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_javascript_bundle_has_crypto() {
         // `crypto.getRandomValues` + `randomUUID` (backed by host wasi:random) work in
         // a *sandboxed* guest — the entropy ecosystem (uuid/nanoid, ai-sdk) depends on.
@@ -1028,6 +1063,38 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_rust_guest_receives_with_a_timeout_via_rusm_rs() {
+        // The ergonomic `rusm-rs` helpers: `receive_bytes_timeout` (idle → None)
+        // and `receive_timeout::<String>` (JSON message before the deadline). Same
+        // handshake as the raw-ABI `actor-timeout` fixture and the TS twin.
+        const RS_TIMEOUT: &[u8] = include_bytes!("../../tests/fixtures/rs_timeout.wasm");
+        let rt = Runtime::new();
+        let wr = WasmRuntime::new(rt.clone()).unwrap();
+        let pre = wr
+            .prepare_component(&wr.compile_component(RS_TIMEOUT).unwrap(), "run")
+            .unwrap();
+        let guest = wr.spawn_component(&pre);
+        let guest_pid = guest.pid();
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let driver_rt = rt.clone();
+        rt.spawn(move |mut ctx| async move {
+            driver_rt.send(guest_pid, ctx.pid().raw().to_string().into_bytes());
+            assert_eq!(ctx.recv().await.message().unwrap(), b"armed");
+            // JSON-encode "ping" so the guest's `receive_timeout::<String>` deserializes it.
+            driver_rt.send(guest_pid, serde_json::to_vec("ping").unwrap());
+            let _ = tx.send(ctx.recv().await.message().unwrap());
+        });
+
+        assert_eq!(
+            rx.await.unwrap(),
+            vec![0b11],
+            "rusm-rs receive helpers must time out when idle and deliver a typed message before the deadline"
+        );
+        guest.join().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_typescript_supervisor_restarts_a_dead_child() {
         // The TS `supervise()` helper (one-for-one): a `flaky` worker announces its
         // pid to the collector then waits; killing it makes the supervisor restart it.
@@ -1355,6 +1422,49 @@ mod tests {
             "the guest killed the victim via kill"
         );
         assert_eq!(rt.whereis("echo"), None, "the guest released its name");
+        guest.join().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_component_can_receive_with_a_timeout() {
+        // A guest that calls `receive-timeout` (Erlang's `receive … after`): once
+        // with an empty mailbox (must time out → none) and once after the host
+        // sends a message ahead of the deadline (must return it, not drop it).
+        const TIMEOUT: &[u8] = include_bytes!("../../tests/fixtures/actor_timeout.wasm");
+        let rt = Runtime::new();
+        let wr = WasmRuntime::new(rt.clone()).unwrap();
+        let pre = wr
+            .prepare_component(&wr.compile_component(TIMEOUT).unwrap(), "run")
+            .unwrap();
+        let guest = wr.spawn_component(&pre); // Sandboxed: receive needs no capability.
+        let guest_pid = guest.pid();
+
+        // Drive the fixture's handshake: send our pid, wait for its "armed" signal,
+        // then deliver "ping" before its (long) deadline, then collect the report.
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let driver_rt = rt.clone();
+        rt.spawn(move |mut ctx| async move {
+            driver_rt.send(guest_pid, ctx.pid().raw().to_le_bytes().to_vec());
+            assert_eq!(
+                ctx.recv().await.message().unwrap(),
+                b"armed",
+                "fixture arms"
+            );
+            driver_rt.send(guest_pid, b"ping".to_vec());
+            let _ = tx.send(ctx.recv().await.message().unwrap());
+        });
+
+        let reply = rx.await.unwrap();
+        assert_eq!(
+            u64::from_le_bytes(reply[0..8].try_into().unwrap()),
+            guest_pid.raw()
+        );
+        // bit 0: the empty-mailbox receive timed out; bit 1: the pre-deadline
+        // message was returned.
+        assert_eq!(
+            reply[8], 0b11,
+            "receive-timeout must time out when idle and deliver a message before the deadline"
+        );
         guest.join().await;
     }
 

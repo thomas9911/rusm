@@ -38,6 +38,12 @@ fn js_send(to: String, data: TypedArray<u8>) {
 fn js_receive(ctx: Ctx<'_>) -> rquickjs::Result<TypedArray<'_, u8>> {
     TypedArray::new(ctx, actor::receive())
 }
+fn js_receive_timeout(ctx: Ctx<'_>, ms: f64) -> rquickjs::Result<Option<TypedArray<'_, u8>>> {
+    match actor::receive_timeout(ms.max(0.0) as u64) {
+        Some(bytes) => Ok(Some(TypedArray::new(ctx, bytes)?)),
+        None => Ok(None),
+    }
+}
 fn js_stream_write(h: f64, data: TypedArray<u8>) -> bool {
     actor::stream_write(h as u64, data.as_bytes().unwrap_or(&[]))
 }
@@ -188,6 +194,8 @@ impl Guest for Component {
             def!("__receive", js_receive);
             def!("__receive_text", || String::from_utf8(actor::receive())
                 .unwrap_or_default());
+            // `receive … after`: the next message, or `undefined` on timeout.
+            def!("__receive_timeout", js_receive_timeout);
             def!("__register", |n: String| actor::register(&n));
             def!("__whereis", |n: String| actor::whereis(&n)
                 .map(|p| p.to_string())

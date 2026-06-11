@@ -153,6 +153,18 @@ pub fn receive_bytes() -> Vec<u8> {
     actor::receive()
 }
 
+/// Like [`receive_bytes`], but gives up after `timeout_ms` and returns `None` —
+/// Erlang's `receive … after`. Mail the RPC client set aside is delivered
+/// immediately (a pending message can't "time out"); otherwise this waits up to
+/// the deadline. The basis for an SSE heartbeat: wait for the next event *or* the
+/// tick, whichever comes first.
+pub fn receive_bytes_timeout(timeout_ms: u64) -> Option<Vec<u8>> {
+    if let Some(raw) = INBOX.with(|q| q.borrow_mut().pop_front()) {
+        return Some(raw);
+    }
+    actor::receive_timeout(timeout_ms)
+}
+
 /// Send a serializable value as a JSON message — the wire shared with TS guests.
 pub fn send<T: Serialize>(to: Pid, msg: &T) -> serde_json::Result<()> {
     actor::send(to.0, &serde_json::to_vec(msg)?);
@@ -162,6 +174,12 @@ pub fn send<T: Serialize>(to: Pid, msg: &T) -> serde_json::Result<()> {
 /// Block for the next message and deserialize it from JSON.
 pub fn receive<T: DeserializeOwned>() -> serde_json::Result<T> {
     serde_json::from_slice(&actor::receive())
+}
+
+/// Like [`receive`], but gives up after `timeout_ms`: `None` on timeout, otherwise
+/// the next message deserialized from JSON.
+pub fn receive_timeout<T: DeserializeOwned>(timeout_ms: u64) -> Option<serde_json::Result<T>> {
+    receive_bytes_timeout(timeout_ms).map(|raw| serde_json::from_slice(&raw))
 }
 
 /// A back-pressured byte stream to or from another process — the same primitive

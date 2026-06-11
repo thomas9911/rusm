@@ -1,0 +1,20 @@
+# A guest test fixture exercising `receive-timeout` (Erlang's `receive … after`).
+# Built separately for wasm32-wasip2 and checked in as a prebuilt .wasm so
+# `cargo test` stays hermetic. Regenerate with:
+#   cd crates/rusm-wasm/tests/fixtures/actor-timeout
+#   cargo build --target wasm32-wasip2 --release
+#   cp target/wasm32-wasip2/release/actor_timeout.wasm ../actor_timeout.wasm
+# Standalone (its own workspace) so it never builds with the host workspace.
+[workspace]
+
+[package]
+name = "actor-timeout"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen = "0.46"

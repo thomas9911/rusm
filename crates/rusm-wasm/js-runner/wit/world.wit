@@ -39,6 +39,12 @@ interface actor {
     /// runs this asynchronously, so a blocked guest frees its scheduler thread.
     receive: func() -> list<u8>;
 
+    /// Like [`receive`], but gives up after `timeout-ms` and returns `none` —
+    /// Erlang's `receive … after`. The basis for heartbeats and deadlines without
+    /// a busy loop: wait for the next message *or* the timeout, whichever comes
+    /// first. A monitored `__down` counts as a message (as it does for `receive`).
+    receive-timeout: func(timeout-ms: u64) -> option<list<u8>>;
+
     /// Every live pid (Erlang's `Process.list/0`).
     list-processes: func() -> list<pid>;
 

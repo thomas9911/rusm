@@ -45,15 +45,21 @@ globalThis.Process = {
     if (typeof msg === "string") __send_text(String(to), msg);
     else __send(String(to), msg);
   },
-  // Resolves to the next message as a Uint8Array.
-  receive() {
-    return Promise.resolve(__inbox.length ? __inbox.shift() : __receive());
+  // Resolves to the next message as a Uint8Array. With `timeoutMs`, it's Erlang's
+  // `receive … after`: resolves to null if the deadline passes first. Set-aside RPC
+  // mail is delivered immediately (a pending message can't time out).
+  receive(timeoutMs) {
+    if (__inbox.length) return Promise.resolve(__inbox.shift());
+    if (timeoutMs === undefined) return Promise.resolve(__receive());
+    const m = __receive_timeout(timeoutMs);
+    return Promise.resolve(m === undefined ? null : m);
   },
-  // Resolves to the next message decoded as UTF-8.
-  receiveText() {
-    return Promise.resolve(
-      __inbox.length ? new TextDecoder().decode(__inbox.shift()) : __receive_text(),
-    );
+  // Resolves to the next message decoded as UTF-8 (null on `timeoutMs` timeout).
+  receiveText(timeoutMs) {
+    if (__inbox.length) return Promise.resolve(new TextDecoder().decode(__inbox.shift()));
+    if (timeoutMs === undefined) return Promise.resolve(__receive_text());
+    const m = __receive_timeout(timeoutMs);
+    return Promise.resolve(m === undefined ? null : new TextDecoder().decode(m));
   },
   register(name) { return __register(name); },
   whereis(name) { const p = __whereis(name); return p === "" ? null : BigInt(p); },

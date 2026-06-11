@@ -10,7 +10,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use rusm_otp::{stream, ExitReason, Pid, Received, Runtime, Strategy};
+use rusm_otp::{stream, Context, ExitReason, Pid, Received, Runtime, Strategy};
 
 use crate::bridges::WasiHost;
 
@@ -79,19 +79,22 @@ impl actor::Host for WasiHost {
             .ctx
             .as_mut()
             .expect("receive runs inside a spawned process");
-        loop {
-            match ctx.recv().await {
-                Received::Message(bytes) => return bytes,
-                // A monitored process died — surface it as a `__down` message so a
-                // supervisor's `receive` sees it (Erlang delivers Down to the mailbox).
-                Received::Down { pid, reason, .. } => {
-                    let reason = down_reason(reason);
-                    return format!(r#"{{"__down":"{}","reason":"{reason}"}}"#, pid.raw())
-                        .into_bytes();
-                }
-                _ => {} // streams / other signals are skipped here
-            }
-        }
+        next_message(ctx).await
+    }
+
+    /// Erlang's `receive … after`: the next message, or `none` if `timeout_ms`
+    /// elapses first. Built on `tokio::time::timeout` over the *same* receive loop
+    /// as [`receive`] — `ctx.recv()` is cancel-safe (a dropped await leaves the
+    /// mailbox untouched), so a timeout never loses a message. The basis for SSE
+    /// heartbeats and any guest-side deadline without a busy poll.
+    async fn receive_timeout(&mut self, timeout_ms: u64) -> Option<Vec<u8>> {
+        let ctx = self
+            .ctx
+            .as_mut()
+            .expect("receive-timeout runs inside a spawned process");
+        tokio::time::timeout(Duration::from_millis(timeout_ms), next_message(ctx))
+            .await
+            .ok()
     }
 
     async fn list_processes(&mut self) -> Vec<u64> {
@@ -251,6 +254,24 @@ impl actor::Host for WasiHost {
                 Some(chunk)
             }
             None => None, // end of stream
+        }
+    }
+}
+
+/// The shared receive loop behind `receive` and `receive-timeout`: return the next
+/// *user-visible* mailbox item as message bytes — a plain message verbatim, or a
+/// monitored `Down` rendered as a `__down` JSON message (Erlang delivers Down to
+/// the mailbox, the basis for a guest `Supervisor`). Streams and other signals are
+/// skipped. Kept free-standing so both callers borrow `ctx` and share one body.
+async fn next_message(ctx: &mut Context) -> Vec<u8> {
+    loop {
+        match ctx.recv().await {
+            Received::Message(bytes) => return bytes,
+            Received::Down { pid, reason, .. } => {
+                let reason = down_reason(reason);
+                return format!(r#"{{"__down":"{}","reason":"{reason}"}}"#, pid.raw()).into_bytes();
+            }
+            _ => {} // streams / other signals are skipped here
         }
     }
 }

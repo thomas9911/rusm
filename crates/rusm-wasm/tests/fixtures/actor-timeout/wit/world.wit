@@ -1,0 +1,26 @@
+package rusm:runtime@0.1.0;
+
+/// Minimal actor subset for the `receive-timeout` fixture: just the message ops
+/// it exercises. (The full interface lives in the host + SDK wits.)
+interface actor {
+    /// A process identifier (Erlang's pid).
+    type pid = u64;
+
+    /// This process's own pid (Erlang's `self()`).
+    own-pid: func() -> pid;
+
+    /// Send a byte message to another process; silently dropped if it's gone.
+    send: func(to: pid, message: list<u8>);
+
+    /// Receive the next message, suspending until one arrives (FIFO).
+    receive: func() -> list<u8>;
+
+    /// Like `receive`, but gives up after `timeout-ms` and returns `none` —
+    /// Erlang's `receive … after`.
+    receive-timeout: func(timeout-ms: u64) -> option<list<u8>>;
+}
+
+world process {
+    import actor;
+    export run: func();
+}

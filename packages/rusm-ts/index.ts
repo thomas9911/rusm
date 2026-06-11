@@ -28,8 +28,16 @@ export interface ProcessApi {
   /** Monitor a process: its death arrives as a `{ __down }` message. */
   monitor(pid: bigint | string): void;
   send(to: bigint | string, msg: string | Uint8Array): void;
+  /**
+   * The next message as bytes. With `timeoutMs`, it's Erlang's `receive … after`:
+   * resolves to `null` if the deadline passes before a message arrives — the basis
+   * for an SSE heartbeat (wait for the next event *or* the tick).
+   */
   receive(): Promise<Uint8Array>;
+  receive(timeoutMs: number): Promise<Uint8Array | null>;
+  /** The next message decoded as UTF-8 (`null` on `timeoutMs` timeout). */
   receiveText(): Promise<string>;
+  receiveText(timeoutMs: number): Promise<string | null>;
   register(name: string): boolean;
   whereis(name: string): bigint | null;
   isAlive(pid: bigint | string): boolean;
