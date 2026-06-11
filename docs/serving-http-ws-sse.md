@@ -355,6 +355,30 @@ event chunks ride the raw byte stream. The resident pool is **supervised**: kill
 instance and the supervisor restarts it, routing picks up the fresh pid, and the
 endpoint keeps serving (with reset state).
 
+### Live SSE fan-out — endless feeds, one publisher → N clients
+
+`serve_sse(|req| events)` computes one finite stream per request and pumps it
+inline — perfect for a short stream, wrong for an **endless** feed (the instance
+would serve one client at a time). For a live feed broadcast to many clients
+(dashboards, log tails, the kind of thing wasmCloud's lattice makes painful), the
+idiomatic shape is **offload + pub/sub**, and RUSM ships it turnkey:
+
+- **`rusm_rs::http::serve_sse_offloaded("pump")`** — the acceptor: per connection it
+  replies the SSE head and hands the socket to a freshly-spawned **pump** process,
+  then loops on — never head-of-line blocked, so one instance fronts many concurrent
+  live streams.
+- **`rusm_rs::http::SseConnection`** — the pump side: `accept()` the connection,
+  subscribe to your event source, then `run(heartbeat, map)` to live-tail it (each
+  message → an SSE frame, a heartbeat comment on idle, exits on disconnect).
+- **`rusm_rs::pubsub::Topics`** — the event source: keyed `subscribe` / `publish`,
+  with **monitor-based pruning** — a disconnected pump exits and is dropped from the
+  topic automatically (crash-safe, no unsubscribe bookkeeping).
+
+So a publisher calls `topics.publish("room/42", &event)` and every connected client
+on that topic gets it live; the app writes *what* to broadcast, never the
+subscriber/fan-out/cleanup machinery. (Proven end-to-end: one publish reaches every
+open SSE connection, and a disconnect prunes its subscriber.)
+
 ## Benchmarks
 
 Serving is benchmarked the **fair** way: **out-of-process**, by the

@@ -16,11 +16,15 @@ functions:
 | `own-pid() -> pid` | the calling process's own pid |
 | `send(to: pid, msg: list<u8>)` | enqueue bytes into another process's mailbox |
 | `receive() -> list<u8>` | **async** — park the fiber until a message arrives |
+| `receive-timeout(timeout-ms) -> option<list<u8>>` | like `receive`, but gives up after a deadline — Erlang's `receive … after` (heartbeats, deadlines) |
 | `list-processes() -> list<pid>` | all live pids |
 | `info(pid) -> option<process-info>` | links, monitors, names, label, mailbox depth, trap-exit |
 | `is-alive(pid) -> bool` / `kill(pid) -> bool` | liveness / forced termination |
 | `register(name) / whereis(name) / unregister(name)` | the named registry |
 | `set-label(label)` | a human-readable label for the observer |
+| `spawn(name) / monitor(pid) / supervise(…)` | start, watch, and supervise child components (capability-gated) |
+| `stream-open/write/close/accept/read` | back-pressured byte streams between processes |
+| `kv-get/set/delete/exists/list` | durable key-value storage, gated by the **storage** capability |
 
 Composition is **message passing** (spawn instances, then `send`/`receive`/
 `register`/`whereis`) — *not* WIT inter-component wiring, and no lattice. Standard
@@ -55,8 +59,11 @@ wired via `wasmtime_wasi::p1`, capability-gated.
 
 Every grant maps onto standard WASI plus a `StoreLimiter` memory cap. Named
 profiles — `Sandboxed` (CPU + bounded heap only), `NetworkClient` (+ outbound
-network), `Trusted` (+ stdio, large heap) — set defaults; a per-spawn
-`Capabilities` builder overrides them. See
+network), `Trusted` (+ stdio, large heap, durable **storage**) — set defaults; a
+per-spawn `Capabilities` builder overrides them (`spawn`, `process-control`,
+`storage`, …). The **storage** grant opens the node's embedded durable key-value
+store (the `kv-*` ABI, backed by the Wasm-free `rusm-kv` crate over redb) — a
+sandboxed process has none. See
 [permissions & sandboxing](./concepts/permissions-and-sandboxing.md).
 
 ## Compatibility — standards-first, superpowers opt-in

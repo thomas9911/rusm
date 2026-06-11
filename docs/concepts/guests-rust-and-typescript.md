@@ -21,6 +21,26 @@ like a local call — with `for await` streaming and callback arguments — whil
 `spawn` / `send` / `receive` stay hidden. `rusm build` bundles each component with
 Bun into a small `.js`.
 
+## Beyond messaging — timers, storage, pub/sub, crypto
+
+Both guests get more than `send`/`receive`, all over the same capability-gated ABI:
+
+- **Timed receive** — `receive_timeout(ms)` (RS) / `Process.receive(ms)` (TS):
+  Erlang's `receive … after` — the next message, or `null`/`None` on the deadline.
+  The basis for heartbeats and any time-bound wait, with no busy loop.
+- **Durable storage** — `rusm_rs::kv` (RS) / the `kv` global (TS): bucketed
+  `get`/`set`/`delete`/`exists`/`list` over the node's embedded store
+  (`rusm-kv`/redb), gated by the **storage** capability. Survives a restart, no
+  external daemon. (TS bundles can also `import` npm — `@noble/*`, etc.)
+- **Pub/sub fan-out** — `rusm_rs::pubsub::Topics`: keyed subscriber tracking +
+  fan-out + **monitor-based pruning** of dead subscribers (the broker *mechanics* as
+  a primitive, so app code carries none of it). Pairs with the offloaded
+  [SSE fan-out](../serving-http-ws-sse.md) helpers (`serve_sse_offloaded` /
+  `SseConnection`).
+- **Outbound `fetch` + Web Crypto** (TS): a capability-gated streaming `fetch`, and
+  a native **`crypto.subtle`** (RustCrypto: SHA digest, HMAC sign/verify, AES-GCM) —
+  so the Anthropic SDK and JWT/signing libraries work inside the sandbox.
+
 ## The shared runner — tiny TS components (vs jco)
 
 A TypeScript component is **just its bundle** running on **one shared ~920 KB

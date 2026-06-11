@@ -50,6 +50,7 @@ max-inflight = 256            # per-instance overload cap → 503 (optional)
 | `listen` | string | `"127.0.0.1:4000"` | The WebSocket address a node's attach endpoint binds (`rusm node start` / `rusm-bench start`). |
 | `profile` | enum | `balanced` | The benchmark node's throughput dial — see below. |
 | `ticks_per_second` | int (10–60) | `20` | How often the node samples + broadcasts a snapshot. |
+| `store` | string? | none | Path (relative to the app dir) to the node's embedded durable key-value store — one file the node owns, no daemon. Required for components granted `storage` (the `kv` ABI) or a `kv:` bundle `source`. Omitted → no store. |
 
 **`profile`** is the spawn-throughput dial, relative to your CPU count:
 
@@ -72,6 +73,7 @@ component, in that preference) and spawns it under its capability profile. Used 
 | `name` | string | — (required) | Component name → `./wasm/<name>.*`; also registered so a sibling can `spawn` it by name. |
 | `capability` | string | `"sandboxed"` | A built-in profile or a `[capabilities.<name>]` id. |
 | `restart` | bool | `false` | Restart the component if it exits (supervision). |
+| `source` | string? | none | Load the (JS) bundle from a `url:`/`http(s)://` URL or `kv:<bucket>/<key>` instead of the local `./wasm/<name>` artifact — deploy JS live, no node rebuild (re-fetched on each spawn / `rusm dev` reload). See [dynamic bundle sourcing](#dynamic-bundle-sourcing). |
 
 ## `[[serve]]` — host as a network server
 
@@ -88,6 +90,7 @@ Each entry hosts a component on its own TCP port. Used by `rusm serve`. HTTP/SSE
 | `instances` | int (≥1) | `1` | Resident pool size (only meaningful for `resident`). |
 | `shard-by` | string? | none | Resident affinity: `"header:<name>"` pins same-value requests to one instance; omitted → round-robin. |
 | `max-inflight` | int? | none (unbounded) | Resident per-instance cap on concurrent in-flight requests/connections; excess sheds to `503`. |
+| `source` | string? | none | Load the (JS) handler from a URL or `kv:` instead of `./wasm/<name>` — see [dynamic bundle sourcing](#dynamic-bundle-sourcing). |
 
 ## `[capabilities.<name>]` — custom capability profiles
 
@@ -97,18 +100,50 @@ child never exceeds its spawner. See [permissions & sandboxing](./concepts/permi
 
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `inherits` | string | `sandboxed` | Built-in base: `sandboxed` (deny-all) · `network-client` (+ outbound net) · `trusted` (+ stdio, spawn, process-control, 1 GiB heap). |
+| `inherits` | string | `sandboxed` | Built-in base: `sandboxed` (deny-all) · `network-client` (+ outbound net) · `trusted` (+ stdio, spawn, process-control, storage, 1 GiB heap). |
 | `network` | bool? | from base | Allow outbound network. |
 | `spawn` | bool? | from base | May spawn other components by name. |
 | `process-control` | bool? | from base | May `kill`/`list`/`info` over foreign pids. |
 | `stdio` | bool? | from base | Inherit the host's stdio. |
+| `storage` | bool? | from base | May use durable key-value storage (the `kv-*` ABI); needs a node `store`. Granted by `trusted`. |
 | `max-memory-mb` | int? | from base | Per-process heap ceiling (MiB). |
 | `env` | string[] | `[]` | Env-var **keys** to grant; values resolved from the process env / `.env`. |
 | `preopen` | table[] | `[]` | Host dirs mounted in the sandbox: `{ host, guest, read-only }`. |
 
 The three built-in profiles (usable directly as `capability = "..."`): **`sandboxed`**
 (CPU + bounded heap only), **`network-client`** (+ outbound network), **`trusted`**
-(+ stdio, spawn, process-control, large heap).
+(+ stdio, spawn, process-control, storage, large heap).
+
+## Dynamic bundle sourcing
+
+A `[[components]]` or `[[serve]]` entry can set **`source`** to load its JS bundle
+from somewhere other than the local `./wasm/<name>` artifact — so you deploy new JS
+by updating the source, with **no node rebuild**. The bundle is fetched **once** at
+spawn (and again on each `rusm dev` reload), then the resident/process serves many
+requests from it — not re-fetched per request.
+
+| `source` | Resolves to |
+| --- | --- |
+| `https://…` (or `url:<u>`) | an HTTP(S) GET (e.g. a presigned blob or an artifact API); a non-2xx fails loudly |
+| `kv:<bucket>/<key>` | an entry in the node's durable `store` (requires `store` to be set) |
+| _(omitted)_ | the local `./wasm/<name>` artifact — the default, unchanged |
+
+```toml
+store = "data/app.redb"          # kv: sources read from here
+
+[[serve]]
+name = "api"
+protocol = "http"
+listen = "127.0.0.1:8080"
+source = "https://cdn.example/api.js"   # deploy by replacing this bundle
+
+[[components]]
+name = "worker"
+source = "kv:bundles/worker"            # publish to kv, then re-spawn
+```
+
+A remote source is always a **JS** bundle (UTF-8). When `source` is omitted the
+loader behaves exactly as before, resolving `./wasm/<name>.{qjsbc,js,wasm}`.
 
 ## Environment variables
 

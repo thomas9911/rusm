@@ -85,5 +85,6 @@ observability ── rusm-metrics + rusm-observer ─→ rusm-bench (runner + We
 `rusm-otp` is the Wasm-free core; `rusm-wasm` is the *only* crate that touches
 Wasmtime and drives the core through its public API. The observability stack
 (metrics/observer/bench/dashboard) plugs into any node. Distribution (the
-`rusm-cluster` QUIC + TLS transport, Phase 9) is also Wasm-free, over `rusm-otp`;
-remaining layers are on [the roadmap](./02-roadmap.md).
+`rusm-cluster` QUIC + TLS transport, Phase 9) is also Wasm-free, over `rusm-otp`, as
+is durable storage (the `rusm-kv` redb-backed key-value store, surfaced to guests by
+`rusm-wasm`); remaining layers are on [the roadmap](./02-roadmap.md).

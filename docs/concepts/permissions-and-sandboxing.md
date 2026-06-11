@@ -17,6 +17,9 @@ where any goroutine/process can touch the whole machine.
 - **Spawn**: whether the process may **spawn other components by name** via the
   actor ABI — default-deny. A spawned child's capabilities never exceed its
   spawner's (no escalation).
+- **Storage**: whether the process may use the node's **durable key-value store**
+  (the `kv-*` ABI, backed by `rusm-kv`/redb) — default-deny. A sandboxed process
+  has no persistence; the node must also have a `store` configured.
 - **Host functions**: only the `rusm::*` imports the process was linked with are
   callable.
 
@@ -27,7 +30,7 @@ sensible defaults, and a per-spawn `Capabilities` builder overrides them:
 
 - **`Sandboxed`** — CPU + a bounded heap only: no fs, net, env, stdio, control, or spawn.
 - **`NetworkClient`** — sandboxed plus outbound network.
-- **`Trusted`** — inherits stdio, allows network, process control, spawn, a large heap.
+- **`Trusted`** — inherits stdio, allows network, process control, spawn, storage, a large heap.
 
 Grants map onto **standard WASI** (`wasi:cli/environment`, `wasi:filesystem`,
 `wasi:sockets`) plus a `StoreLimiter` memory cap — no wasmCloud-style

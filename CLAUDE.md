@@ -76,10 +76,17 @@ touches Wasmtime) runs each component instance-per-process via the **component
 model** (`wasmtime-wasi`; `bridges/{wasip1,wasip2,wasip3}.rs` over a shared core).
 The component linker wires **WASI p2 and p3** — both `@0.2.0` and `@0.3.0`
 interfaces on one `WasiHost`, with the async component model enabled. It exposes a `rusm:runtime` **WIT actor world** (`bindgen!`): a
-component calls `self`/`send`/`receive`/`list`/`info`/`kill`/`register`/`whereis`/
-`set-label` — the Erlang `Process` API, callable from Rust or TS guests — backed
-by thin calls into `rusm-otp`. **Default-deny capability profiles** (`caps.rs`:
-Sandboxed/NetworkClient/Trusted) build a `WasiCtx` + a `StoreLimiter` memory cap.
+component calls `self`/`send`/`receive`/`receive-timeout` (Erlang's `receive …
+after`)/`list`/`info`/`kill`/`register`/`whereis`/`set-label`/`spawn`/`monitor`/
+`supervise`/`stream-*`/`kv-*` — the Erlang `Process` API + durable storage, callable
+from Rust or TS guests — backed by thin calls into `rusm-otp` (and `rusm-kv` for
+`kv-*`). **Default-deny capability profiles** (`caps.rs`:
+Sandboxed/NetworkClient/Trusted; grants incl. `spawn`/`process-control`/`storage`)
+build a `WasiCtx` + a `StoreLimiter` memory cap. Durable **key-value storage** is
+the Wasm-free **`rusm-kv`** crate (embedded redb buckets), surfaced via the `kv-*`
+ABI behind the `storage` capability, with a node-level `store` and an opt-in
+`WasmRuntime::with_store`. TS guests also get native **`crypto.subtle`** (RustCrypto:
+SHA/HMAC/AES-GCM) in the js-runner.
 The spawn path is optimized — pooling allocator + copy-on-write + per-module
 `InstancePre` + **precomputed export index** + **opt-in mailbox depth** (default
 off → zero hot-path atomics) + single runtime-handle clone — sustaining **~440k
@@ -195,6 +202,7 @@ cd bench/dashboard && bun test --coverage             # dashboard tests
 ## Layout
 
 `crates/rusm-otp`, `crates/rusm-wasm`, `crates/rusm-cluster`,
+`crates/rusm-kv` (Wasm-free durable redb-backed KV store),
 `crates/rusm-metrics`, `crates/rusm-observer`, `crates/rusm-node` (manifest +
 profiles + the attach protocol/node), `bench/rusm-bench` (lib+bin),
 `bench/rusm-loadtest` (out-of-process serving load test),

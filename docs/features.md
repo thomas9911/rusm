@@ -42,10 +42,13 @@ that teaches it.
   escalates. → [permissions & sandboxing](./concepts/permissions-and-sandboxing)
 - **Trap isolation** — a guest trap becomes that one process `Crashed`; the runtime
   and its neighbours are untouched.
+- **Durable key-value storage** — an embedded, transactional store (`rusm-kv`/redb,
+  no daemon) behind the default-deny `storage` capability; the `kv` API is the same
+  in Rust and TS. → [permissions & sandboxing](./concepts/permissions-and-sandboxing)
 - **Guests in Rust *or* TypeScript** — the `#[service]` macro, the concealed typed
-  client, and the **shared rquickjs runner** (tiny TS components vs jco baking an
-  engine into every one) + bytecode precompile. → [guests: Rust &
-  TypeScript](./concepts/guests-rust-and-typescript)
+  client, the **shared rquickjs runner** (tiny TS components vs jco baking an engine
+  into every one) + bytecode precompile, plus native `fetch` and **`crypto.subtle`**
+  (SHA/HMAC/AES-GCM) for TS. → [guests: Rust & TypeScript](./concepts/guests-rust-and-typescript)
 
 ## Serving & streaming
 
@@ -54,6 +57,10 @@ that teaches it.
   [the serving model](./concepts/serving-model)
 - **Streaming & async** — incremental SSE, per-connection WS processes, Tokio
   back-pressure throughout.
+- **Live SSE fan-out** — turnkey offloaded SSE (`serve_sse_offloaded` /
+  `SseConnection`) + a `pubsub::Topics` primitive (keyed fan-out, monitor-based
+  pruning): one publish → every connected client, with no subscriber bookkeeping in
+  app code.
 - **Cross-process byte streams** — a bounded, back-pressured byte channel between
   processes. → [byte streams](./concepts/byte-streams)
 
@@ -63,6 +70,9 @@ that teaches it.
   wasm32-wasip2 / Bun, no jco) → `./wasm/`. → [the app model](./concepts/app-model)
 - **CLI** — `rusm new` (scaffold), `rusm run`, `rusm serve`, `rusm dev` (watch +
   reload), `rusm attach` (a live REPL into a local or remote node).
+- **Dynamic bundle sourcing** — a component's JS can load from a URL or the durable
+  `kv` store (`source = "…"`) instead of a local artifact: deploy JS live, no node
+  rebuild. → [configuration](./reference-configuration#dynamic-bundle-sourcing)
 - **Distributed clustering** — `ClusterNode::connect` (the `Node.connect` equivalent),
   cross-node send, a gossiped global registry, remote spawn, all over QUIC + **mutual
   TLS**. → [distributed nodes](./concepts/distributed-nodes)
