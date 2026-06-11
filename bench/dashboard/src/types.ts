@@ -61,6 +61,12 @@ export interface ScenarioMeta {
   real: boolean;
   /** How to format the throughput headline: a plain count or a byte rate. */
   unit: 'count' | 'bytes';
+  /** Exactly what the throughput counts (e.g. "process spawns/sec", "messages/sec
+   *  (ping + pong …)") — shown beside the rate so a number can't be misread. */
+  ops_label: string;
+  /** What the latency samples measure (e.g. "round-trip"), or null for a
+   *  throughput-only scenario with no meaningful per-op latency. */
+  latency_label?: string | null;
   /** The engine's implementation source (Rust), for the "how it's built" panel. */
   source?: string | null;
   /** The engine source's filename (e.g. `streampipe.rs`), shown as the panel header. */

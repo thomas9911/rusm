@@ -128,11 +128,17 @@ export function App() {
             averages={averages(state)}
             mode={mode}
             unit={selectedMeta?.unit}
+            opsLabel={selectedMeta?.ops_label}
+            latencyLabel={selectedMeta?.latency_label}
           />
           <Chart
             data={state.history}
             label={
-              selectedMeta?.unit === 'bytes' ? 'throughput (bytes/sec)' : 'throughput (ops/sec)'
+              selectedMeta?.ops_label
+                ? `throughput (${selectedMeta.ops_label})`
+                : selectedMeta?.unit === 'bytes'
+                  ? 'throughput (bytes/sec)'
+                  : 'throughput (ops/sec)'
             }
             color={ACCENT}
           />

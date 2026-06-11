@@ -63,6 +63,8 @@ test('hello populates the scenario and profile menus', () => {
         real_after_phase: 5,
         real: true,
         unit: 'count',
+        ops_label: 'messages/sec (ping + pong)',
+        latency_label: 'round-trip',
       },
     ],
     profiles: [{ id: 'balanced', label: 'Balanced', description: 'd' }],

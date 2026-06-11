@@ -71,6 +71,12 @@ pub struct ScenarioMeta {
     pub real: bool,
     /// How to read/format the throughput headline (count vs byte rate).
     pub unit: MetricUnit,
+    /// Exactly what the throughput counts (e.g. "process spawns/sec", "messages/sec
+    /// (ping + pong …)") — so a headline number is unambiguous on the dashboard.
+    pub ops_label: String,
+    /// What the latency samples measure (e.g. "round-trip", "spawn time"), or `None`
+    /// for a throughput-only scenario with no meaningful per-op latency.
+    pub latency_label: Option<String>,
     /// The engine's implementation source (Rust), so the dashboard can show how the
     /// scenario is built. `None` for synthetic scenarios. Single source of truth:
     /// this is the actual compiled file via `include_str!`.
@@ -146,6 +152,49 @@ impl Scenario {
         match self {
             Scenario::StreamPipe => MetricUnit::Bytes,
             _ => MetricUnit::Count,
+        }
+    }
+
+    /// **Exactly** what the throughput headline counts — so a number can never be
+    /// misread (e.g. ping-pong counts *each message*, not round-trips). The dashboard
+    /// shows this beside the rate.
+    pub fn ops_label(self) -> &'static str {
+        match self {
+            Scenario::SpawnStorm => "process spawns/sec",
+            Scenario::PingPong => "messages/sec (ping + pong — one round-trip is two)",
+            Scenario::Fairness => "bystander progress ops/sec (under full-core spinners)",
+            Scenario::FaultRecovery => "supervised restarts/sec",
+            Scenario::ConnectionStorm => "TCP connections/sec",
+            Scenario::ComponentStorm => "component spawns/sec",
+            Scenario::DistributedFanout => "cross-node round-trips/sec",
+            Scenario::ModuleStorm => "core-module spawns/sec",
+            Scenario::StreamPipe => "bytes/sec (consumed chunks × 4 KiB)",
+            Scenario::ConnectionScale => {
+                "connection reconnects/sec (at the held-connection ceiling)"
+            }
+            Scenario::HttpThroughput | Scenario::HttpThroughputTs => "HTTP requests/sec (achieved)",
+            Scenario::WsEcho | Scenario::WsEchoTs => "WebSocket echo round-trips/sec",
+            Scenario::SseFanout | Scenario::SseFanoutTs => "SSE events/sec (across held streams)",
+        }
+    }
+
+    /// What the sampled latency is end-to-end (the dashboard's latency-axis label), or
+    /// `None` for a throughput-only scenario where no per-op latency is meaningful.
+    pub fn latency_label(self) -> Option<&'static str> {
+        match self {
+            Scenario::SpawnStorm => Some("spawn time"),
+            Scenario::PingPong => Some("round-trip"),
+            Scenario::Fairness => None, // a progress counter, not a per-op latency
+            Scenario::FaultRecovery => Some("restart latency"),
+            Scenario::ConnectionStorm => Some("client-side connect time"),
+            Scenario::ComponentStorm => Some("component spawn time"),
+            Scenario::DistributedFanout => Some("cross-node round-trip"),
+            Scenario::ModuleStorm => Some("core-module spawn time"),
+            Scenario::StreamPipe => None, // byte throughput; no per-byte latency
+            Scenario::ConnectionScale => Some("connect time"),
+            Scenario::HttpThroughput | Scenario::HttpThroughputTs => Some("request latency"),
+            Scenario::WsEcho | Scenario::WsEchoTs => Some("echo round-trip"),
+            Scenario::SseFanout | Scenario::SseFanoutTs => Some("event delivery latency"),
         }
     }
 
@@ -400,6 +449,8 @@ impl Scenario {
             real_after_phase,
             real: real_after_phase <= CURRENT_PHASE,
             unit: self.metric_unit(),
+            ops_label: self.ops_label().to_string(),
+            latency_label: self.latency_label().map(str::to_string),
             source: self.engine_impl_source(),
             source_file: self.engine_source().map(|(name, _)| name.to_string()),
         }
@@ -480,6 +531,26 @@ mod tests {
             assert!(meta.details.len() >= 3, "{} needs real detail", meta.id);
             assert!(meta.details.iter().all(|d| !d.is_empty()));
             assert!((1..=11).contains(&meta.real_after_phase));
+            // Every headline states exactly what it counts (so a number can't be misread).
+            assert!(!meta.ops_label.is_empty(), "{} needs an ops_label", meta.id);
+            // A latency label, when present, is non-empty.
+            assert!(
+                meta.latency_label.as_deref() != Some(""),
+                "{} latency_label must not be empty",
+                meta.id
+            );
+        }
+    }
+
+    #[test]
+    fn only_throughput_only_scenarios_omit_a_latency_label() {
+        // Latency is `None` exactly for the two scenarios whose engines record no
+        // per-op latency (a fairness progress counter; raw byte throughput) — every
+        // other scenario labels what its sampled latency means.
+        for s in Scenario::ALL {
+            let has = s.latency_label().is_some();
+            let expects = !matches!(s, Scenario::Fairness | Scenario::StreamPipe);
+            assert_eq!(has, expects, "{} latency_label presence is wrong", s.id());
         }
     }
 
