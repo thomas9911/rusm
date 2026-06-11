@@ -41,6 +41,11 @@ curl http://127.0.0.1:8080/  # "Hello from RUSM 👋"
 `rusm new --rust` scaffolds a Rust component; `--protocol ws|sse` a WebSocket or SSE
 handler.
 
+The scaffolded `rusm.toml` is the app manifest — see the
+[configuration reference](./reference-configuration.md) for every table and field
+(`[[serve]]`, `[[components]]`, `[capabilities.<name>]`, env), and the
+[`rusm` CLI reference](./reference-cli.md) for the full command set.
+
 ### See it live — the dashboard
 
 The benchmark dashboard lives in the repo, so clone it to run:
