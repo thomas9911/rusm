@@ -280,6 +280,14 @@ impl WasmRuntime {
         })
     }
 
+    /// The node's durable key-value store, if one was configured
+    /// ([`with_store`](Self::with_store)). The app loader uses it to read e.g. a
+    /// kv-sourced component bundle; it's the **same** store running guests reach via
+    /// the `kv` ABI (a cheap `Arc` clone), so reads see their writes.
+    pub fn store(&self) -> Option<rusm_kv::Store> {
+        self.spawner.store.as_deref().cloned()
+    }
+
     /// Registers a prepared component under `name` so a **running guest** may
     /// `spawn` it by that name through the actor ABI (capability-gated). The app
     /// loader registers each manifest component so siblings can spawn one another.

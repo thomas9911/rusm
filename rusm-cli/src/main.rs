@@ -124,7 +124,8 @@ async fn start_node(args: &[String]) -> anyhow::Result<()> {
     // `wasm` + `handles` stay bound for the whole function: they own the hosted
     // components' runtime, so they must outlive the server below.
     let wasm = wasm_runtime(rt.clone(), &cfg)?;
-    let handles = spawn_components(Path::new("."), &wasm, &cfg.components, &cfg.capabilities)?;
+    let handles =
+        spawn_components(Path::new("."), &wasm, &cfg.components, &cfg.capabilities).await?;
     let node = Node::new(rt.clone(), node_name(), cfg.ticks_per_second);
     println!(
         "rusm node listening on ws://{} ({} component(s), {} Hz)",
@@ -156,7 +157,8 @@ async fn run_app(args: &[String]) -> anyhow::Result<()> {
     let cfg = load_node_config(args);
     let rt = Runtime::new();
     let wasm = wasm_runtime(rt.clone(), &cfg)?;
-    let handles = spawn_components(Path::new("."), &wasm, &cfg.components, &cfg.capabilities)?;
+    let handles =
+        spawn_components(Path::new("."), &wasm, &cfg.components, &cfg.capabilities).await?;
     if handles.is_empty() {
         println!("no [[components]] in rusm.toml — nothing to run");
         return Ok(());
@@ -211,7 +213,7 @@ async fn dev(args: &[String]) -> anyhow::Result<()> {
     let root = Path::new(".");
 
     build_components(root)?;
-    let mut handles = spawn_components(root, &wasm, &cfg.components, &cfg.capabilities)?;
+    let mut handles = spawn_components(root, &wasm, &cfg.components, &cfg.capabilities).await?;
     if handles.is_empty() {
         println!("no [[components]] in rusm.toml — nothing to run");
         return Ok(());
@@ -240,7 +242,7 @@ async fn dev(args: &[String]) -> anyhow::Result<()> {
                     eprintln!("build failed: {error}");
                     continue;
                 }
-                match spawn_components(root, &wasm, &cfg.components, &cfg.capabilities) {
+                match spawn_components(root, &wasm, &cfg.components, &cfg.capabilities).await {
                     Ok(reloaded) => {
                         handles = reloaded;
                         println!("reloaded {} component(s)", handles.len());

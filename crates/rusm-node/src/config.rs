@@ -100,6 +100,57 @@ pub struct ComponentSpec {
     /// Restart the component if it exits (supervision). Off by default.
     #[serde(default)]
     pub restart: bool,
+    /// Where to load the (JS) bundle from instead of the local `./wasm/<name>`
+    /// artifact: a `url:`/`http(s)://` URL or a `kv:<bucket>/<key>` store entry
+    /// (see [`BundleSource`]). Omitted → the local artifact. Lets JS deploy live —
+    /// change the bundle at the source and re-`spawn`/reload, no node rebuild.
+    #[serde(default)]
+    pub source: Option<String>,
+}
+
+/// Where a component's JS bundle is fetched from when a [`ComponentSpec`]/[`ServeSpec`]
+/// sets `source`, beyond the default local `./wasm/<name>` artifact:
+/// - `http(s)://…` (or `url:<u>`) — an HTTP(S) URL (e.g. a presigned blob / artifact API),
+/// - `kv:<bucket>/<key>` — an entry in the node's durable store ([`crate`]'s `store`).
+///
+/// Parsing is pure (this type carries no I/O); the app loader resolves it to bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BundleSource {
+    /// Fetch over HTTP(S).
+    Url(String),
+    /// Read `key` from `bucket` in the node's durable key-value store.
+    Kv { bucket: String, key: String },
+}
+
+impl BundleSource {
+    /// Parse a manifest `source` string. `kv:<bucket>/<key>` → [`Kv`](Self::Kv);
+    /// `url:<u>` or a bare `http(s)://…` → [`Url`](Self::Url). Any other shape is a
+    /// (human-readable) error, so a typo is caught at load rather than silently
+    /// falling back to a local file.
+    pub fn parse(spec: &str) -> Result<Self, String> {
+        let spec = spec.trim();
+        if let Some(rest) = spec.strip_prefix("kv:") {
+            let (bucket, key) = rest
+                .split_once('/')
+                .ok_or_else(|| format!("kv source must be `kv:<bucket>/<key>`, got {spec:?}"))?;
+            if bucket.is_empty() || key.is_empty() {
+                return Err(format!(
+                    "kv source needs a non-empty bucket and key: {spec:?}"
+                ));
+            }
+            return Ok(BundleSource::Kv {
+                bucket: bucket.to_string(),
+                key: key.to_string(),
+            });
+        }
+        let url = spec.strip_prefix("url:").unwrap_or(spec);
+        if url.starts_with("http://") || url.starts_with("https://") {
+            return Ok(BundleSource::Url(url.to_string()));
+        }
+        Err(format!(
+            "unrecognised bundle source {spec:?} (expected `http(s)://…` or `kv:<bucket>/<key>`)"
+        ))
+    }
 }
 
 fn default_capability() -> String {
@@ -174,6 +225,10 @@ pub struct ServeSpec {
     /// or connections (WS) **per instance**; excess sheds to 503. Omitted → unbounded.
     #[serde(default)]
     pub max_inflight: Option<usize>,
+    /// Load the (JS) bundle from a `url:`/`http(s)://` URL or `kv:<bucket>/<key>`
+    /// instead of `./wasm/<name>` (see [`BundleSource`]). Omitted → the local artifact.
+    #[serde(default)]
+    pub source: Option<String>,
 }
 
 impl Default for NodeConfig {
@@ -330,6 +385,76 @@ mod tests {
         assert_eq!(spec.preopen.len(), 1);
         assert!(!spec.preopen[0].read_only);
         assert_eq!(spec.storage, None, "storage defaults to unset (deny)");
+    }
+
+    #[test]
+    fn parses_bundle_source_field_on_components_and_serve() {
+        let cfg = NodeConfig::from_toml(
+            r#"
+            [[components]]
+            name = "api"
+            source = "kv:bundles/api"
+
+            [[serve]]
+            name = "web"
+            protocol = "http"
+            listen = "127.0.0.1:8080"
+            source = "https://cdn.example/web.js"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(cfg.components[0].source.as_deref(), Some("kv:bundles/api"));
+        assert_eq!(
+            cfg.serve[0].source.as_deref(),
+            Some("https://cdn.example/web.js")
+        );
+        // Default: no source (use the local ./wasm artifact).
+        assert!(NodeConfig::from_toml("[[components]]\nname = \"x\"\n")
+            .unwrap()
+            .components[0]
+            .source
+            .is_none());
+    }
+
+    #[test]
+    fn bundle_source_parses_url_and_kv_and_rejects_garbage() {
+        use BundleSource::*;
+        assert_eq!(
+            BundleSource::parse("https://cdn/x.js"),
+            Ok(Url("https://cdn/x.js".into()))
+        );
+        assert_eq!(
+            BundleSource::parse("url:http://h/x.js"),
+            Ok(Url("http://h/x.js".into())) // the `url:` prefix is stripped
+        );
+        assert_eq!(
+            BundleSource::parse("kv:bundles/api"),
+            Ok(Kv {
+                bucket: "bundles".into(),
+                key: "api".into()
+            })
+        );
+        // A key may itself contain slashes (split on the first only).
+        assert_eq!(
+            BundleSource::parse("kv:b/a/b/c"),
+            Ok(Kv {
+                bucket: "b".into(),
+                key: "a/b/c".into()
+            })
+        );
+        for bad in [
+            "kv:nokey",
+            "kv:/key",
+            "kv:bucket/",
+            "ftp://x",
+            "./wasm/x.js",
+            "",
+        ] {
+            assert!(
+                BundleSource::parse(bad).is_err(),
+                "{bad:?} must be rejected"
+            );
+        }
     }
 
     #[test]

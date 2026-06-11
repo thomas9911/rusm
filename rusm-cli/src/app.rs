@@ -13,8 +13,8 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::Path;
 
-use anyhow::{Context, Result};
-use rusm_node::{CapabilitySpec, ComponentSpec, ServeMode, ServeProtocol, ServeSpec};
+use anyhow::{anyhow, Context, Result};
+use rusm_node::{BundleSource, CapabilitySpec, ComponentSpec, ServeMode, ServeProtocol, ServeSpec};
 use rusm_otp::ProcessHandle;
 use rusm_wasm::{
     Capabilities, CapabilityProfile, HttpServer, ResidentHttpServer, ResidentWsServer, WasmRuntime,
@@ -78,13 +78,51 @@ pub fn capabilities_for(id: &str, profiles: &HashMap<String, CapabilitySpec>) ->
         .capabilities()
 }
 
+/// Resolve a component's optional `source` to JS bundle bytes — the dynamic-deploy
+/// path: fetch from a URL (e.g. a presigned blob / artifact API) or read from the
+/// node's durable `kv` store, instead of the local `./wasm/<name>` artifact. `None`
+/// when no `source` is set (the caller falls back to the local file). A remote source
+/// is always a **JS** bundle. Re-run on each `spawn`/reload, so updating the source
+/// deploys new JS with no node rebuild.
+async fn remote_bundle(source: Option<&str>, wasm: &WasmRuntime) -> Result<Option<Vec<u8>>> {
+    let Some(spec) = source else {
+        return Ok(None);
+    };
+    let bytes = match BundleSource::parse(spec).map_err(|e| anyhow!(e))? {
+        BundleSource::Url(url) => fetch_url(&url).await?,
+        BundleSource::Kv { bucket, key } => wasm
+            .store()
+            .ok_or_else(|| anyhow!("kv source `{spec}` needs a store (set `store` in rusm.toml)"))?
+            .bucket(&bucket)
+            .get(&key)
+            .map_err(|e| anyhow!("reading kv {bucket}/{key}: {e}"))?
+            .ok_or_else(|| anyhow!("kv source `{spec}` not found ({bucket}/{key})"))?,
+    };
+    Ok(Some(bytes))
+}
+
+/// GET `url` and return the body bytes (a one-shot bundle fetch). A non-2xx status
+/// is an error, so a stale/forbidden link fails loudly rather than loading garbage.
+async fn fetch_url(url: &str) -> Result<Vec<u8>> {
+    let response = reqwest::get(url)
+        .await
+        .with_context(|| format!("fetching bundle from {url}"))?
+        .error_for_status()
+        .with_context(|| format!("fetching bundle from {url}"))?;
+    Ok(response
+        .bytes()
+        .await
+        .with_context(|| format!("reading bundle body from {url}"))?
+        .to_vec())
+}
+
 /// Loads each manifest component from `<dir>/wasm/` and spawns it as a process
 /// under its capability profile. A `<name>.js` artifact (a TypeScript bundle)
 /// takes precedence and runs on the shared js-runner; otherwise `<name>.wasm` is
 /// loaded as a component instance. Returns the live `(name, handle)` pairs (hold
 /// them to keep the processes alive). Errors if no artifact exists or it won't
 /// compile — a clear signal to run `rusm build` first.
-pub fn spawn_components(
+pub async fn spawn_components(
     dir: &Path,
     wasm: &WasmRuntime,
     specs: &[ComponentSpec],
@@ -94,6 +132,13 @@ pub fn spawn_components(
     let mut handles = Vec::with_capacity(specs.len());
     for spec in specs {
         let caps = capabilities_for(&spec.capability, profiles);
+        // A configured `source` (url/kv) supplies a JS bundle directly — the
+        // dynamic-deploy path, no local artifact needed.
+        if let Some(bundle) = remote_bundle(spec.source.as_deref(), wasm).await? {
+            wasm.register_js_component(spec.name.clone(), bundle.clone());
+            handles.push((spec.name.clone(), wasm.spawn_js_with(bundle, caps)));
+            continue;
+        }
         // TypeScript component: prefer the precompiled QuickJS bytecode
         // (`<name>.qjsbc`, no runtime parse) and fall back to the `.js` source. Both
         // run on the shared js-runner, which detects the form by its magic prefix.
@@ -165,23 +210,26 @@ pub async fn serve_apps(
         let addr = listener
             .local_addr()
             .with_context(|| format!("local address of `{}`", spec.name))?;
+        // Resolve a `source` (url/kv) bundle once, up front (a remote source is always
+        // a JS handler); `None` → the builder falls back to the local artifact.
+        let remote = remote_bundle(spec.source.as_deref(), wasm).await?;
         // Build the server up front so a load/compile error surfaces here (before we
         // claim the endpoint is up), then drive the accept loop on its own task. The
         // mode picks per-request (a fresh instance per unit) vs resident (a supervised
         // pool of stateful instances).
         let task = match (spec.protocol.is_http(), spec.mode) {
-            (true, ServeMode::PerRequest) => {
-                tokio::spawn(build_http_server(dir, wasm, &spec.name, caps)?.serve(listener))
-            }
-            (true, ServeMode::Resident) => {
-                tokio::spawn(build_resident_http_server(dir, wasm, spec, caps)?.serve(listener))
-            }
+            (true, ServeMode::PerRequest) => tokio::spawn(
+                build_http_server(dir, wasm, &spec.name, caps, remote)?.serve(listener),
+            ),
+            (true, ServeMode::Resident) => tokio::spawn(
+                build_resident_http_server(dir, wasm, spec, caps, remote)?.serve(listener),
+            ),
             (false, ServeMode::PerRequest) => {
-                tokio::spawn(build_ws_server(dir, wasm, &spec.name, caps)?.serve(listener))
+                tokio::spawn(build_ws_server(dir, wasm, &spec.name, caps, remote)?.serve(listener))
             }
-            (false, ServeMode::Resident) => {
-                tokio::spawn(build_resident_ws_server(dir, wasm, spec, caps)?.serve(listener))
-            }
+            (false, ServeMode::Resident) => tokio::spawn(
+                build_resident_ws_server(dir, wasm, spec, caps, remote)?.serve(listener),
+            ),
         };
         endpoints.push(ServedEndpoint {
             name: spec.name.clone(),
@@ -200,7 +248,12 @@ fn build_http_server(
     wasm: &WasmRuntime,
     name: &str,
     caps: Capabilities,
+    remote: Option<Vec<u8>>,
 ) -> Result<HttpServer> {
+    if let Some(bundle) = remote {
+        let bundle = String::from_utf8(bundle).context("URL/kv bundle is not valid UTF-8 JS")?;
+        return Ok(wasm.http_server_js(bundle, caps));
+    }
     let wasm_dir = dir.join("wasm");
     let js_path = wasm_dir.join(format!("{name}.js"));
     if js_path.is_file() {
@@ -227,7 +280,11 @@ fn build_ws_server(
     wasm: &WasmRuntime,
     name: &str,
     caps: Capabilities,
+    remote: Option<Vec<u8>>,
 ) -> Result<WsServer> {
+    if let Some(bundle) = remote {
+        return Ok(wasm.ws_server_js(bundle, caps));
+    }
     let wasm_dir = dir.join("wasm");
     let js_path = wasm_dir.join(format!("{name}.js"));
     if js_path.is_file() {
@@ -254,11 +311,14 @@ fn build_resident_http_server(
     wasm: &WasmRuntime,
     spec: &ServeSpec,
     caps: Capabilities,
+    remote: Option<Vec<u8>>,
 ) -> Result<ResidentHttpServer> {
     let wasm_dir = dir.join("wasm");
     let name = &spec.name;
     let js_path = wasm_dir.join(format!("{name}.js"));
-    let server = if js_path.is_file() {
+    let server = if let Some(bundle) = remote {
+        wasm.resident_http_server_js(bundle, caps, spec.instances)
+    } else if js_path.is_file() {
         let bundle =
             std::fs::read(&js_path).with_context(|| format!("reading {}", js_path.display()))?;
         wasm.resident_http_server_js(bundle, caps, spec.instances)
@@ -281,11 +341,14 @@ fn build_resident_ws_server(
     wasm: &WasmRuntime,
     spec: &ServeSpec,
     caps: Capabilities,
+    remote: Option<Vec<u8>>,
 ) -> Result<ResidentWsServer> {
     let wasm_dir = dir.join("wasm");
     let name = &spec.name;
     let js_path = wasm_dir.join(format!("{name}.js"));
-    let server = if js_path.is_file() {
+    let server = if let Some(bundle) = remote {
+        wasm.resident_ws_server_js(bundle, caps, spec.instances)
+    } else if js_path.is_file() {
         let bundle =
             std::fs::read(&js_path).with_context(|| format!("reading {}", js_path.display()))?;
         wasm.resident_ws_server_js(bundle, caps, spec.instances)
@@ -417,8 +480,11 @@ mod tests {
             name: "echo".to_string(),
             capability: "sandboxed".to_string(),
             restart: false,
+            source: None,
         }];
-        let handles = spawn_components(dir.path(), &wasm, &specs, &HashMap::new()).unwrap();
+        let handles = spawn_components(dir.path(), &wasm, &specs, &HashMap::new())
+            .await
+            .unwrap();
         assert_eq!(handles.len(), 1);
         assert_eq!(handles[0].0, "echo");
         // The component runs to completion as a real process.
@@ -446,8 +512,11 @@ mod tests {
             name: "greeter".to_string(),
             capability: "sandboxed".to_string(),
             restart: false,
+            source: None,
         }];
-        let handles = spawn_components(dir.path(), &wasm, &specs, &HashMap::new()).unwrap();
+        let handles = spawn_components(dir.path(), &wasm, &specs, &HashMap::new())
+            .await
+            .unwrap();
         assert_eq!(handles.len(), 1);
         let (_name, handle) = handles.into_iter().next().unwrap();
         handle.join().await;
@@ -478,6 +547,7 @@ mod tests {
             instances: 1,
             shard_by: None,
             max_inflight: None,
+            source: None,
         }];
         let endpoints = serve_apps(dir.path(), &wasm, &specs, &HashMap::new())
             .await
@@ -525,6 +595,7 @@ mod tests {
             instances: 1,
             shard_by: None,
             max_inflight: None,
+            source: None,
         }];
         let endpoints = serve_apps(dir.path(), &wasm, &specs, &HashMap::new())
             .await
@@ -568,6 +639,7 @@ mod tests {
             instances: 1,
             shard_by: None,
             max_inflight: None,
+            source: None,
         }];
         let endpoints = serve_apps(dir.path(), &wasm, &specs, &HashMap::new())
             .await
@@ -602,6 +674,7 @@ mod tests {
             instances: 1,
             shard_by: None,
             max_inflight: None,
+            source: None,
         }];
         let err = serve_apps(dir.path(), &wasm, &specs, &HashMap::new())
             .await
@@ -620,10 +693,93 @@ mod tests {
             name: "absent".to_string(),
             capability: "sandboxed".to_string(),
             restart: false,
+            source: None,
         }];
         let err = spawn_components(dir.path(), &wasm, &specs, &HashMap::new())
+            .await
             .err()
             .expect("missing artifact must error");
         assert!(err.to_string().contains("absent.wasm"));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn spawns_a_component_whose_bundle_is_sourced_from_kv() {
+        // The dynamic-deploy path: a component with no local artifact, its JS bundle
+        // read from the node's durable store. Put a worker that registers a name, then
+        // spawn it from `kv:` and confirm it actually ran.
+        let dir = tempfile::tempdir().unwrap();
+        let rt = Runtime::new();
+        let wasm = WasmRuntime::with_store(rt.clone(), dir.path().join("kv.redb")).unwrap();
+        let bundle =
+            b"module.exports.default = async function(){ Process.register('from-kv'); for(;;) await Process.receive(); };";
+        wasm.store()
+            .unwrap()
+            .bucket("bundles")
+            .set("greeter", bundle)
+            .unwrap();
+
+        let specs = vec![ComponentSpec {
+            name: "greeter".to_string(),
+            capability: "sandboxed".to_string(),
+            restart: false,
+            source: Some("kv:bundles/greeter".to_string()),
+        }];
+        let handles = spawn_components(dir.path(), &wasm, &specs, &HashMap::new())
+            .await
+            .unwrap();
+        assert_eq!(handles.len(), 1);
+        // The kv-sourced bundle actually ran on the js-runner: it registered its name.
+        for _ in 0..200 {
+            if rt.whereis("from-kv").is_some() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        assert!(
+            rt.whereis("from-kv").is_some(),
+            "the kv-sourced JS component ran and registered its name"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn resolves_a_bundle_from_a_url() {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        // A minimal HTTP server returning a JS bundle body.
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let body = "console.log('hi');";
+        tokio::spawn(async move {
+            if let Ok((mut stream, _)) = listener.accept().await {
+                let mut buf = [0u8; 1024];
+                let _ = stream.read(&mut buf).await; // consume the request head
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.write_all(resp.as_bytes()).await;
+            }
+        });
+
+        let wasm = WasmRuntime::new(Runtime::new()).unwrap();
+        let bundle = remote_bundle(Some(&format!("url:http://{addr}/x.js")), &wasm)
+            .await
+            .unwrap();
+        assert_eq!(bundle.as_deref(), Some(body.as_bytes()));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn bundle_source_errors_are_clear() {
+        let rt = Runtime::new();
+        // No source → None (fall back to the local artifact).
+        let plain = WasmRuntime::new(rt.clone()).unwrap();
+        assert!(remote_bundle(None, &plain).await.unwrap().is_none());
+        // A kv source with no store configured is a clear error.
+        assert!(remote_bundle(Some("kv:b/k"), &plain).await.is_err());
+        // A store, but a missing key.
+        let dir = tempfile::tempdir().unwrap();
+        let stored = WasmRuntime::with_store(rt, dir.path().join("kv.redb")).unwrap();
+        assert!(remote_bundle(Some("kv:b/absent"), &stored).await.is_err());
+        // An unrecognised source shape.
+        assert!(remote_bundle(Some("ftp://x"), &stored).await.is_err());
     }
 }

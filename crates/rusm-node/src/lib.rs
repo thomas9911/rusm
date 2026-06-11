@@ -14,7 +14,8 @@ pub mod profile;
 pub mod protocol;
 
 pub use config::{
-    CapabilitySpec, ComponentSpec, NodeConfig, PreopenSpec, ServeMode, ServeProtocol, ServeSpec,
+    BundleSource, CapabilitySpec, ComponentSpec, NodeConfig, PreopenSpec, ServeMode, ServeProtocol,
+    ServeSpec,
 };
 pub use node::{serve, serve_on, Node};
 pub use profile::{ResourceProfile, ResourceProfileMeta};
