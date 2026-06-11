@@ -772,6 +772,102 @@ mod tests {
         );
     }
 
+    /// Query the pubsub broker for `topic`'s subscriber count.
+    async fn pubsub_count(rt: &Runtime, broker: rusm_otp::Pid, topic: &str) -> usize {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let qrt = rt.clone();
+        let topic = topic.to_string();
+        rt.spawn(move |mut ctx| async move {
+            let q = serde_json::json!({ "op": "count", "topic": topic, "reply": ctx.pid().raw() });
+            qrt.send(broker, q.to_string().into_bytes());
+            if let Some(m) = ctx.recv().await.message() {
+                let _ = tx.send(String::from_utf8_lossy(&m).parse().unwrap_or(usize::MAX));
+            }
+        });
+        rx.await.unwrap_or(usize::MAX)
+    }
+
+    /// Poll `pubsub_count` until it reaches `target` (or fail after a deadline).
+    async fn wait_pubsub_count(rt: &Runtime, broker: rusm_otp::Pid, topic: &str, target: usize) {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            if pubsub_count(rt, broker, topic).await == target {
+                return;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "{topic:?} subscriber count never reached {target}"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn pubsub_fans_out_per_topic_and_prunes_dead_subscribers() {
+        // The `rusm_rs::pubsub::Topics` primitive, end-to-end via a tiny broker
+        // component: keyed fan-out (topic isolation) and monitor-based pruning of a
+        // dead subscriber — the broker carries none of that machinery itself.
+        const BROKER: &[u8] = include_bytes!("../../tests/fixtures/pubsub_broker.wasm");
+        let rt = Runtime::new();
+        let wr = WasmRuntime::new(rt.clone()).unwrap();
+        let pre = wr
+            .prepare_component(&wr.compile_component(BROKER).unwrap(), "run")
+            .unwrap();
+        // Auto-prune monitors subscribers, so the broker needs the process-control grant.
+        let _broker =
+            wr.spawn_component_with(&pre, Capabilities::nothing().allow_process_control(true));
+        let broker = loop {
+            if let Some(pid) = rt.whereis("pubsub") {
+                break pid;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        };
+
+        // Two subscribers, each forwarding what it receives to an mpsc for assertions.
+        let (tx_a, mut rx_a) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+        let sub_a = rt.spawn(move |mut ctx| async move {
+            loop {
+                if let Some(m) = ctx.recv().await.message() {
+                    let _ = tx_a.send(m);
+                }
+            }
+        });
+        let (tx_b, mut rx_b) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+        let sub_b = rt.spawn(move |mut ctx| async move {
+            loop {
+                if let Some(m) = ctx.recv().await.message() {
+                    let _ = tx_b.send(m);
+                }
+            }
+        });
+
+        let send_cmd = |v: serde_json::Value| rt.send(broker, v.to_string().into_bytes());
+        send_cmd(serde_json::json!({ "op": "sub", "topic": "pages/1", "pid": sub_a.pid().raw() }));
+        send_cmd(serde_json::json!({ "op": "sub", "topic": "pages/2", "pid": sub_b.pid().raw() }));
+        wait_pubsub_count(&rt, broker, "pages/1", 1).await;
+        wait_pubsub_count(&rt, broker, "pages/2", 1).await;
+
+        // Fan-out is keyed: publishing to pages/1 reaches only its subscriber.
+        send_cmd(serde_json::json!({ "op": "pub", "topic": "pages/1", "data": "hello" }));
+        let got = tokio::time::timeout(std::time::Duration::from_secs(2), rx_a.recv()).await;
+        assert_eq!(got.unwrap().as_deref(), Some(b"hello".as_slice()));
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(200), rx_b.recv())
+                .await
+                .is_err(),
+            "topic isolation: a pages/2 subscriber must not receive pages/1 events"
+        );
+
+        // Kill sub_a → its monitor `__down` prunes it from the broker (no unsubscribe).
+        rt.kill(sub_a.pid());
+        wait_pubsub_count(&rt, broker, "pages/1", 0).await;
+
+        // The surviving subscriber still receives on its own topic.
+        send_cmd(serde_json::json!({ "op": "pub", "topic": "pages/2", "data": "world" }));
+        let got = tokio::time::timeout(std::time::Duration::from_secs(2), rx_b.recv()).await;
+        assert_eq!(got.unwrap().as_deref(), Some(b"world".as_slice()));
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_stock_command_component_runs() {
         // A standard `wasi:cli/run` component (no rusm:runtime, just std) runs as a RUSM
