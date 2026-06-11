@@ -14,7 +14,7 @@ This is not apples-to-apples. RUSM has **Phases 1–10 complete**: the OTP core 
 manages, and connects real processes over TCP, and the `rusm-wasm` backend runs
 them as real **Wasm instances** behind three bridges (wasip1 core modules, wasip2
 components, wasip3 `@0.3.0`), with default-deny capabilities, instance-per-process,
-pooling + CoW + epoch. All **sixteen** dashboard scenarios run on real data — including
+pooling + CoW + epoch. All **nineteen** dashboard scenarios run on real data — including
 **fairness**, where Wasm spinners saturate every core yet bystanders keep
 progressing, and **distributed-fanout**, real cross-node messaging over QUIC+TLS. The **guest crate** (Phase 8: `rusm-rs` + `rusm-ts`) and **distributed
 clusters** (Phase 9: `rusm-cluster`, QUIC+TLS) are now built too; remaining phases

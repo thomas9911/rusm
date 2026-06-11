@@ -44,7 +44,9 @@ Phases 1–5 made the OTP core real (processes, messaging, supervision, manageme
 TCP); Phase 6 slotted in Wasmtime as the process backend; and by **Phase 7** a
 RUSM process is a real, supervised, sandboxed **WASM component** (or wasip1 core
 module) hosting WASI p1/p2/p3; by **Phase 9** nodes cluster over QUIC+TLS — and
-all sixteen dashboard benchmarks now run on real data — including six co-resident
+all nineteen dashboard benchmarks now run on real data — including six co-resident
 serving demos (HTTP/WS/SSE and their `*-ts` twins) that drive a real in-process
-WASM server through the same load path as `rusm-loadtest`. See the
+WASM server through the same load path as `rusm-loadtest`, plus three
+platform-primitive scenarios (durable KV, pub/sub fan-out, and `crypto.subtle` from
+a TS guest). See the
 [roadmap](./02-roadmap.md) for where things stand.

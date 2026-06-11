@@ -118,13 +118,15 @@ and become **Phase 12**:
   in the control loop with poison-resistant locking.
 
 These are the items to land before exposing `rusm serve` to untrusted traffic.
-- **Sixteen live dashboard benchmarks** — *every* scenario now runs on real data: the
+- **Nineteen live dashboard benchmarks** — *every* scenario now runs on real data: the
   ten core engines (spawn-storm, ping-pong, fault-recovery, connection-storm,
   connection-scale, fairness, module-storm, component-storm, stream-pipe,
-  distributed-fanout) plus six co-resident serving demos (`http-throughput`,
-  `ws-echo`, `sse-fanout` and their `*-ts` twins) + the standalone `cluster_fanout`
-  benchmark. The fair, credible serving headline numbers are still measured by
-  `rusm-loadtest` (out-of-process, vs a live `rusm serve` port).
+  distributed-fanout), six co-resident serving demos (`http-throughput`,
+  `ws-echo`, `sse-fanout` and their `*-ts` twins), and three platform-primitive
+  scenarios (`kv-storm` durable read-modify-writes over redb, `pubsub-fanout` 1→N
+  broadcast, `crypto-ops` `crypto.subtle` from a TS guest) + the standalone
+  `cluster_fanout` benchmark. The fair, credible serving headline numbers are still
+  measured by `rusm-loadtest` (out-of-process, vs a live `rusm serve` port).
 - TDD throughout; coverage ≥98% (mostly 100%); `cargo fmt` + Prettier clean.
 
 See the per-phase deep dives under [`phases/`](./phases/phase-00-foundation.md), and

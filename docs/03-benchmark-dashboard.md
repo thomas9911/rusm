@@ -24,8 +24,11 @@ A menu of scenarios and a **Run** button. Each tick streams: throughput
 | HTTP throughput + `-ts` twin | req/sec (co-resident live demo) | phase 11 |
 | WS echo + `-ts` twin | round-trips/sec (co-resident live demo) | phase 11 |
 | SSE fan-out + `-ts` twin | events/sec (co-resident live demo) | phase 11 |
+| KV storm | durable read-modify-writes/sec (ACID commits, redb) | phase 11 |
+| Pub/sub fan-out | subscriber deliveries/sec (1 publish → N) | phase 11 |
+| Crypto ops (TS) | `crypto.subtle` SHA-256 digests/sec | phase 11 |
 
-All **sixteen** scenarios above run **real** engines — none are synthetic
+All **nineteen** scenarios above run **real** engines — none are synthetic
 (`Runner::start_synthetic` keeps a runtime-free deterministic preview only for UI
 development). The **six serving scenarios are co-resident live demos**: each spins up
 the same real in-process WASM server and drives it through the same load path as the
@@ -37,7 +40,15 @@ node process. Because they share CPU and hide the network behind loopback, the
 HTTP/WS/SSE](./serving-http-ws-sse.md)). The runtime micro-benchmarks (spawns/sec,
 msgs/sec, restarts/sec, scheduler fairness) stay **in-process** on purpose — they
 measure the actor core itself where there is no network/server, so in-process is the
-correct way to measure raw runtime capacity.
+correct way to measure raw runtime capacity. The three **platform-primitive**
+scenarios are likewise honest in-process measurements of the capabilities a real app
+leans on: **KV storm** drives durable read-modify-writes against the embedded
+`rusm-kv` (redb) store — the only scenario that touches disk, so its number is the
+ACID-commit ceiling (writers serialise behind one commit lock; readers are concurrent
+MVCC); **pub/sub fan-out** is one publisher broadcasting to N subscriber processes
+(the exact mechanics of `rusm-rs` `pubsub::Topics::publish`); and **crypto ops** runs
+`crypto.subtle` (native RustCrypto) inside a sandboxed TypeScript guest, so its rate
+is the honest cost of offering Web Crypto from a JS component.
 
 ## Live observer view
 
