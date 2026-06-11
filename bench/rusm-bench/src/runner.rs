@@ -31,6 +31,11 @@ pub struct RunnerConfig {
     pub throughput_window: usize,
     /// Sampling rate; ties `ops_per_sec` to a per-tick operation count.
     pub ticks_per_second: u32,
+    /// Latency **warm-up**: latencies from the first `warmup_ticks` ticks of a run are
+    /// discarded, so the reported p50/p95/p99 are *steady-state* — not inflated by
+    /// ramp-up (pool fill, JIT/cache warming). `0` records from the first tick (used by
+    /// tests for deterministic per-tick assertions); production sets ~2s worth.
+    pub warmup_ticks: u64,
     /// Background spawner tasks for the real spawn-storm engine (one per core).
     pub spawn_workers: usize,
     /// Spawn-storm backpressure: max live processes before spawners pause.
@@ -48,6 +53,10 @@ impl Default for RunnerConfig {
             latency_samples: 64,
             throughput_window: 120,
             ticks_per_second: 20,
+            // The library default records latencies from tick 0 (deterministic, what
+            // tests assert); the production builder (`runner_config`) sets a real
+            // warm-up so the dashboard/CLI report steady-state percentiles.
+            warmup_ticks: 0,
             spawn_workers,
             spawn_max_in_flight,
         }
@@ -58,11 +67,21 @@ impl Default for RunnerConfig {
 /// `profile` is applied to the running node separately, so it shows up in frames
 /// and can be changed live).
 pub fn runner_config(cfg: &rusm_node::NodeConfig) -> RunnerConfig {
+    let ticks_per_second = cfg.ticks_per_second.max(1);
     RunnerConfig {
-        ticks_per_second: cfg.ticks_per_second.max(1),
+        ticks_per_second,
+        // Steady-state latency: discard the first ~2s of samples so reported
+        // percentiles aren't inflated by ramp-up. This is the path the dashboard and
+        // `rusm-bench run` use, so published numbers are warmed.
+        warmup_ticks: u64::from(ticks_per_second).saturating_mul(WARMUP_SECS),
         ..RunnerConfig::default()
     }
 }
+
+/// Seconds of latency samples discarded at the start of a run (see
+/// [`RunnerConfig::warmup_ticks`]) — long enough to ride out pool fill + cache/JIT
+/// warming, short enough that a short run still has a steady-state window.
+const WARMUP_SECS: u64 = 2;
 
 /// The data source driving a run: a real engine per scenario, or a deterministic
 /// [`SyntheticSource`] for the runtime-free preview mode ([`Runner::start_synthetic`]).
@@ -340,6 +359,9 @@ impl Runner {
         state.peak_concurrent = state.peak_concurrent.max(t.process_count);
         let scenario = state.scenario;
         let peak_concurrent = state.peak_concurrent;
+        // Steady-state latency: ignore samples until the warm-up window has elapsed, so
+        // the percentiles reflect the warm system, not pool fill / cache warming.
+        let past_warmup = state.tick > self.config.warmup_ticks;
 
         // Loud-stall invariant: once a scenario has produced throughput, a sustained
         // run of zero ticks means it stalled — surface it instead of quietly charting
@@ -361,8 +383,10 @@ impl Runner {
             }
         }
 
-        for latency_ns in &t.latencies_ns {
-            self.latency.record_nanos(*latency_ns);
+        if past_warmup {
+            for latency_ns in &t.latencies_ns {
+                self.latency.record_nanos(*latency_ns);
+            }
         }
         self.throughput.push(t.ops_per_sec);
 
@@ -427,6 +451,30 @@ mod tests {
         assert_eq!(frame.scenario, None);
         assert_eq!(frame.ops_per_sec, 0.0);
         assert_eq!(frame.uptime_ms, 10);
+    }
+
+    #[test]
+    fn warmup_excludes_early_latency_then_records_steady_state() {
+        // With a warm-up window, the first `warmup_ticks` ticks record no latency
+        // (steady-state percentiles aren't inflated by ramp-up); ticks after it do.
+        let mut r = Runner::new(RunnerConfig {
+            warmup_ticks: 3,
+            ..RunnerConfig::default()
+        });
+        r.start_synthetic(Scenario::PingPong);
+        for tick in 0..3 {
+            assert_eq!(
+                r.tick(tick).latency.count,
+                0,
+                "tick {tick} is within warm-up — no steady-state latency yet"
+            );
+        }
+        // The 4th tick is past the window: its samples are recorded.
+        assert_eq!(
+            r.tick(3).latency.count as usize,
+            RunnerConfig::default().latency_samples,
+            "the first post-warm-up tick records exactly one tick of samples"
+        );
     }
 
     #[test]
