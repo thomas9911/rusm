@@ -130,7 +130,7 @@ beat the runtime that inspired this.
 
 ## Benchmarks
 
-Sixteen dashboard scenarios run on **live data** — release builds, measured under
+Nineteen dashboard scenarios run on **live data** — release builds, measured under
 everyday machine load; they scale up with free CPU.
 
 | Scenario | Result |
@@ -150,6 +150,12 @@ against a live `rusm serve` port (loopback): HTTP **~46k req/s** (0% errors) · 
 **~146k round-trips/s** (256 held) · SSE **~609k events/s** (256 held) · **~34k**
 sandboxed-process-per-connection WS establishments/sec. The six serving dashboard
 tiles are co-resident live demos (in-process server + load generator on one node).
+
+Three **platform-primitive** tiles round out the nineteen: `kv-storm` (durable
+read-modify-writes over the embedded redb store — the only disk-touching scenario, so
+its number is the ACID-commit ceiling), `pubsub-fanout` (one publisher broadcasting
+1→N to subscriber processes), and `crypto-ops` (`crypto.subtle` SHA-256 from a
+sandboxed TypeScript guest).
 
 ## Configuration
 
