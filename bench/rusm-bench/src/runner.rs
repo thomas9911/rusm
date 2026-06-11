@@ -4,14 +4,17 @@ use rusm_observer::{NodeSample, Observer};
 use crate::componentstorm::ComponentStormEngine;
 use crate::connectionscale::ConnectionScaleEngine;
 use crate::connectionstorm::ConnectionStormEngine;
+use crate::cryptoops::CryptoOpsEngine;
 use crate::distributedfanout::DistributedFanoutEngine;
 use crate::fairness::FairnessEngine;
 use crate::faultrecovery::FaultRecoveryEngine;
+use crate::kvstorm::KvStormEngine;
 use crate::modulestorm::ModuleStormEngine;
 use crate::pingpong::PingPongEngine;
 use crate::profile::ResourceProfile;
 use crate::profile_tuning::ProfileTuning;
 use crate::protocol::Frame;
+use crate::pubsubfanout::PubSubFanoutEngine;
 use crate::sample::Sample;
 use crate::scenario::Scenario;
 use crate::serving::{CapacityKind, CapacityServingEngine, HttpServingEngine};
@@ -100,6 +103,10 @@ enum Engine {
     // Serving (live co-resident demos): HTTP via balter, WS/SSE via the capacity harness.
     HttpThroughput(HttpServingEngine),
     Capacity(CapacityServingEngine),
+    // Platform primitives.
+    KvStorm(KvStormEngine),
+    PubSubFanout(PubSubFanoutEngine),
+    CryptoOps(CryptoOpsEngine),
 }
 
 impl Engine {
@@ -169,6 +176,18 @@ impl Engine {
                     scenario.guest(),
                 ))
             }
+            Scenario::KvStorm => Engine::KvStorm(KvStormEngine::new(
+                config.spawn_workers,
+                config.scheduler_count,
+            )),
+            Scenario::PubSubFanout => Engine::PubSubFanout(PubSubFanoutEngine::new(
+                config.spawn_workers,
+                config.scheduler_count,
+            )),
+            Scenario::CryptoOps => Engine::CryptoOps(CryptoOpsEngine::new(
+                config.spawn_workers,
+                config.scheduler_count,
+            )),
         }
     }
 
@@ -192,6 +211,9 @@ impl Engine {
             Engine::ConnectionScale(engine) => engine.tick(),
             Engine::HttpThroughput(engine) => engine.tick(),
             Engine::Capacity(engine) => engine.tick(),
+            Engine::KvStorm(engine) => engine.tick(),
+            Engine::PubSubFanout(engine) => engine.tick(),
+            Engine::CryptoOps(engine) => engine.tick(),
         }
     }
 }
@@ -272,7 +294,10 @@ impl Runner {
             | Scenario::SseFanout
             | Scenario::HttpThroughputTs
             | Scenario::WsEchoTs
-            | Scenario::SseFanoutTs),
+            | Scenario::SseFanoutTs
+            | Scenario::KvStorm
+            | Scenario::PubSubFanout
+            | Scenario::CryptoOps),
         ) = self.scenario()
         {
             self.start(scenario);
@@ -562,6 +587,34 @@ mod tests {
                 );
                 r.stop();
             }
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn platform_primitive_scenarios_produce_throughput_through_the_runner() {
+        // The dashboard path (Runner::start → tick) for the platform-primitive
+        // engines: durable KV, pub/sub fan-out, and TS crypto must each produce real
+        // throughput and (for the two that record it) timed latency.
+        let mut r = runner();
+        for scenario in [
+            Scenario::KvStorm,
+            Scenario::PubSubFanout,
+            Scenario::CryptoOps,
+        ] {
+            r.start(scenario);
+            let mut tick = 0u64;
+            let mut produced = false;
+            // rquickjs start-up dominates crypto-ops, so poll generously.
+            for _ in 0..200 {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                if r.tick(tick).ops_per_sec > 0.0 {
+                    produced = true;
+                    break;
+                }
+                tick += 1;
+            }
+            assert!(produced, "{} never produced throughput", scenario.id());
+            r.stop();
         }
     }
 

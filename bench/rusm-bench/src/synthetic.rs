@@ -215,6 +215,25 @@ impl SyntheticSource {
                 latency_ns: (1_000, 80_000),
                 processes: (64, 768),
             },
+            // Platform primitives are live (real) engines; these are only the
+            // runtime-free preview shapes. KV is disk/commit-bound (low rate, ~ms
+            // latency); fan-out is high-rate, sub-ms one-way; TS crypto is a moderate
+            // request rate at rquickjs round-trip latency.
+            Scenario::KvStorm => Ranges {
+                ops: (5_000, 60_000),
+                latency_ns: (20_000, 2_000_000),
+                processes: (8, 64),
+            },
+            Scenario::PubSubFanout => Ranges {
+                ops: (500_000, 5_000_000),
+                latency_ns: (1_000, 50_000),
+                processes: (8, 72),
+            },
+            Scenario::CryptoOps => Ranges {
+                ops: (10_000, 80_000),
+                latency_ns: (50_000, 2_000_000),
+                processes: (2, 32),
+            },
         }
     }
 }

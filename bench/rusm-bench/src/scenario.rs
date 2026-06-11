@@ -33,6 +33,11 @@ pub enum Scenario {
     HttpThroughputTs,
     WsEchoTs,
     SseFanoutTs,
+    // Platform primitives (all real, Phase 11): the durable KV store, pub/sub
+    // fan-out, and Web Crypto from a TS guest — the capabilities a real app leans on.
+    KvStorm,
+    PubSubFanout,
+    CryptoOps,
 }
 
 /// Which guest language a serving scenario runs — the same server hosts a Rust
@@ -93,7 +98,7 @@ impl Scenario {
     // Serving scenarios (HTTP/WS/SSE, + TS twins) are **live co-resident demos** of
     // the serving path; the *fair* throughput headline is measured out-of-process by
     // the `rusm-loadtest` binary against a real `rusm serve` port.
-    pub const ALL: [Scenario; 16] = [
+    pub const ALL: [Scenario; 19] = [
         Scenario::SpawnStorm,        // phase 1
         Scenario::PingPong,          // phase 2
         Scenario::FaultRecovery,     // phase 3
@@ -110,6 +115,9 @@ impl Scenario {
         Scenario::WsEchoTs,          // phase 11 — …the TypeScript twin
         Scenario::SseFanout,         // phase 11 — Server-Sent Events fan-out (Rust)
         Scenario::SseFanoutTs,       // phase 11 — …the TypeScript twin
+        Scenario::KvStorm,           // phase 11 — durable KV write throughput (redb)
+        Scenario::PubSubFanout,      // phase 11 — pub/sub 1→N broadcast
+        Scenario::CryptoOps,         // phase 11 — crypto.subtle from a TS guest
     ];
 
     /// The guest language a serving scenario runs (Rust by default; the `*Ts`
@@ -139,6 +147,9 @@ impl Scenario {
             Scenario::HttpThroughputTs => "http-throughput-ts",
             Scenario::WsEchoTs => "ws-echo-ts",
             Scenario::SseFanoutTs => "sse-fanout-ts",
+            Scenario::KvStorm => "kv-storm",
+            Scenario::PubSubFanout => "pubsub-fanout",
+            Scenario::CryptoOps => "crypto-ops",
         }
     }
 
@@ -175,6 +186,9 @@ impl Scenario {
             Scenario::HttpThroughput | Scenario::HttpThroughputTs => "HTTP requests/sec (achieved)",
             Scenario::WsEcho | Scenario::WsEchoTs => "WebSocket echo round-trips/sec",
             Scenario::SseFanout | Scenario::SseFanoutTs => "SSE events/sec (across held streams)",
+            Scenario::KvStorm => "durable KV read-modify-writes/sec (a redb commit each)",
+            Scenario::PubSubFanout => "subscriber deliveries/sec (1 publish → N subscribers)",
+            Scenario::CryptoOps => "crypto.subtle SHA-256 digests/sec (TS guest round-trip)",
         }
     }
 
@@ -195,6 +209,9 @@ impl Scenario {
             Scenario::HttpThroughput | Scenario::HttpThroughputTs => Some("request latency"),
             Scenario::WsEcho | Scenario::WsEchoTs => Some("echo round-trip"),
             Scenario::SseFanout | Scenario::SseFanoutTs => Some("event delivery latency"),
+            Scenario::KvStorm => Some("read-modify-write"),
+            Scenario::PubSubFanout => Some("publish → delivery (one-way)"),
+            Scenario::CryptoOps => Some("digest round-trip"),
         }
     }
 
@@ -242,6 +259,10 @@ impl Scenario {
                 "ts-sse-firehose/index.ts",
                 include_str!("../../../crates/rusm-wasm/tests/fixtures/ts-sse-firehose/index.ts"),
             ),
+            // Platform-primitive scenarios show their engine — the real driving code.
+            Scenario::KvStorm => ("kvstorm.rs", include_str!("kvstorm.rs")),
+            Scenario::PubSubFanout => ("pubsubfanout.rs", include_str!("pubsubfanout.rs")),
+            Scenario::CryptoOps => ("cryptoops.rs", include_str!("cryptoops.rs")),
         })
     }
 
@@ -440,6 +461,39 @@ impl Scenario {
                 ],
                 11,
             ),
+            Scenario::KvStorm => (
+                "KV storm",
+                "Durable, ACID key-value writes under load — how fast can processes COMMIT?",
+                vec![
+                    "What's unique here: this is the only scenario that touches DISK. Worker processes hammer a shared embedded KV store (rusm-kv, over redb) with read-modify-writes — the durable-counter / session-update workload — and EVERY write is its own ACID commit.",
+                    "Headline: durable read-modify-writes/sec (a get + an fsync'd commit each), plus the end-to-end RMW latency. This is the honest *durable* write rate, not an in-memory one.",
+                    "redb serialises writers behind one commit lock while readers run concurrently (MVCC), so adding workers past the core count mostly deepens the commit queue — the number is the durable-write ceiling, and it scales with the disk, not the runtime.",
+                    "Phase 11: REAL rusm-kv — the same embedded store a guest reaches through the storage capability (no Redis, no external daemon). A focused durable primitive, Wasm-free, like rusm-otp is for processes.",
+                ],
+                11,
+            ),
+            Scenario::PubSubFanout => (
+                "Pub/sub fan-out",
+                "One publish, MANY subscribers — live 1→N broadcast throughput.",
+                vec![
+                    "What's unique here: it's about *fan-out* — a publisher process broadcasting each message to a whole set of subscriber processes at once, not a 1:1 round-trip (ping-pong) or process creation (spawn storm).",
+                    "Headline: subscriber deliveries/sec — one publish counts as N deliveries — plus the one-way publish→delivery latency measured at a real subscriber.",
+                    "This is exactly the mechanics of rusm-rs's `pubsub::Topics::publish` (`for sub in subscribers { send(sub, msg) }`), the broker primitive a guest embeds — with crash-safe pruning via monitors. The publisher is the bottleneck; subscribers just drain, so nothing grows unbounded.",
+                    "Phase 11: REAL rusm-otp processes — a publisher fanning real messages out to live subscriber processes, measured end to end.",
+                ],
+                11,
+            ),
+            Scenario::CryptoOps => (
+                "Crypto ops (TS)",
+                "Web Crypto from a sandboxed TypeScript guest — SHA-256 digests/sec.",
+                vec![
+                    "What's unique here: it measures real cryptography (`crypto.subtle.digest`) served by a TYPESCRIPT guest on the embedded rquickjs runner — native RustCrypto behind the Web Crypto ABI, in a sandboxed process that needs no capability.",
+                    "Headline: SHA-256 digests/sec + per-digest round-trip latency. Each request hashes a fixed payload and replies; the rate is the honest cost of *offering* crypto from a JS guest (the rquickjs call + the message round-trip).",
+                    "Why it matters: the entropy + crypto ecosystem (uuid, jwt, hashing, AES-GCM) runs unchanged inside a RUSM TS component — sandboxed, supervised, and backed by audited Rust crypto, not a JS reimplementation.",
+                    "Phase 11: REAL rquickjs guests driving real crypto.subtle calls, measured live.",
+                ],
+                11,
+            ),
         };
         ScenarioMeta {
             id: self.id().to_string(),
@@ -588,6 +642,9 @@ mod tests {
                 "ws-echo-ts",
                 "sse-fanout",
                 "sse-fanout-ts",
+                "kv-storm",
+                "pubsub-fanout",
+                "crypto-ops",
             ]
         );
     }
