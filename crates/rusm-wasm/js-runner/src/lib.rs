@@ -22,9 +22,14 @@ wit_bindgen::generate!({
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 
+use aes_gcm::aead::{Aead, KeyInit, Payload};
+use aes_gcm::{Aes128Gcm, Aes256Gcm, Nonce};
+use hmac::{Hmac, Mac};
 use http_body_util::BodyExt;
 use rquickjs::{Ctx, Exception, Function, Promise, TypedArray};
 use rusm::runtime::actor;
+use sha1::Sha1;
+use sha2::{Digest, Sha256, Sha384, Sha512};
 use wstd::http::{Body, Client, Request};
 
 struct Component;
@@ -177,6 +182,160 @@ fn js_spawn(ctx: Ctx<'_>, name: String) -> rquickjs::Result<String> {
     }
 }
 
+// ---------------------------------------------------------------------------
+// crypto.subtle — native (RustCrypto) digest / HMAC / AES-GCM, backing the
+// `crypto.subtle` polyfill in webapi.js. Compiled + constant-time (far faster and
+// safer than a pure-JS impl in QuickJS). Inputs are borrowed (no copy); only the
+// owned result is allocated. Unsupported algorithms surface as `None` → the JS
+// bridge throws, matching Web Crypto's NotSupportedError/OperationError.
+// ---------------------------------------------------------------------------
+
+fn hmac_sign(hash: &str, key: &[u8], data: &[u8]) -> Option<Vec<u8>> {
+    macro_rules! sign {
+        ($h:ty) => {{
+            let mut mac = <Hmac<$h> as Mac>::new_from_slice(key).ok()?;
+            mac.update(data);
+            Some(mac.finalize().into_bytes().to_vec())
+        }};
+    }
+    match hash {
+        "SHA-1" => sign!(Sha1),
+        "SHA-256" => sign!(Sha256),
+        "SHA-384" => sign!(Sha384),
+        "SHA-512" => sign!(Sha512),
+        _ => None,
+    }
+}
+
+fn hmac_verify(hash: &str, key: &[u8], sig: &[u8], data: &[u8]) -> Option<bool> {
+    macro_rules! verify {
+        ($h:ty) => {{
+            let mut mac = <Hmac<$h> as Mac>::new_from_slice(key).ok()?;
+            mac.update(data);
+            // `verify_slice` is constant-time — never a byte-by-byte tag compare.
+            Some(mac.verify_slice(sig).is_ok())
+        }};
+    }
+    match hash {
+        "SHA-1" => verify!(Sha1),
+        "SHA-256" => verify!(Sha256),
+        "SHA-384" => verify!(Sha384),
+        "SHA-512" => verify!(Sha512),
+        _ => None,
+    }
+}
+
+/// AES-GCM with a 96-bit (12-byte) nonce — the Web Crypto standard. `aad` may be
+/// empty. Output is `ciphertext || 16-byte tag` (the Web Crypto layout). `None` for
+/// an unsupported key length (only 128/256-bit) or a non-12-byte IV.
+fn aes_gcm_encrypt(key: &[u8], iv: &[u8], aad: &[u8], plaintext: &[u8]) -> Option<Vec<u8>> {
+    if iv.len() != 12 {
+        return None;
+    }
+    let payload = Payload {
+        msg: plaintext,
+        aad,
+    };
+    match key.len() {
+        16 => Aes128Gcm::new_from_slice(key)
+            .ok()?
+            .encrypt(Nonce::from_slice(iv), payload)
+            .ok(),
+        32 => Aes256Gcm::new_from_slice(key)
+            .ok()?
+            .encrypt(Nonce::from_slice(iv), payload)
+            .ok(),
+        _ => None,
+    }
+}
+
+/// Inverse of [`aes_gcm_encrypt`]. `None` on a bad key/IV length **or** an
+/// authentication failure (tampered ciphertext/tag/aad) — the JS bridge throws.
+fn aes_gcm_decrypt(key: &[u8], iv: &[u8], aad: &[u8], ciphertext: &[u8]) -> Option<Vec<u8>> {
+    if iv.len() != 12 {
+        return None;
+    }
+    let payload = Payload {
+        msg: ciphertext,
+        aad,
+    };
+    match key.len() {
+        16 => Aes128Gcm::new_from_slice(key)
+            .ok()?
+            .decrypt(Nonce::from_slice(iv), payload)
+            .ok(),
+        32 => Aes256Gcm::new_from_slice(key)
+            .ok()?
+            .decrypt(Nonce::from_slice(iv), payload)
+            .ok(),
+        _ => None,
+    }
+}
+
+fn js_crypto_digest<'a>(ctx: Ctx<'a>, alg: String, data: TypedArray<'a, u8>) -> rquickjs::Result<TypedArray<'a, u8>> {
+    let data = data.as_bytes().unwrap_or(&[]);
+    let out = match alg.as_str() {
+        "SHA-1" => Sha1::digest(data).to_vec(),
+        "SHA-256" => Sha256::digest(data).to_vec(),
+        "SHA-384" => Sha384::digest(data).to_vec(),
+        "SHA-512" => Sha512::digest(data).to_vec(),
+        other => {
+            return Err(Exception::throw_message(
+                &ctx,
+                &format!("unsupported digest algorithm: {other}"),
+            ))
+        }
+    };
+    TypedArray::new(ctx, out)
+}
+
+fn js_crypto_hmac_sign<'a>(ctx: Ctx<'a>, hash: String, key: TypedArray<'a, u8>, data: TypedArray<'a, u8>) -> rquickjs::Result<TypedArray<'a, u8>> {
+    match hmac_sign(&hash, key.as_bytes().unwrap_or(&[]), data.as_bytes().unwrap_or(&[])) {
+        Some(mac) => TypedArray::new(ctx, mac),
+        None => Err(Exception::throw_message(&ctx, &format!("unsupported HMAC hash: {hash}"))),
+    }
+}
+
+fn js_crypto_hmac_verify(ctx: Ctx<'_>, hash: String, key: TypedArray<u8>, sig: TypedArray<u8>, data: TypedArray<u8>) -> rquickjs::Result<bool> {
+    hmac_verify(
+        &hash,
+        key.as_bytes().unwrap_or(&[]),
+        sig.as_bytes().unwrap_or(&[]),
+        data.as_bytes().unwrap_or(&[]),
+    )
+    .ok_or_else(|| Exception::throw_message(&ctx, &format!("unsupported HMAC hash: {hash}")))
+}
+
+fn js_crypto_aes_gcm_encrypt<'a>(ctx: Ctx<'a>, key: TypedArray<'a, u8>, iv: TypedArray<'a, u8>, aad: TypedArray<'a, u8>, plaintext: TypedArray<'a, u8>) -> rquickjs::Result<TypedArray<'a, u8>> {
+    match aes_gcm_encrypt(
+        key.as_bytes().unwrap_or(&[]),
+        iv.as_bytes().unwrap_or(&[]),
+        aad.as_bytes().unwrap_or(&[]),
+        plaintext.as_bytes().unwrap_or(&[]),
+    ) {
+        Some(ct) => TypedArray::new(ctx, ct),
+        None => Err(Exception::throw_message(
+            &ctx,
+            "AES-GCM encrypt failed (key must be 16 or 32 bytes, iv 12 bytes)",
+        )),
+    }
+}
+
+fn js_crypto_aes_gcm_decrypt<'a>(ctx: Ctx<'a>, key: TypedArray<'a, u8>, iv: TypedArray<'a, u8>, aad: TypedArray<'a, u8>, ciphertext: TypedArray<'a, u8>) -> rquickjs::Result<TypedArray<'a, u8>> {
+    match aes_gcm_decrypt(
+        key.as_bytes().unwrap_or(&[]),
+        iv.as_bytes().unwrap_or(&[]),
+        aad.as_bytes().unwrap_or(&[]),
+        ciphertext.as_bytes().unwrap_or(&[]),
+    ) {
+        Some(pt) => TypedArray::new(ctx, pt),
+        None => Err(Exception::throw_message(
+            &ctx,
+            "AES-GCM decrypt failed (bad key/iv or authentication)",
+        )),
+    }
+}
+
 /// The guest JS environment, split by concern (see `bridge/`): Web API polyfills
 /// (standards-only) then the `Process`/`Stream` actor API (over the host `__*`
 /// primitives). Both are evaluated before the user's bundle.
@@ -277,6 +436,12 @@ impl Guest for Component {
             def!("__kv_delete", js_kv_delete);
             def!("__kv_exists", js_kv_exists);
             def!("__kv_list", js_kv_list);
+            // Native crypto primitives for the `crypto.subtle` polyfill (webapi.js).
+            def!("__crypto_digest", js_crypto_digest);
+            def!("__crypto_hmac_sign", js_crypto_hmac_sign);
+            def!("__crypto_hmac_verify", js_crypto_hmac_verify);
+            def!("__crypto_aes_gcm_encrypt", js_crypto_aes_gcm_encrypt);
+            def!("__crypto_aes_gcm_decrypt", js_crypto_aes_gcm_decrypt);
 
             // Web API polyfills, the raw actor API, durable storage, then the
             // RPC/service layer.

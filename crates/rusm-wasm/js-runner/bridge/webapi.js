@@ -352,10 +352,27 @@
     G.clearTimeout = (t) => cancelled.add(t);
   }
 
-  // crypto: secure randomness from the host (wasi:random), enough for the two members
-  // the web ecosystem (uuid/nanoid, ai-sdk) hard-depends on — getRandomValues + a v4
-  // randomUUID.
+  // crypto: secure randomness from the host (wasi:random) — getRandomValues + a v4
+  // randomUUID — plus a `subtle` (SubtleCrypto) over native RustCrypto host calls
+  // (digest / HMAC / AES-GCM). subtle methods are async (the Web Crypto contract);
+  // the host calls underneath are synchronous + constant-time.
   if (!G.crypto) {
+    // Normalise a BufferSource (ArrayBuffer | TypedArray) to a Uint8Array, and an
+    // algorithm (string | { name, hash }) to its / its hash's name.
+    const toBytes = (src) =>
+      src instanceof Uint8Array
+        ? src
+        : src instanceof ArrayBuffer
+          ? new Uint8Array(src)
+          : new Uint8Array(src.buffer, src.byteOffset, src.byteLength);
+    const algName = (a) => (typeof a === "string" ? a : a.name);
+    const hashName = (a) => {
+      const h = typeof a === "string" ? a : a && (a.hash || a.name);
+      return typeof h === "string" ? h : h && h.name;
+    };
+    const aad = (algorithm) =>
+      algorithm.additionalData ? toBytes(algorithm.additionalData) : new Uint8Array(0);
+
     G.crypto = {
       getRandomValues(view) {
         const bytes = __random_bytes(view.byteLength);
@@ -372,6 +389,59 @@
           s += b[i].toString(16).padStart(2, "0");
         }
         return s;
+      },
+      // SubtleCrypto: SHA digest, HMAC sign/verify, AES-GCM encrypt/decrypt. Keys are
+      // modelled as plain objects holding the raw material (`__raw`) — the host
+      // primitives are stateless over bytes. Unsupported algorithms/formats throw.
+      subtle: {
+        async digest(algorithm, data) {
+          return __crypto_digest(algName(algorithm), toBytes(data)).buffer;
+        },
+        async importKey(format, keyData, algorithm, extractable, keyUsages) {
+          if (format !== "raw") throw new Error("importKey: only 'raw' is supported");
+          return {
+            type: "secret",
+            extractable: !!extractable,
+            algorithm,
+            usages: keyUsages || [],
+            __raw: toBytes(keyData),
+          };
+        },
+        async exportKey(format, key) {
+          if (format !== "raw") throw new Error("exportKey: only 'raw' is supported");
+          return key.__raw.slice().buffer;
+        },
+        async generateKey(algorithm, extractable, keyUsages) {
+          const name = algName(algorithm);
+          if (name === "AES-GCM") {
+            const bits = algorithm.length || 256;
+            const raw = G.crypto.getRandomValues(new Uint8Array(bits / 8));
+            return { type: "secret", extractable: !!extractable, algorithm: { name, length: bits }, usages: keyUsages || [], __raw: raw };
+          }
+          if (name === "HMAC") {
+            const hash = hashName(algorithm);
+            const bytes = hash === "SHA-512" || hash === "SHA-384" ? 128 : 64; // hash block size
+            const raw = G.crypto.getRandomValues(new Uint8Array(bytes));
+            return { type: "secret", extractable: !!extractable, algorithm: { name, hash }, usages: keyUsages || [], __raw: raw };
+          }
+          throw new Error("generateKey: unsupported algorithm " + name);
+        },
+        async sign(algorithm, key, data) {
+          if (algName(algorithm) !== "HMAC") throw new Error("sign: only HMAC is supported");
+          return __crypto_hmac_sign(hashName(key.algorithm), key.__raw, toBytes(data)).buffer;
+        },
+        async verify(algorithm, key, signature, data) {
+          if (algName(algorithm) !== "HMAC") throw new Error("verify: only HMAC is supported");
+          return __crypto_hmac_verify(hashName(key.algorithm), key.__raw, toBytes(signature), toBytes(data));
+        },
+        async encrypt(algorithm, key, data) {
+          if (algName(algorithm) !== "AES-GCM") throw new Error("encrypt: only AES-GCM is supported");
+          return __crypto_aes_gcm_encrypt(key.__raw, toBytes(algorithm.iv), aad(algorithm), toBytes(data)).buffer;
+        },
+        async decrypt(algorithm, key, data) {
+          if (algName(algorithm) !== "AES-GCM") throw new Error("decrypt: only AES-GCM is supported");
+          return __crypto_aes_gcm_decrypt(key.__raw, toBytes(algorithm.iv), aad(algorithm), toBytes(data)).buffer;
+        },
       },
     };
   }

@@ -730,6 +730,49 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_javascript_bundle_has_subtle_crypto() {
+        // crypto.subtle (native RustCrypto): SHA-256 against a known vector, an HMAC
+        // sign→verify round-trip plus tamper-rejection, and an AES-GCM encrypt→decrypt
+        // round-trip — all in a *sandboxed* guest (no capability needed).
+        const BUNDLE: &str = r#"
+            module.exports.default = async function () {
+                const replyTo = await Process.receiveText();
+                const enc = new TextEncoder();
+                const hex = (b) => [...new Uint8Array(b)].map(x => x.toString(16).padStart(2,"0")).join("");
+                let flags = 0;
+                // SHA-256("abc") known-answer test.
+                const d = await crypto.subtle.digest("SHA-256", enc.encode("abc"));
+                if (hex(d) === "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad") flags |= 1;
+                // HMAC-SHA256: sign, verify (ok), verify (tampered → false).
+                const k = await crypto.subtle.importKey("raw", enc.encode("secret"), {name:"HMAC", hash:"SHA-256"}, false, ["sign","verify"]);
+                const sig = await crypto.subtle.sign("HMAC", k, enc.encode("msg"));
+                if (await crypto.subtle.verify("HMAC", k, sig, enc.encode("msg"))) flags |= 2;
+                if (!(await crypto.subtle.verify("HMAC", k, sig, enc.encode("tampered")))) flags |= 4;
+                // AES-GCM: generate key, encrypt, decrypt round-trip.
+                const ak = await crypto.subtle.generateKey({name:"AES-GCM", length:256}, true, ["encrypt","decrypt"]);
+                const iv = crypto.getRandomValues(new Uint8Array(12));
+                const ct = await crypto.subtle.encrypt({name:"AES-GCM", iv}, ak, enc.encode("hello"));
+                const pt = await crypto.subtle.decrypt({name:"AES-GCM", iv}, ak, ct);
+                if (new TextDecoder().decode(pt) === "hello") flags |= 8;
+                Process.send(replyTo, String(flags));
+            };
+        "#;
+        let rt = Runtime::new();
+        let wr = WasmRuntime::new(rt.clone()).unwrap();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let collector = rt.spawn(move |mut ctx| async move {
+            let _ = tx.send(ctx.recv().await.message().unwrap());
+        });
+        let guest = wr.spawn_js(BUNDLE.as_bytes());
+        rt.send(guest.pid(), collector.pid().raw().to_string().into_bytes());
+        assert_eq!(
+            String::from_utf8(rx.await.unwrap()).unwrap(),
+            "15",
+            "subtle: SHA-256 vector + HMAC sign/verify/tamper + AES-GCM round-trip"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_stock_command_component_runs() {
         // A standard `wasi:cli/run` component (no rusm:runtime, just std) runs as a RUSM
         // process and does real WASI work — here, writing a marker to a preopened dir.

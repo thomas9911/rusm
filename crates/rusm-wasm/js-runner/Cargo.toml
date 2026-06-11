@@ -38,3 +38,9 @@ getrandom = "0.3"
 wstd = "0.6.6"
 http-body-util = "0.1"
 bytes = "1"
+# Native, constant-time crypto for the `crypto.subtle` polyfill (RustCrypto) — far
+# faster + safer than a pure-JS implementation in QuickJS, all pure-Rust (wasm-clean).
+sha1 = "0.10"
+sha2 = "0.10"
+hmac = "0.12"
+aes-gcm = "0.10"
