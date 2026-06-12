@@ -28,10 +28,29 @@ round-trips/s, sandbox cost inside noise), and **SSE** (a `wasi:http` streaming 
 RS compiles to `wasi:http`/the actor world; **TS** runs on embedded rquickjs runners —
 `http_server_js` + the raw-`wasi:http` **js-http-runner** (runs `export default { fetch }`,
 pull-based streaming for SSE) and `ws_server_js` (a TS worker, one process per
-connection). **`rusm serve` is live**: it hosts `rusm.toml [[serve]]` entries
-(`name`, `protocol` = `http`|`sse`|`ws`, `listen`, `capability` = `sandboxed` by
-default) on real TCP ports — loading `wasm/<name>.{wasm,js}`, HTTP/SSE via the
-`http_server` path and WS via `ws_server`. The node only serves; it never generates
+connection). **The unified serving model: serving is ALWAYS process-per-request
+(HTTP/SSE) / process-per-connection (WS) — there is no "resident" serving mode**
+(removed; resident-vs-per-call now lives only in `[[components]]`, and shared state in
+a `[[components]]` service or `kv`, never in the ephemeral serving instance — so
+head-of-line blocking is impossible by construction and a crash drops one unit).
+**Routing is declarative** in a `rusm.toml` `[routes]` table —
+`"METHOD /path/:param" = "component#action"` (`:name` params, trailing `*` wildcard;
+`#` separates component from action since `:` is reserved for `kv:`/`url:`; specificity
+literal > param > wildcard; matched-path-wrong-method → 405, no match → 404), compiled
+by `rusm-node::RouteTable` and bridged into the routing-agnostic `rusm-wasm`
+`RoutedHttpServer` (`bridges/routed.rs`: resolve → spawn the matched handler fresh on
+the optimized spawn path → dispatch the action over the actor wire → buffered or
+chunked-streamed reply). **Handlers are named functions** ("actions"), no forced
+`main`: a Rust handler component is `#[rusm_rs::handlers] pub mod api { pub fn
+home(req, params) -> Response { … } }`; a 3-arg action `fn(Request, Params, Sse)`
+streams SSE over a **bounded, back-pressured** byte stream (parks under back-pressure —
+never busy-spins — and exits on client disconnect, guarded by a routed
+disconnect-teardown test). **`rusm serve` is live**: it hosts `rusm.toml [[serve]]`
+entries (`name`, `protocol` = `http`|`sse`|`ws`, `listen`, `capability` = `sandboxed`
+by default) on real TCP ports — a non-empty `[routes]` table routes each HTTP/SSE
+request to a `#[handlers]` component per request; WS runs one component process per
+connection; TS HTTP/SSE keep the handler-less `wasi:http` `export default { fetch }`
+path (no routes table needed). The node only serves; it never generates
 load. **`rusm new <name>`** scaffolds an app (a zero-dependency TS HTTP component
 `components/api/index.ts`, a `rusm.toml` `[[serve]]` entry, `.gitignore`, README) so
 `rusm new hello && cd hello && rusm build && rusm serve` then `curl

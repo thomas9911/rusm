@@ -159,10 +159,18 @@ sandboxed TypeScript guest).
 
 ## Configuration
 
-Your app's `rusm.toml` declares what to run: `[[serve]]` (HTTP/WS/SSE endpoints),
-`[[components]]` (supervised processes), and custom `[capabilities.<name>]` profiles
-(default-deny). Env is resolved the Rust way — process env first, then `.env`. Full
-reference: **[configuration](docs/reference-configuration)**.
+Your app's `rusm.toml` declares what to run: `[[serve]]` (HTTP/WS/SSE listeners),
+`[routes]` (declarative `"METHOD /path/:param" = "component#action"` routing),
+`[[components]]` (supervised, optionally stateful processes), and custom
+`[capabilities.<name>]` profiles (default-deny). Serving is always
+process-per-request (HTTP/SSE) / process-per-connection (WS) — a fresh sandboxed
+instance per unit of work, so head-of-line blocking is impossible by construction and
+a crash drops only that request; shared state lives in a `[[components]]` service or
+`kv`, never in the serving instance. A Rust handler is just named functions —
+`#[rusm_rs::handlers] pub mod api { pub fn home(req, params) -> Response { … } }` (a
+3-arg action taking `Sse` streams Server-Sent Events) — no `main`, no router code. Env
+is resolved the Rust way — process env first, then `.env`. Full reference:
+**[configuration](docs/reference-configuration)**.
 
 > The benchmark/dashboard node (`rusm-bench start`, a repo-only tool) has its own,
 > separate knobs — `listen`, `profile` (`light`/`balanced`/`max`),
