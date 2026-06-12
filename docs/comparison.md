@@ -114,10 +114,9 @@ The trade-off is architectural, and worth stating plainly because it is *checkab
 rather than anecdotal: wasmCloud's execution model is **invocation/request-scoped**,
 with I/O **mediated by capability providers over the lattice**. That orientation is
 excellent for stateless fan-out and weaker, by design, for **long-lived, stateful,
-in-process connections** — which is the opposite of what a resident handler, a held
-WebSocket, or a long SSE stream wants. A platform that does not own a long-lived
-process lifecycle will tend to bound invocation time and lean on providers for
-anything persistent.
+in-process connections** — which is the opposite of what a held WebSocket or a long SSE
+stream wants. A platform that does not own a long-lived process lifecycle will tend to
+bound invocation time and lean on providers for anything persistent.
 
 A field note, **attributed and version-qualified, not a verdict**: in one team's
 production use (a specific version and configuration), that orientation showed up as a
@@ -139,12 +138,18 @@ RUSM is deliberately shaped for the long-lived/stateful/streaming case — which
 honest framing of "why it exists", not a claim that it is more battle-tested:
 
 - It **owns process lifecycles** (the Wasm-free OTP core) and imposes **no
-  execution-time cap** — a resident handler, WebSocket, or SSE stream lives as long as
-  it should, under supervision.
+  execution-time cap** — a held WebSocket or a long SSE stream lives as long as it
+  should, under supervision.
+- Serving is **process-per-unit-of-work** (a fresh sandboxed instance per HTTP/SSE
+  request, one process per WS connection), so head-of-line blocking is impossible and a
+  crash drops one unit of work, never the server. Shared state lives in a long-lived
+  `[[components]]` service (reached over the actor API) or durable `kv`, never in the
+  ephemeral serving instance.
 - Its spawn path is **pooling + an on-demand overflow tier bounded by memory** rather
-  than a fixed instance count, and instances are reclaimed on exit.
-- **WS and SSE are first-class** (one sandboxed process per WS connection or a resident
-  pool; SSE as a native streaming body), from RS *and* TS.
+  than a fixed instance count, and instances are reclaimed on exit — so thousands of
+  concurrent WS/SSE streams are bounded by RAM, not a fixed pool.
+- **WS and SSE are first-class** (one sandboxed process per WS connection; SSE as a
+  native streaming body), from RS *and* TS.
 
 These are design answers. Whether they hold up under sustained production traffic is
 exactly what RUSM has **not yet proven** — see below.

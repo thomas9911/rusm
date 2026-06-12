@@ -13,6 +13,61 @@ a typed `Client` with call / cast / streaming / callbacks. `rusm build` compiles
 `components/<name>/` with `cargo build --target wasm32-wasip2` — one toolchain, no
 cargo-component, no jco.
 
+### Serving — `#[rusm_rs::handlers]`
+
+A Rust serving component is a module of `pub fn`s under `#[rusm_rs::handlers]` — **no
+`main`, no router, no wire plumbing.** The macro generates the component shell and the
+action dispatch; the route is named in `rusm.toml`'s
+[`[routes]`](../serving-http-ws-sse.md) table as `"component#action"`. A 2-arg action
+is buffered; a 3-arg action streams SSE (each request is its own process, so it may
+block for the whole connection):
+
+```rust
+use rusm_rs::http::{Params, Request, Response, Sse};
+
+#[rusm_rs::handlers]
+pub mod api {
+    use super::*;
+
+    // GET /users/:id  ->  "api#show"
+    pub fn show(_req: Request, p: Params) -> Response {
+        Response::text(format!("user {}\n", p.get("id").unwrap_or("?")))
+    }
+
+    // GET /events/:room  ->  "api#events"  (3 args → SSE)
+    pub fn events(_req: Request, p: Params, sse: Sse) {
+        let room = p.get("room").unwrap_or("lobby").to_string();
+        for n in 0.. {
+            if !sse.data(format!("{room} tick {n}").as_bytes()) { break; } // disconnected
+        }
+    }
+}
+```
+
+WebSockets are **per connection**: implement `ws::Handler` and `ws::serve` it. The host
+runs one isolated process per connection, hands each inbound frame to `message`, and you
+reply through the `Connection` (the per-connection process simply exits on disconnect —
+there is no `close` callback):
+
+```rust
+use rusm_rs::ws::{self, Connection, Handler};
+
+#[derive(Default)]
+struct Echo;
+
+impl Handler for Echo {
+    fn open(&mut self, conn: &Connection) { conn.send(b"welcome\n"); }
+    fn message(&mut self, conn: &Connection, data: Vec<u8>) { conn.send(&data); } // echo
+}
+
+#[rusm_rs::main]
+fn main() { ws::serve(Echo::default()); }
+```
+
+State that must outlive a request never lives in the serving instance — it goes in a
+long-lived `[[components]]` service reached over the actor API (`whereis` / `call` /
+`send`) or in durable `kv`.
+
 ## TypeScript guests (`rusm-ts`)
 
 Import the `rusm-ts` package: a **service** is just exported functions, a **worker** is
@@ -20,6 +75,32 @@ Import the `rusm-ts` package: a **service** is just exported functions, a **work
 like a local call — with `for await` streaming and callback arguments — while
 `spawn` / `send` / `receive` stay hidden. `rusm build` bundles each component with
 Bun into a small `.js`.
+
+### Serving — web standards
+
+TS serving uses **web standards** (the `#[handlers]` macro is Rust-only) and needs **no
+`[routes]` table** — the component *is* the handler. HTTP/SSE is `export default` a
+`fetch`-shaped function returning a `Response`; SSE returns a streaming `ReadableStream`
+body. WS is `export default websocket({ open, message })` from the `rusm-ts` package —
+one worker process per connection:
+
+```ts
+// HTTP/SSE — a per-request wasi:http component
+export default function handle(request: Request): Response {
+  const who = new URL(request.url).searchParams.get("who") ?? "world";
+  return new Response(`hello, ${who}\n`, { headers: { "content-type": "text/plain" } });
+}
+```
+
+```ts
+// WS — one worker per connection
+import { websocket } from "rusm-ts";
+
+export default websocket({
+  open(s)        { s.send("welcome\n"); },
+  message(s, d)  { s.send(d); },          // echo
+});
+```
 
 ## Beyond messaging — timers, storage, pub/sub, crypto
 
@@ -34,9 +115,10 @@ Both guests get more than `send`/`receive`, all over the same capability-gated A
   external daemon. (TS bundles can also `import` npm — `@noble/*`, etc.)
 - **Pub/sub fan-out** — `rusm_rs::pubsub::Topics`: keyed subscriber tracking +
   fan-out + **monitor-based pruning** of dead subscribers (the broker *mechanics* as
-  a primitive, so app code carries none of it). Pairs with the offloaded
-  [SSE fan-out](../serving-http-ws-sse.md) helpers (`serve_sse_offloaded` /
-  `SseConnection`).
+  a primitive, so app code carries none of it). Pairs naturally with
+  [SSE serving](../serving-http-ws-sse.md): a per-request SSE action subscribes to a
+  topic and live-tails it via `Sse::run`, and the monitor prunes the subscriber when the
+  request process exits on disconnect.
 - **Outbound `fetch` + Web Crypto** (TS): a capability-gated streaming `fetch`, and
   a native **`crypto.subtle`** (RustCrypto: SHA digest, HMAC sign/verify, AES-GCM) —
   so the Anthropic SDK and JWT/signing libraries work inside the sandbox.

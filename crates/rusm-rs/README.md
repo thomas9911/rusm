@@ -3,7 +3,8 @@
 Write a [RUSM](https://github.com/archan937/rusm) **component** in Rust — a sandboxed,
 supervised WASM process on an Erlang-style actor runtime. `rusm-rs` wraps the raw
 `wit-bindgen` actor bindings into a small, idiomatic API (`Pid`, `send`/`receive`,
-`spawn`, the registry, `Stream`), adds HTTP/WS/SSE serving handlers, and hides the
+`spawn`, the registry, `Stream`), adds process-per-request HTTP/SSE handlers
+(`#[rusm_rs::handlers]`) and per-connection WS (`ws::serve`), and hides the
 component boilerplate behind `#[rusm_rs::main]`. The TypeScript twin is the
 [`rusm-ts`](https://www.npmjs.com/package/rusm-ts) npm package — they share one JSON wire and
 interoperate.
@@ -40,31 +41,56 @@ fn main() {
 
 ## Serving HTTP / WS / SSE
 
-Implement a handler and `serve` it — the host turns requests/connections into calls:
+Serving is **process-per-unit-of-work**: a fresh sandboxed instance per HTTP/SSE
+request, one process per WS connection — no head-of-line blocking, crash containment per
+unit, full isolation. Routing is declarative in `rusm.toml`'s `[routes]` table
+(`"METHOD /path/:param" = "component#action"`), so handlers carry no router code.
+
+**HTTP / SSE** — a module of `pub fn`s under `#[rusm_rs::handlers]` (no `main`, no
+router; the macro generates the shell + dispatch). A 2-arg `fn(Request, Params) ->
+Response` action is buffered; a 3-arg `fn(Request, Params, Sse)` streams SSE:
 
 ```rust
-use rusm_rs::http::{Handler, Request, Response};
+use rusm_rs::http::{Params, Request, Response, Sse};
 
-#[derive(Default)]
-struct Api {
-    hits: u64,
-}
+#[rusm_rs::handlers]
+pub mod api {
+    use super::*;
 
-impl Handler for Api {
-    fn handle(&mut self, _req: Request) -> Response {
-        self.hits += 1;
-        Response::text(format!("hit #{}\n", self.hits))
+    pub fn show(_req: Request, p: Params) -> Response {            // GET /users/:id
+        Response::text(format!("user {}\n", p.get("id").unwrap_or("?")))
     }
-}
 
-#[rusm_rs::main]
-fn main() {
-    rusm_rs::http::serve(Api::default());
+    pub fn events(_req: Request, p: Params, sse: Sse) {            // 3 args → SSE
+        let room = p.get("room").unwrap_or("lobby").to_string();
+        for n in 0.. {
+            if !sse.data(format!("{room} tick {n}").as_bytes()) { break; }
+        }
+    }
 }
 ```
 
-`rusm_rs::ws::Handler` (`open`/`message`/`close`, reply with `ws::send(conn, …)`) serves
-WebSockets; `rusm_rs::http::serve_sse(|req| …)` streams Server-Sent Events.
+**WS** — implement `ws::Handler` (`open`/`message`, reply via `Connection::send`) and
+`ws::serve` it; the host runs one isolated process per connection (no `close` callback —
+the process exits on disconnect):
+
+```rust
+use rusm_rs::ws::{self, Connection, Handler};
+
+#[derive(Default)]
+struct Echo;
+
+impl Handler for Echo {
+    fn open(&mut self, conn: &Connection) { conn.send(b"welcome\n"); }
+    fn message(&mut self, conn: &Connection, data: Vec<u8>) { conn.send(&data); }
+}
+
+#[rusm_rs::main]
+fn main() { ws::serve(Echo::default()); }
+```
+
+State that must outlive a request lives in a long-lived `[[components]]` service (reached
+over the actor API) or durable `kv` — never in the ephemeral serving instance.
 
 ## Services & the typed client
 
@@ -98,5 +124,6 @@ interoperate.
 `Pid`, `send`/`receive` (raw bytes and serde-typed JSON), `spawn`, the named registry
 (`register`/`whereis`/`unregister`), `set_label`, `is_alive`, `kill`, `list`, a
 back-pressured `Stream`, an in-guest `Supervisor`, `#[rusm_rs::main]`,
-`#[rusm_rs::service]`, and the `http`/`ws` serving handlers — all over the `rusm:runtime`
+`#[rusm_rs::service]`, and the `http` (`#[rusm_rs::handlers]`, `Params`, `Sse`) / `ws`
+(`ws::serve`, `Connection`) serving APIs — all over the `rusm:runtime`
 actor world. See the [RUSM docs](https://archan937.github.io/rusm/) for the full guide.

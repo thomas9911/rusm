@@ -52,15 +52,24 @@ that teaches it.
 
 ## Serving & streaming
 
-- **HTTP / WebSocket / SSE serving** — from a Rust *or* TypeScript component;
-  per-request (max isolation) or resident (warm, stateful pool). →
+- **HTTP / WebSocket / SSE serving** — from a Rust *or* TypeScript component, always
+  **process-per-unit-of-work**: a fresh sandboxed instance per HTTP/SSE request, one
+  sandboxed process per WS connection. No head-of-line blocking, crash containment, and
+  full isolation by construction; cheap on the pooled spawn path (~440k spawns/sec). →
   [the serving model](./concepts/serving-model)
-- **Streaming & async** — incremental SSE, per-connection WS processes, Tokio
+- **Declarative routing** — a `rusm.toml` `[routes]` table maps
+  `"METHOD /path/:param" = "component#action"` (`:name` path param, trailing `*`
+  wildcard); the host gateway resolves it (most-specific wins; 405 on method mismatch,
+  404 on no match). Rust handlers are `pub fn`s under `#[rusm_rs::handlers]` — no `main`,
+  no router code.
+- **Streaming & async** — incremental SSE (a 3-arg `fn(Request, Params, Sse)` action
+  streams for the life of the connection), per-connection WS processes, Tokio
   back-pressure throughout.
-- **Live SSE fan-out** — turnkey offloaded SSE (`serve_sse_offloaded` /
-  `SseConnection`) + a `pubsub::Topics` primitive (keyed fan-out, monitor-based
-  pruning): one publish → every connected client, with no subscriber bookkeeping in
-  app code.
+- **Shared state lives elsewhere** — never in the ephemeral serving instance: a
+  long-lived `[[components]]` service reached over the actor API (`whereis` / `call` /
+  `send`), or durable `kv`. Pairs with the `pubsub::Topics` primitive (keyed fan-out,
+  monitor-based pruning): one publish → every connected client, no subscriber
+  bookkeeping in app code.
 - **Cross-process byte streams** — a bounded, back-pressured byte channel between
   processes. → [byte streams](./concepts/byte-streams)
 
