@@ -25,12 +25,12 @@ use std::collections::HashMap;
 use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes128Gcm, Aes256Gcm, Nonce};
 use hmac::{Hmac, Mac};
-use http_body_util::BodyExt;
 use rquickjs::{Ctx, Exception, Function, Promise, TypedArray};
 use rusm::runtime::actor;
 use sha1::Sha1;
 use sha2::{Digest, Sha256, Sha384, Sha512};
-use wstd::http::{Body, Client, Request};
+use wasip2::http::types::{IncomingBody, IncomingResponse, Method, OutgoingBody, OutgoingRequest, Scheme};
+use wasip2::io::streams::InputStream;
 
 struct Component;
 
@@ -63,10 +63,15 @@ fn js_random_bytes(ctx: Ctx<'_>, len: f64) -> rquickjs::Result<TypedArray<'_, u8
     TypedArray::new(ctx, buf)
 }
 
-/// A `fetch` response body, streamed to the guest frame-by-frame. `Bytes`/`anyhow`
-/// come via `wstd`; we never buffer the whole body, so a token-by-token LLM response
-/// reaches the guest as it arrives.
-type FetchBody = http_body_util::combinators::UnsyncBoxBody<bytes::Bytes, wstd::http::Error>;
+/// A `fetch` response body still streaming to the guest: the wasi:io input-stream we
+/// read chunks from, plus the `incoming-body`/`incoming-response` kept alive for as
+/// long as the stream is (dropping them mid-read is a wasi:http error). Field order is
+/// drop order — stream first, then body, then response.
+struct FetchBody {
+    stream: InputStream,
+    _body: IncomingBody,
+    _response: IncomingResponse,
+}
 
 thread_local! {
     /// Response bodies of in-flight `fetch`es, keyed by the handle handed to JS.
@@ -74,10 +79,27 @@ thread_local! {
     static FETCH_NEXT: Cell<u64> = const { Cell::new(1) };
 }
 
-/// Perform an outbound HTTP request (capability-gated at the host — a sandboxed guest
-/// is refused). Returns the response head as a flat list `[status, handle, k, v, …]`;
-/// the body then streams via `__fetch_read(handle)`. A transport error (incl. a denied
-/// request) throws into JS, so the `fetch()` promise rejects.
+/// Split a URL into the wasi:http (scheme, authority, path-with-query) triple. Returns
+/// `None` for a scheme we can't serve. Authority is host[:port]; path defaults to `/`.
+fn split_url(url: &str) -> Option<(Scheme, String, String)> {
+    let (scheme, rest) = match url.split_once("://") {
+        Some(("http", rest)) => (Scheme::Http, rest),
+        Some(("https", rest)) => (Scheme::Https, rest),
+        Some((other, rest)) => (Scheme::Other(other.to_string()), rest),
+        None => return None,
+    };
+    let (authority, path) = match rest.find('/') {
+        Some(i) => (rest[..i].to_string(), rest[i..].to_string()),
+        None => (rest.to_string(), "/".to_string()),
+    };
+    Some((scheme, authority, path))
+}
+
+/// Perform an outbound HTTP request over raw **`wasi:http`** (capability-gated at the
+/// host — a sandboxed guest is refused). Blocking, not a reactor: `pollable.block()`
+/// suspends the fiber until the response head arrives, so the guest parks instead of
+/// busy-polling. Returns the head as a flat list `[status, handle, k, v, …]`; the body
+/// then streams via `__fetch_read(handle)`. A transport error throws into JS.
 fn js_fetch(
     ctx: Ctx<'_>,
     method: String,
@@ -85,61 +107,100 @@ fn js_fetch(
     headers: String,
     body: TypedArray<u8>,
 ) -> rquickjs::Result<Vec<String>> {
-    let body = body.as_bytes().unwrap_or(&[]).to_vec();
-    let sent = wstd::runtime::block_on(async move {
-        let mut builder = Request::builder().method(method.as_str()).uri(url);
-        for line in headers.split('\n').filter(|l| !l.is_empty()) {
-            if let Some((k, v)) = line.split_once(':') {
-                builder = builder.header(k.trim(), v.trim());
-            }
+    let throw = |e: String| Exception::throw_message(&ctx, &e);
+    let (scheme, authority, path) =
+        split_url(&url).ok_or_else(|| throw(format!("fetch: unsupported URL {url:?}")))?;
+
+    let fields = wasip2::http::types::Fields::new();
+    for line in headers.split('\n').filter(|l| !l.is_empty()) {
+        if let Some((k, v)) = line.split_once(':') {
+            let _ = fields.append(&k.trim().to_string(), v.trim().as_bytes());
         }
-        let req = builder.body(Body::from(body)).map_err(|e| e.to_string())?;
-        Client::new().send(req).await.map_err(|e| e.to_string())
-    });
-    let resp = sent.map_err(|e| Exception::throw_message(&ctx, &e))?;
+    }
+    let req = OutgoingRequest::new(fields);
+    let method = match method.as_str() {
+        "GET" => Method::Get,
+        "HEAD" => Method::Head,
+        "POST" => Method::Post,
+        "PUT" => Method::Put,
+        "DELETE" => Method::Delete,
+        "PATCH" => Method::Patch,
+        "OPTIONS" => Method::Options,
+        other => Method::Other(other.to_string()),
+    };
+    req.set_method(&method).map_err(|_| throw("fetch: bad method".into()))?;
+    req.set_scheme(Some(&scheme)).map_err(|_| throw("fetch: bad scheme".into()))?;
+    req.set_authority(Some(&authority)).map_err(|_| throw("fetch: bad authority".into()))?;
+    req.set_path_with_query(Some(&path)).map_err(|_| throw("fetch: bad path".into()))?;
+
+    // Write the request body (if any) before dispatching, then finish it.
+    let out_body = req.body().map_err(|_| throw("fetch: no request body".into()))?;
+    let payload = body.as_bytes().unwrap_or(&[]);
+    if !payload.is_empty() {
+        let stream = out_body.write().map_err(|_| throw("fetch: no body stream".into()))?;
+        for chunk in payload.chunks(4096) {
+            stream
+                .blocking_write_and_flush(chunk)
+                .map_err(|e| throw(format!("fetch: write body: {e:?}")))?;
+        }
+        // Drop the stream before finishing the body (wasi:http requires it).
+        drop(stream);
+    }
+    OutgoingBody::finish(out_body, None).map_err(|e| throw(format!("fetch: finish body: {e:?}")))?;
+
+    let future = wasip2::http::outgoing_handler::handle(req, None)
+        .map_err(|e| throw(format!("fetch: {e:?}")))?;
+    // Park the fiber until the response head is ready — no busy poll.
+    future.subscribe().block();
+    let resp = match future.get() {
+        Some(Ok(Ok(resp))) => resp,
+        Some(Ok(Err(code))) => return Err(throw(format!("fetch: {code:?}"))),
+        _ => return Err(throw("fetch: response unavailable".into())),
+    };
 
     let handle = FETCH_NEXT.with(|c| {
         let h = c.get();
         c.set(h + 1);
         h
     });
-    let mut head = vec![resp.status().as_u16().to_string(), handle.to_string()];
-    for (name, value) in resp.headers() {
-        head.push(name.as_str().to_owned());
-        head.push(value.to_str().unwrap_or_default().to_owned());
+    let mut head = vec![resp.status().to_string(), handle.to_string()];
+    for (name, value) in resp.headers().entries() {
+        head.push(name);
+        head.push(String::from_utf8_lossy(&value).into_owned());
     }
+    let incoming = resp.consume().map_err(|_| throw("fetch: consume body".into()))?;
+    let stream = incoming.stream().map_err(|_| throw("fetch: body stream".into()))?;
     FETCH_BODIES.with(|m| {
-        m.borrow_mut()
-            .insert(handle, resp.into_body().into_boxed_body())
+        m.borrow_mut().insert(
+            handle,
+            FetchBody {
+                stream,
+                _body: incoming,
+                _response: resp,
+            },
+        )
     });
     Ok(head)
 }
 
-/// Read the next non-empty body chunk of a `fetch` response; `None` at end-of-stream
-/// (the body is then dropped, releasing the connection). Each read suspends the fiber
-/// until a frame arrives — natural back-pressure.
+/// Read the next body chunk of a `fetch` response, or `None` at end-of-stream. Exactly
+/// **one** `blocking_read` per call — it suspends the fiber until the host has a chunk
+/// (or EOF), so the guest parks; there is no loop, so it cannot busy-spin by
+/// construction. JS calls this repeatedly until it gets `null`. A non-empty chunk is
+/// returned (and the body retained for the next read); EOF (`Closed`), any error, or a
+/// spec-impossible empty read all end the stream — dropping `body` releases the
+/// stream + connection.
 fn js_fetch_read(ctx: Ctx<'_>, handle: f64) -> rquickjs::Result<Option<TypedArray<'_, u8>>> {
     let key = handle as u64;
-    let Some(mut body) = FETCH_BODIES.with(|m| m.borrow_mut().remove(&key)) else {
+    let Some(body) = FETCH_BODIES.with(|m| m.borrow_mut().remove(&key)) else {
         return Ok(None);
     };
-    let chunk = wstd::runtime::block_on(async {
-        loop {
-            match body.frame().await {
-                Some(Ok(frame)) => match frame.into_data() {
-                    Ok(data) if !data.is_empty() => return Some(data),
-                    _ => continue, // empty data or trailers — keep reading
-                },
-                _ => return None, // end-of-stream or transport error
-            }
-        }
-    });
-    match chunk {
-        Some(data) => {
+    match body.stream.blocking_read(64 * 1024) {
+        Ok(chunk) if !chunk.is_empty() => {
             FETCH_BODIES.with(|m| m.borrow_mut().insert(key, body));
-            Ok(Some(TypedArray::new(ctx, data.to_vec())?))
+            Ok(Some(TypedArray::new(ctx, chunk)?))
         }
-        None => Ok(None),
+        _ => Ok(None),
     }
 }
 

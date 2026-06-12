@@ -31,13 +31,12 @@ strip = true
 wit-bindgen = "0.46"
 rquickjs = "0.9"
 getrandom = "0.3"
-# Outbound HTTP for the `fetch` polyfill: the battle-proven wasi:http client (same
-# version the serving fixtures use), driven synchronously via its `block_on` — each
-# poll suspends the fiber, like the actor host calls. `http-body-util` streams the
-# response body frame-by-frame (no buffering — token-by-token LLM responses work).
-wstd = "0.6.6"
-http-body-util = "0.1"
-bytes = "1"
+# Outbound HTTP for the `fetch` polyfill: raw `wasi:http` (same crate + blocking-read
+# pattern the js-http-runner serves with), NOT an in-guest async reactor. Each
+# `pollable.block()` / `input-stream.blocking-read` suspends the fiber until the host
+# has data — the guest parks, never busy-polls — and the body streams chunk-by-chunk
+# (no buffering, so token-by-token LLM responses arrive as sent).
+wasip2 = "1.0.3"
 # Native, constant-time crypto for the `crypto.subtle` polyfill (RustCrypto) — far
 # faster + safer than a pure-JS implementation in QuickJS, all pure-Rust (wasm-clean).
 sha1 = "0.10"

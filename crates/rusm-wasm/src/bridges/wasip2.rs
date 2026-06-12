@@ -1057,6 +1057,83 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn fetch_streams_a_chunked_body_frame_by_frame_without_busy_polling() {
+        // The LLM-streaming shape that must NOT busy-poll: a chunked response whose
+        // frames arrive with real gaps between them. The guest reads via raw
+        // `wasi:io` blocking-read, which parks the fiber across each gap — so it both
+        // receives every frame (correctness) and stays idle while waiting (no spin).
+        // The old wstd reactor span the CPU here; this test pins the fixed behaviour.
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 2048];
+                    let _ = stream.read(&mut buf).await; // consume the request head
+                                                         // Chunked transfer: three frames, a 120 ms gap between each — the
+                                                         // guest must park (not spin) while waiting for the next frame.
+                    let _ = stream
+                        .write_all(b"HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n")
+                        .await;
+                    let _ = stream.flush().await;
+                    for frame in ["one ", "two ", "three"] {
+                        tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+                        let _ = stream
+                            .write_all(format!("{:x}\r\n{frame}\r\n", frame.len()).as_bytes())
+                            .await;
+                        let _ = stream.flush().await;
+                    }
+                    let _ = stream.write_all(b"0\r\n\r\n").await; // terminating chunk
+                    let _ = stream.flush().await;
+                });
+            }
+        });
+
+        // The guest streams the body via a reader, concatenating each frame as it
+        // arrives — exercising repeated `__fetch_read` (one blocking read per call).
+        const BUNDLE: &str = r#"
+            module.exports.default = async function () {
+                const replyTo = await Process.receiveText();
+                try {
+                    const resp = await fetch("__URL__");
+                    const reader = resp.body.getReader();
+                    let out = "";
+                    const dec = new TextDecoder();
+                    for (;;) {
+                        const { value, done } = await reader.read();
+                        if (done) break;
+                        out += dec.decode(value, { stream: true });
+                    }
+                    Process.send(replyTo, "ok|" + out);
+                } catch (e) {
+                    Process.send(replyTo, "ERR:" + ((e && e.message) || e));
+                }
+            };
+        "#;
+        let bundle = BUNDLE.replace("__URL__", &format!("http://{addr}/"));
+
+        let rt = Runtime::new();
+        let wr = WasmRuntime::new(rt.clone()).unwrap();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let collector = rt.spawn(move |mut ctx| async move {
+            let _ = tx.send(ctx.recv().await.message().unwrap());
+        });
+        let guest = wr.spawn_js_with(
+            bundle.as_bytes(),
+            CapabilityProfile::NetworkClient.capabilities(),
+        );
+        rt.send(guest.pid(), collector.pid().raw().to_string().into_bytes());
+        assert_eq!(
+            String::from_utf8(rx.await.unwrap()).unwrap(),
+            "ok|one two three",
+            "the guest streamed every chunked frame across the inter-frame gaps"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_javascript_bundle_reads_granted_env_via_process_env() {
         // `process.env.<KEY>` reads a capability-granted env var; an ungranted key is
         // `undefined` and `in` reflects presence — the config path TS guests (e.g. an
