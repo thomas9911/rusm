@@ -207,24 +207,25 @@ impl ServeProtocol {
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ServeSpec {
-    /// Component name; resolves to `./wasm/<name>.wasm` (or `<name>.js`). For an
-    /// HTTP/SSE listener this is the default handler component routes may target.
-    pub name: String,
     /// Wire protocol to host over (`http` / `sse` / `ws`).
     pub protocol: ServeProtocol,
     /// TCP address to bind, e.g. `"127.0.0.1:8080"` (the real serving port).
     pub listen: String,
-    /// Capability profile id (`sandboxed` / `network-client` / `trusted` / custom).
-    #[serde(default = "default_capability")]
-    pub capability: String,
     /// Declarative HTTP routing for **this** listener, the `[serve.routes]` table:
     /// `"METHOD /path/:param" = "component#action"`. The gateway resolves each request
-    /// to a component + action (with path params) and dispatches it per-request. Empty →
-    /// the handler-less per-request `wasi:http` path. Ignored for `protocol = "ws"`.
+    /// to a `[[components]]` handler + action (with path params) and dispatches it
+    /// per-request. This is the usual HTTP/SSE shape; ignored for `protocol = "ws"`.
     #[serde(default)]
     pub routes: HashMap<String, String>,
-    /// Load the (JS) bundle from a `url:`/`http(s)://` URL or `kv:<bucket>/<key>`
-    /// instead of `./wasm/<name>` (see [`BundleSource`]). Omitted → the local artifact.
+    /// The single handler **component** for a listener that has no `[serve.routes]`: a
+    /// WebSocket listener (one process per connection) or a handler-less `wasi:http`
+    /// HTTP component. Resolves to `./wasm/<name>.{wasm,js}`; its capability profile
+    /// comes from a matching `[[components]]` entry (else default-deny `sandboxed`).
+    /// Omitted for a routed HTTP/SSE listener — its routes name the components.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// Load the WS/HTTP component's (JS) bundle from a `url:`/`http(s)://` URL or
+    /// `kv:<bucket>/<key>` instead of `./wasm/<name>` (see [`BundleSource`]).
     #[serde(default)]
     pub source: Option<String>,
 }
@@ -492,10 +493,8 @@ mod tests {
         let cfg = NodeConfig::from_toml(
             r#"
             [[serve]]
-            name = "api"
             protocol = "http"
             listen = "127.0.0.1:8080"
-            capability = "trusted"
 
             [[serve]]
             name = "echo"
@@ -503,20 +502,19 @@ mod tests {
             listen = "0.0.0.0:8081"
 
             [[serve]]
-            name = "ticker"
             protocol = "sse"
             listen = "127.0.0.1:8082"
             "#,
         )
         .unwrap();
         assert_eq!(cfg.serve.len(), 3);
-        assert_eq!(cfg.serve[0].name, "api");
+        // A pure listener: protocol + listen, no name (routed HTTP).
         assert_eq!(cfg.serve[0].protocol, ServeProtocol::Http);
         assert_eq!(cfg.serve[0].listen, "127.0.0.1:8080");
-        assert_eq!(cfg.serve[0].capability, "trusted");
-        // protocol parsed; capability defaults to sandboxed.
+        assert!(cfg.serve[0].name.is_none());
+        // A WS listener names its per-connection component.
         assert_eq!(cfg.serve[1].protocol, ServeProtocol::Ws);
-        assert_eq!(cfg.serve[1].capability, "sandboxed");
+        assert_eq!(cfg.serve[1].name.as_deref(), Some("echo"));
         // SSE is an HTTP-hosted server; WS is not.
         assert_eq!(cfg.serve[2].protocol, ServeProtocol::Sse);
         assert!(cfg.serve[0].protocol.is_http() && cfg.serve[2].protocol.is_http());

@@ -212,58 +212,64 @@ pub async fn serve_apps(
     components: &[ComponentSpec],
     profiles: &HashMap<String, CapabilitySpec>,
 ) -> Result<Vec<ServedEndpoint>> {
-    // The unified serving model: an HTTP/SSE listener with a `[serve.routes]` table
-    // routes each request to `component#action` (process-per-request). Build the
-    // per-component capability map the routed gateways spawn under — every
-    // `[[components]]` plus each routed listener's own handler (registered for
-    // spawn-by-name here). Shared across listeners so a route may target any of them.
-    let mut caps_map: HashMap<String, Capabilities> = components
+    // A listener is pure: protocol + listen (+ routes). Its handler components are
+    // `[[components]]`, each under its own declared profile — already registered for
+    // spawn-by-name by `spawn_components`. The routed gateway spawns the matched
+    // handler per request under that profile (the map below, shared across listeners).
+    let caps_map: HashMap<String, Capabilities> = components
         .iter()
         .map(|c| (c.name.clone(), capabilities_for(&c.capability, profiles)))
         .collect();
-    for spec in specs
-        .iter()
-        .filter(|s| s.protocol.is_http() && !s.routes.is_empty())
-    {
-        let caps = capabilities_for(&spec.capability, profiles);
-        register_handler_component(dir, wasm, &spec.name, caps.clone())?;
-        caps_map.insert(spec.name.clone(), caps);
-    }
 
     let mut endpoints = Vec::with_capacity(specs.len());
     for spec in specs {
-        let caps = capabilities_for(&spec.capability, profiles);
+        let label = spec.name.clone().unwrap_or_else(|| spec.listen.clone());
         let listener = TcpListener::bind(&spec.listen)
             .await
-            .with_context(|| format!("binding {} for `{}`", spec.listen, spec.name))?;
+            .with_context(|| format!("binding {} for `{label}`", spec.listen))?;
         let addr = listener
             .local_addr()
-            .with_context(|| format!("local address of `{}`", spec.name))?;
-        // Resolve a `source` (url/kv) bundle once, up front (a remote source is always
-        // a JS handler); `None` → the builder falls back to the local artifact.
-        let remote = remote_bundle(spec.source.as_deref(), wasm).await?;
+            .with_context(|| format!("local address of `{label}`"))?;
         let routed = spec.protocol.is_http() && !spec.routes.is_empty();
         // Build the server up front so a load/compile error surfaces here (before we
         // claim the endpoint is up), then drive the accept loop on its own task.
         let task = if routed {
             // Routed per-request HTTP/SSE: resolve this listener's routes, spawn the
-            // matched handler fresh, dispatch the action. The shape RUSM standardizes on.
+            // matched `[[components]]` handler fresh, dispatch the action.
             let table = spec
                 .route_table()
-                .map_err(|e| anyhow!("invalid [serve.routes] for `{}`: {e}", spec.name))?;
+                .map_err(|e| anyhow!("invalid [serve.routes] for {}: {e}", spec.listen))?;
             tokio::spawn(
                 wasm.routed_http_server(routed_resolver(table), caps_map.clone())
                     .serve(listener),
             )
-        } else if spec.protocol.is_http() {
-            // No routes: a single handler-less `wasi:http` component per request.
-            tokio::spawn(build_http_server(dir, wasm, &spec.name, caps, remote)?.serve(listener))
         } else {
-            // WebSocket: one sandboxed component process per connection.
-            tokio::spawn(build_ws_server(dir, wasm, &spec.name, caps, remote)?.serve(listener))
+            // No routes: a single named handler component — a WebSocket worker
+            // (per connection) or a handler-less `wasi:http` HTTP component.
+            let name = spec.name.as_deref().ok_or_else(|| {
+                anyhow!(
+                    "the `{:?}` listener on {} needs a `name` (its handler component), \
+                     or a `[serve.routes]` table for HTTP/SSE",
+                    spec.protocol,
+                    spec.listen
+                )
+            })?;
+            // Its capability profile comes from a matching `[[components]]` entry,
+            // else default-deny `sandboxed`.
+            let caps = components
+                .iter()
+                .find(|c| c.name == name)
+                .map(|c| capabilities_for(&c.capability, profiles))
+                .unwrap_or_else(|| CapabilityProfile::Sandboxed.capabilities());
+            let remote = remote_bundle(spec.source.as_deref(), wasm).await?;
+            if spec.protocol.is_http() {
+                tokio::spawn(build_http_server(dir, wasm, name, caps, remote)?.serve(listener))
+            } else {
+                tokio::spawn(build_ws_server(dir, wasm, name, caps, remote)?.serve(listener))
+            }
         };
         endpoints.push(ServedEndpoint {
-            name: spec.name.clone(),
+            name: label,
             protocol: spec.protocol,
             addr,
             task,
@@ -290,29 +296,6 @@ fn routed_resolver(table: RouteTable) -> Resolver {
             Resolution::NotFound => Routed::NotFound,
         },
     )
-}
-
-/// Register a routed HTTP handler component for spawn-by-name **under its declared
-/// profile** `caps`: a `.js` bundle on the js-runner, else a `.wasm` actor component
-/// (the `run` export, a `#[rusm_rs::handlers]` dispatcher). The routed gateway spawns
-/// it fresh per request under that profile.
-fn register_handler_component(
-    dir: &Path,
-    wasm: &WasmRuntime,
-    name: &str,
-    caps: Capabilities,
-) -> Result<()> {
-    let wasm_dir = dir.join("wasm");
-    let js_path = wasm_dir.join(format!("{name}.js"));
-    if js_path.is_file() {
-        let bundle =
-            std::fs::read(&js_path).with_context(|| format!("reading {}", js_path.display()))?;
-        wasm.register_js_component_with(name.to_string(), bundle, caps);
-        return Ok(());
-    }
-    let prepared = prepare_actor_component(wasm, &wasm_dir, name)?;
-    wasm.register_component_with(name.to_string(), prepared, caps);
-    Ok(())
 }
 
 /// Builds an HTTP/SSE server for `name`, resolving a `.js` bundle (on the
@@ -374,22 +357,6 @@ fn build_ws_server(
         .with_context(|| format!("compiling component `{name}`"))?;
     let prepared = wasm.prepare_component(&component, "run")?;
     Ok(wasm.ws_server(&prepared, caps))
-}
-
-/// Compile + prepare a `.wasm` **actor** component (the `run` export) — a
-/// `#[rusm_rs::handlers]`/`#[rusm_rs::main]` component, the per-request routed handler.
-fn prepare_actor_component(
-    wasm: &WasmRuntime,
-    wasm_dir: &Path,
-    name: &str,
-) -> Result<rusm_wasm::PreparedComponent> {
-    let path = wasm_dir.join(format!("{name}.wasm"));
-    let bytes = std::fs::read(&path)
-        .with_context(|| format!("reading {} (run `rusm build`?)", path.display()))?;
-    let component = wasm
-        .compile_component(&bytes)
-        .with_context(|| format!("compiling component `{name}`"))?;
-    wasm.prepare_component(&component, "run")
 }
 
 #[cfg(test)]
@@ -552,11 +519,10 @@ mod tests {
         let rt = Runtime::new();
         let wasm = WasmRuntime::new(rt).unwrap();
         let specs = vec![ServeSpec {
-            name: "api".to_string(),
             protocol: ServeProtocol::Http,
             listen: "127.0.0.1:0".to_string(), // ephemeral; we read back the real port
-            capability: "trusted".to_string(),
-            routes: HashMap::new(), // no routes → the handler-less wasi:http path
+            routes: HashMap::new(),            // no routes → the handler-less wasi:http path
+            name: Some("api".to_string()),
             source: None,
         }];
         let endpoints = serve_apps(dir.path(), &wasm, &specs, &[], &HashMap::new())
@@ -597,11 +563,10 @@ mod tests {
         let rt = Runtime::new();
         let wasm = WasmRuntime::new(rt).unwrap();
         let specs = vec![ServeSpec {
-            name: "echo".to_string(),
             protocol: ServeProtocol::Ws,
             listen: "127.0.0.1:0".to_string(),
-            capability: "trusted".to_string(),
             routes: HashMap::new(),
+            name: Some("echo".to_string()),
             source: None,
         }];
         let endpoints = serve_apps(dir.path(), &wasm, &specs, &[], &HashMap::new())
@@ -636,18 +601,28 @@ mod tests {
 
         let rt = Runtime::new();
         let wasm = WasmRuntime::new(rt).unwrap();
-        let specs = vec![ServeSpec {
+        // The handler is a `[[components]]` entry (registered for spawn-by-name); the
+        // listener is pure routes — no name/capability.
+        let components = vec![ComponentSpec {
             name: "api".to_string(),
+            capability: "sandboxed".to_string(),
+            restart: false,
+            source: None,
+        }];
+        spawn_components(dir.path(), &wasm, &components, &HashMap::new())
+            .await
+            .unwrap();
+        let specs = vec![ServeSpec {
             protocol: ServeProtocol::Http,
             listen: "127.0.0.1:0".to_string(),
-            capability: "sandboxed".to_string(),
             routes: HashMap::from([
                 ("GET /hello/:name".to_string(), "api#hello".to_string()),
                 ("POST /echo".to_string(), "api#echo".to_string()),
             ]),
+            name: None,
             source: None,
         }];
-        let endpoints = serve_apps(dir.path(), &wasm, &specs, &[], &HashMap::new())
+        let endpoints = serve_apps(dir.path(), &wasm, &specs, &components, &HashMap::new())
             .await
             .unwrap();
         let addr = endpoints[0].addr;
@@ -681,11 +656,10 @@ mod tests {
         let rt = Runtime::new();
         let wasm = WasmRuntime::new(rt).unwrap();
         let specs = vec![ServeSpec {
-            name: "ghost".to_string(),
             protocol: ServeProtocol::Http,
             listen: "127.0.0.1:0".to_string(),
-            capability: "trusted".to_string(),
             routes: HashMap::new(),
+            name: Some("ghost".to_string()),
             source: None,
         }];
         let err = serve_apps(dir.path(), &wasm, &specs, &[], &HashMap::new())

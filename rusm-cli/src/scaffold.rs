@@ -172,36 +172,47 @@ fn files(app: &NewApp) -> Vec<(PathBuf, String)> {
 }
 
 /// A Rust HTTP/SSE app uses the `#[rusm_rs::handlers]` model — named actions reached
-/// through a `[routes]` table — so its `rusm.toml` carries a routes block. TS HTTP/SSE
-/// (a `wasi:http` `export default`) and WebSocket (per-connection) need no routes.
+/// through a `[serve.routes]` table to a `[[components]]` handler. TS HTTP/SSE (a
+/// `wasi:http` `export default`) and WebSocket (per-connection) are a single named
+/// handler component with no routes.
 fn has_routes(app: &NewApp) -> bool {
     app.lang == Lang::Rust && matches!(app.protocol, Protocol::Http | Protocol::Sse)
 }
 
+const TOML_HEADER: &str =
+    "# RUSM app config. `rusm serve` hosts each [[serve]] listener; `rusm build` compiles\n\
+     # components/<name>/ into wasm/ first. See https://github.com/archan937/rusm.\n\n";
+
 fn rusm_toml(app: &NewApp) -> String {
-    let artifact = match app.lang {
-        Lang::TypeScript => "wasm/api.js",
-        Lang::Rust => "wasm/api.wasm",
-    };
-    // A Rust HTTP/SSE handler component dispatches by route to a named action. The
-    // `[serve.routes]` table is scoped to the `[[serve]]` listener above it.
-    let routes = if has_routes(app) {
-        "\n\n[serve.routes]\n\"GET /\" = \"api#home\"     # METHOD /path = component#action\n"
+    let proto = app.protocol.as_str();
+    if has_routes(app) {
+        // Routed: a pure listener whose `[serve.routes]` dispatch to a `[[components]]`
+        // handler (which carries its own capability profile).
+        format!(
+            "{TOML_HEADER}\
+             [[serve]]\n\
+             protocol = \"{proto}\"           # http | sse\n\
+             listen = \"127.0.0.1:8080\"\n\n\
+             [serve.routes]\n\
+             \"GET /\" = \"api#home\"        # METHOD /path = component#action\n\n\
+             [[components]]\n\
+             name = \"api\"               # the handler, built from components/api\n\
+             capability = \"sandboxed\"    # default-deny; see [capabilities.<name>] for more\n"
+        )
     } else {
-        ""
-    };
-    format!(
-        "# RUSM app config. `rusm serve` hosts each [[serve]] entry; `rusm build` compiles\n\
-         # components/<name>/ into wasm/ first. See https://github.com/archan937/rusm.\n\
-         \n\
-         [[serve]]\n\
-         name = \"api\"                # loads {artifact}, built from components/api\n\
-         protocol = \"{proto}\"           # http | sse | ws\n\
-         listen = \"127.0.0.1:8080\"\n\
-         capability = \"sandboxed\"     # default-deny; see [capabilities.<name>] for more\
-         {routes}",
-        proto = app.protocol.as_str(),
-    )
+        // A single named handler component (TS `export default`, or a WebSocket worker).
+        let artifact = match app.lang {
+            Lang::TypeScript => "wasm/api.js",
+            Lang::Rust => "wasm/api.wasm",
+        };
+        format!(
+            "{TOML_HEADER}\
+             [[serve]]\n\
+             protocol = \"{proto}\"           # http | sse | ws\n\
+             listen = \"127.0.0.1:8080\"\n\
+             name = \"api\"               # loads {artifact}, built from components/api\n"
+        )
+    }
 }
 
 /// Build output and installed dependencies are not source.
@@ -478,11 +489,11 @@ mod tests {
             }
 
             // The generated rusm.toml parses through the real config and declares the
-            // right protocol; a Rust HTTP/SSE app also gets a usable `[serve.routes]` table.
+            // right protocol. A routed (Rust HTTP/SSE) app is a pure listener + a
+            // `[[components]]` handler; a non-routed app names its handler on the listener.
             let toml = std::fs::read_to_string(root.join("rusm.toml")).unwrap();
             let cfg = NodeConfig::from_toml(&toml).expect("scaffolded rusm.toml must parse");
             assert_eq!(cfg.serve.len(), 1);
-            assert_eq!(cfg.serve[0].name, "api");
             assert_eq!(cfg.serve[0].protocol, want_proto, "{lang:?}/{protocol:?}");
             let routed = lang == Lang::Rust && matches!(protocol, Protocol::Http | Protocol::Sse);
             let table = cfg.serve[0].route_table().expect("routes compile");
@@ -491,6 +502,18 @@ mod tests {
                 !routed,
                 "{lang:?}/{protocol:?}: routes present iff Rust HTTP/SSE"
             );
+            if routed {
+                // Routes name the `[[components]]` handler; the listener has no `name`.
+                assert!(cfg.serve[0].name.is_none(), "{lang:?}/{protocol:?}");
+                assert_eq!(cfg.components.first().map(|c| c.name.as_str()), Some("api"));
+            } else {
+                // A single named handler component on the listener.
+                assert_eq!(
+                    cfg.serve[0].name.as_deref(),
+                    Some("api"),
+                    "{lang:?}/{protocol:?}"
+                );
+            }
         }
     }
 
