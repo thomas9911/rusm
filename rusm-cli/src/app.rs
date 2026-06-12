@@ -12,13 +12,17 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::Path;
+use std::sync::Arc;
 
 use anyhow::{anyhow, Context, Result};
-use rusm_node::{BundleSource, CapabilitySpec, ComponentSpec, ServeMode, ServeProtocol, ServeSpec};
+use rusm_node::{
+    BundleSource, CapabilitySpec, ComponentSpec, Resolution, RouteTable, ServeMode, ServeProtocol,
+    ServeSpec,
+};
 use rusm_otp::ProcessHandle;
 use rusm_wasm::{
-    Capabilities, CapabilityProfile, HttpServer, ResidentHttpServer, ResidentWsServer, WasmRuntime,
-    WsServer,
+    Capabilities, CapabilityProfile, HttpServer, ResidentHttpServer, ResidentWsServer, Resolver,
+    Routed, WasmRuntime, WsServer,
 };
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
@@ -199,8 +203,31 @@ pub async fn serve_apps(
     dir: &Path,
     wasm: &WasmRuntime,
     specs: &[ServeSpec],
+    routes: &RouteTable,
+    components: &[ComponentSpec],
     profiles: &HashMap<String, CapabilitySpec>,
 ) -> Result<Vec<ServedEndpoint>> {
+    // The unified serving model: a non-empty `[routes]` table makes every HTTP/SSE
+    // listener route per request to `component#action` (process-per-request). Register
+    // each HTTP serve's handler component for spawn-by-name and build the per-component
+    // capability map the routed gateway spawns under (serve handlers + `[[components]]`).
+    let routed = if routes.is_empty() {
+        None
+    } else {
+        let mut caps_map: HashMap<String, Capabilities> = components
+            .iter()
+            .map(|c| (c.name.clone(), capabilities_for(&c.capability, profiles)))
+            .collect();
+        for spec in specs.iter().filter(|s| s.protocol.is_http()) {
+            register_handler_component(dir, wasm, &spec.name)?;
+            caps_map.insert(
+                spec.name.clone(),
+                capabilities_for(&spec.capability, profiles),
+            );
+        }
+        Some((routed_resolver(routes.clone()), caps_map))
+    };
+
     let mut endpoints = Vec::with_capacity(specs.len());
     for spec in specs {
         let caps = capabilities_for(&spec.capability, profiles);
@@ -214,20 +241,24 @@ pub async fn serve_apps(
         // a JS handler); `None` → the builder falls back to the local artifact.
         let remote = remote_bundle(spec.source.as_deref(), wasm).await?;
         // Build the server up front so a load/compile error surfaces here (before we
-        // claim the endpoint is up), then drive the accept loop on its own task. The
-        // mode picks per-request (a fresh instance per unit) vs resident (a supervised
-        // pool of stateful instances).
-        let task = match (spec.protocol.is_http(), spec.mode) {
-            (true, ServeMode::PerRequest) => tokio::spawn(
+        // claim the endpoint is up), then drive the accept loop on its own task.
+        let task = match (&routed, spec.protocol.is_http(), spec.mode) {
+            // Routed per-request HTTP/SSE: resolve the route, spawn the matched handler
+            // fresh, dispatch the action. The shape RUSM standardizes serving on.
+            (Some((resolve, caps_map)), true, _) => tokio::spawn(
+                wasm.routed_http_server(resolve.clone(), caps_map.clone())
+                    .serve(listener),
+            ),
+            (_, true, ServeMode::PerRequest) => tokio::spawn(
                 build_http_server(dir, wasm, &spec.name, caps, remote)?.serve(listener),
             ),
-            (true, ServeMode::Resident) => tokio::spawn(
+            (_, true, ServeMode::Resident) => tokio::spawn(
                 build_resident_http_server(dir, wasm, spec, caps, remote)?.serve(listener),
             ),
-            (false, ServeMode::PerRequest) => {
+            (_, false, ServeMode::PerRequest) => {
                 tokio::spawn(build_ws_server(dir, wasm, &spec.name, caps, remote)?.serve(listener))
             }
-            (false, ServeMode::Resident) => tokio::spawn(
+            (_, false, ServeMode::Resident) => tokio::spawn(
                 build_resident_ws_server(dir, wasm, spec, caps, remote)?.serve(listener),
             ),
         };
@@ -239,6 +270,43 @@ pub async fn serve_apps(
         });
     }
     Ok(endpoints)
+}
+
+/// Bridge the manifest [`RouteTable`] into the engine's routing-agnostic [`Resolver`]
+/// — the only place the config's `[routes]` shape meets the Wasm gateway.
+fn routed_resolver(table: RouteTable) -> Resolver {
+    Arc::new(
+        move |method: &str, path: &str| match table.resolve(method, path) {
+            Resolution::Found {
+                component,
+                action,
+                params,
+            } => Routed::Found {
+                component,
+                action,
+                params,
+            },
+            Resolution::MethodNotAllowed => Routed::MethodNotAllowed,
+            Resolution::NotFound => Routed::NotFound,
+        },
+    )
+}
+
+/// Register a routed HTTP handler component for spawn-by-name: a `.js` bundle on the
+/// js-runner, else a `.wasm` actor component (the `run` export, a `#[rusm_rs::handlers]`
+/// dispatcher). The routed gateway spawns it fresh per request.
+fn register_handler_component(dir: &Path, wasm: &WasmRuntime, name: &str) -> Result<()> {
+    let wasm_dir = dir.join("wasm");
+    let js_path = wasm_dir.join(format!("{name}.js"));
+    if js_path.is_file() {
+        let bundle =
+            std::fs::read(&js_path).with_context(|| format!("reading {}", js_path.display()))?;
+        wasm.register_js_component(name.to_string(), bundle);
+        return Ok(());
+    }
+    let prepared = prepare_resident_component(wasm, &wasm_dir, name)?;
+    wasm.register_component(name.to_string(), prepared);
+    Ok(())
 }
 
 /// Builds an HTTP/SSE server for `name`, resolving a `.js` bundle (on the
@@ -549,9 +617,16 @@ mod tests {
             max_inflight: None,
             source: None,
         }];
-        let endpoints = serve_apps(dir.path(), &wasm, &specs, &HashMap::new())
-            .await
-            .unwrap();
+        let endpoints = serve_apps(
+            dir.path(),
+            &wasm,
+            &specs,
+            &RouteTable::default(),
+            &[],
+            &HashMap::new(),
+        )
+        .await
+        .unwrap();
         assert_eq!(endpoints.len(), 1);
         let addr = endpoints[0].addr;
         assert_ne!(addr.port(), 0, "an ephemeral port was bound and reported");
@@ -597,9 +672,16 @@ mod tests {
             max_inflight: None,
             source: None,
         }];
-        let endpoints = serve_apps(dir.path(), &wasm, &specs, &HashMap::new())
-            .await
-            .unwrap();
+        let endpoints = serve_apps(
+            dir.path(),
+            &wasm,
+            &specs,
+            &RouteTable::default(),
+            &[],
+            &HashMap::new(),
+        )
+        .await
+        .unwrap();
         let addr = endpoints[0].addr;
 
         let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/"))
@@ -641,9 +723,16 @@ mod tests {
             max_inflight: None,
             source: None,
         }];
-        let endpoints = serve_apps(dir.path(), &wasm, &specs, &HashMap::new())
-            .await
-            .unwrap();
+        let endpoints = serve_apps(
+            dir.path(),
+            &wasm,
+            &specs,
+            &RouteTable::default(),
+            &[],
+            &HashMap::new(),
+        )
+        .await
+        .unwrap();
         let addr = endpoints[0].addr;
 
         let get = || async move {
@@ -657,6 +746,64 @@ mod tests {
         };
         assert!(get().await.contains("hit #1"), "first request");
         assert!(get().await.contains("hit #2"), "state persisted (resident)");
+    }
+
+    // A `#[rusm_rs::handlers]` component: `fn hello(_, params)` + `fn echo(req, _)`.
+    const RS_HANDLERS: &[u8] =
+        include_bytes!("../../crates/rusm-wasm/tests/fixtures/rs_handlers_demo.wasm");
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_routes_table_dispatches_per_request_to_a_handler_component() {
+        // The unified model end-to-end via `rusm serve`: a `[routes]` table fronts an
+        // HTTP `[[serve]]` listener; each request spawns the matched handler fresh and
+        // dispatches `component#action`. The handler is just `fn`s — no router code.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("wasm")).unwrap();
+        std::fs::write(dir.path().join("wasm/api.wasm"), RS_HANDLERS).unwrap();
+
+        let rt = Runtime::new();
+        let wasm = WasmRuntime::new(rt).unwrap();
+        let specs = vec![ServeSpec {
+            name: "api".to_string(),
+            protocol: ServeProtocol::Http,
+            listen: "127.0.0.1:0".to_string(),
+            capability: "sandboxed".to_string(),
+            mode: ServeMode::PerRequest,
+            instances: 1,
+            shard_by: None,
+            max_inflight: None,
+            source: None,
+        }];
+        let routes = RouteTable::from_map(&HashMap::from([
+            ("GET /hello/:name".to_string(), "api#hello".to_string()),
+            ("POST /echo".to_string(), "api#echo".to_string()),
+        ]))
+        .unwrap();
+        let endpoints = serve_apps(dir.path(), &wasm, &specs, &routes, &[], &HashMap::new())
+            .await
+            .unwrap();
+        let addr = endpoints[0].addr;
+
+        let send = |method: &'static str, path: &'static str, body: &'static str| async move {
+            let req = format!(
+                "{method} {path} HTTP/1.1\r\nHost: rusm\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{body}",
+                body.len()
+            );
+            let mut conn = TcpStream::connect(addr).await.unwrap();
+            conn.write_all(req.as_bytes()).await.unwrap();
+            let mut buf = Vec::new();
+            conn.read_to_end(&mut buf).await.unwrap();
+            String::from_utf8_lossy(&buf).into_owned()
+        };
+
+        let hello = send("GET", "/hello/ada", "").await;
+        assert!(hello.starts_with("HTTP/1.1 200"), "got: {hello}");
+        assert!(hello.contains("hi ada"), "param dispatched: {hello}");
+        assert!(send("POST", "/echo", "pong").await.contains("pong"), "echo");
+        assert!(
+            send("GET", "/nope", "").await.starts_with("HTTP/1.1 404"),
+            "unmatched path is 404"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -676,10 +823,17 @@ mod tests {
             max_inflight: None,
             source: None,
         }];
-        let err = serve_apps(dir.path(), &wasm, &specs, &HashMap::new())
-            .await
-            .err()
-            .expect("missing artifact must error");
+        let err = serve_apps(
+            dir.path(),
+            &wasm,
+            &specs,
+            &RouteTable::default(),
+            &[],
+            &HashMap::new(),
+        )
+        .await
+        .err()
+        .expect("missing artifact must error");
         assert!(err.to_string().contains("ghost.wasm"));
     }
 

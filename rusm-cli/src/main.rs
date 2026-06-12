@@ -192,7 +192,18 @@ async fn serve_app(args: &[String]) -> anyhow::Result<()> {
     // to keep them alive.
     let components =
         spawn_components(Path::new("."), &wasm, &cfg.components, &cfg.capabilities).await?;
-    let endpoints = serve_apps(Path::new("."), &wasm, &cfg.serve, &cfg.capabilities).await?;
+    let routes = cfg
+        .route_table()
+        .map_err(|e| anyhow::anyhow!("invalid [routes] in rusm.toml: {e}"))?;
+    let endpoints = serve_apps(
+        Path::new("."),
+        &wasm,
+        &cfg.serve,
+        &routes,
+        &cfg.components,
+        &cfg.capabilities,
+    )
+    .await?;
     if endpoints.is_empty() && components.is_empty() {
         println!("no [[serve]] entries or [[components]] in rusm.toml — nothing to do");
         return Ok(());
