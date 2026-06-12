@@ -63,6 +63,37 @@ capability = "trusted"
 
 It can also be changed live from the dashboard. (CLI override: `--profile`.)
 
+## `[log]` — platform lifecycle logging
+
+Opt-in, **off by default**, declared explicitly (no env magic). When set, the runtime
+logs each component process as it spawns and exits — coloured, tagged `rusm` (so a
+*platform* line is distinct from your app's own logs), as `component#pid` with the
+process's **effective capabilities** on the spawn line:
+
+```toml
+[log]
+level = "debug"      # off | error | warn | info | debug
+```
+
+```text
+rusm spawn  meta-json#0    net spawn storage stdio env=3 mem=64M
+rusm spawn  api#7          net env=2 mem=64M
+rusm exit   api#7          normal
+```
+
+| `level` | Shows |
+| --- | --- |
+| `off` (default) | nothing — zero overhead |
+| `error` | crashes (a trap / OOM) |
+| `warn` | + kills and link cascades |
+| `info` | + clean exits (every process *ending*) |
+| `debug` | + every spawn (full visibility) |
+
+Levels are cumulative. A **restart** needs no special event — it reads as a crash
+`exit` (red) followed by a fresh `spawn` for the same component (a new pid). Only
+named components are logged (not internal plumbing), and the spawn line's capability
+summary makes a process's real privileges visible at the moment it starts.
+
 ## `[[components]]` — run as supervised processes
 
 Each entry loads `./wasm/<name>.{qjsbc,js,wasm}` (TS bytecode → TS bundle → Rust
