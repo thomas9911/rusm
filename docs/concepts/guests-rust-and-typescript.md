@@ -123,6 +123,37 @@ Both guests get more than `send`/`receive`, all over the same capability-gated A
   a native **`crypto.subtle`** (RustCrypto: SHA digest, HMAC sign/verify, AES-GCM) —
   so the Anthropic SDK and JWT/signing libraries work inside the sandbox.
 
+## Logging from a component
+
+There's nothing new to learn — **use each language's standard output**, and the host
+shows it. A component logs only when its profile grants the **`stdio`** capability
+(`[capabilities.<name>] stdio = true`, included in `trusted`); a sandboxed guest's
+output is simply discarded.
+
+::: code-group
+
+```rust [Rust]
+// Plain std macros → the node's stdout / stderr (when `stdio` is granted).
+println!("handled {} in {}ms", id, elapsed);
+eprintln!("warning: retrying ({attempt})");
+// For levelled/tagged app logs, write a thin helper over eprintln! (no framework
+// needed) — or wire the `log`/`tracing` crates to a stderr backend if you prefer.
+```
+
+```ts [TypeScript]
+// The web-standard console → the node's stderr (warn/error are prefixed).
+console.log("handled", id, "in", elapsed, "ms");
+console.warn("retrying", attempt);   // → [warn] retrying 2
+console.error("gave up");            // → [error] gave up
+// Pids (bigint) and objects are stringified/JSON'd for you.
+```
+
+:::
+
+These are your **application** logs. They're distinct from the **platform** lifecycle
+log (`[log] level = …` → `rusm spawn/exit component#pid …`, [configuration](../reference-configuration.md#log--platform-lifecycle-logging)),
+which the runtime emits and tags `rusm` so the two are easy to tell apart on stderr.
+
 ## The shared runner — tiny TS components (vs jco)
 
 A TypeScript component is **just its bundle** running on **one shared ~920 KB
