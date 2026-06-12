@@ -183,9 +183,10 @@ fn rusm_toml(app: &NewApp) -> String {
         Lang::TypeScript => "wasm/api.js",
         Lang::Rust => "wasm/api.wasm",
     };
-    // A Rust HTTP/SSE handler component dispatches by route to a named action.
+    // A Rust HTTP/SSE handler component dispatches by route to a named action. The
+    // `[serve.routes]` table is scoped to the `[[serve]]` listener above it.
     let routes = if has_routes(app) {
-        "\n\n[routes]\n\"GET /\" = \"api#home\"     # METHOD /path = component#action\n"
+        "\n\n[serve.routes]\n\"GET /\" = \"api#home\"     # METHOD /path = component#action\n"
     } else {
         ""
     };
@@ -477,14 +478,14 @@ mod tests {
             }
 
             // The generated rusm.toml parses through the real config and declares the
-            // right protocol; a Rust HTTP/SSE app also gets a usable `[routes]` table.
+            // right protocol; a Rust HTTP/SSE app also gets a usable `[serve.routes]` table.
             let toml = std::fs::read_to_string(root.join("rusm.toml")).unwrap();
             let cfg = NodeConfig::from_toml(&toml).expect("scaffolded rusm.toml must parse");
             assert_eq!(cfg.serve.len(), 1);
             assert_eq!(cfg.serve[0].name, "api");
             assert_eq!(cfg.serve[0].protocol, want_proto, "{lang:?}/{protocol:?}");
             let routed = lang == Lang::Rust && matches!(protocol, Protocol::Http | Protocol::Sse);
-            let table = cfg.route_table().expect("routes compile");
+            let table = cfg.serve[0].route_table().expect("routes compile");
             assert_eq!(
                 table.is_empty(),
                 !routed,

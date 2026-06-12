@@ -201,30 +201,28 @@ pub async fn serve_apps(
     dir: &Path,
     wasm: &WasmRuntime,
     specs: &[ServeSpec],
-    routes: &RouteTable,
     components: &[ComponentSpec],
     profiles: &HashMap<String, CapabilitySpec>,
 ) -> Result<Vec<ServedEndpoint>> {
-    // The unified serving model: a non-empty `[routes]` table makes every HTTP/SSE
-    // listener route per request to `component#action` (process-per-request). Register
-    // each HTTP serve's handler component for spawn-by-name and build the per-component
-    // capability map the routed gateway spawns under (serve handlers + `[[components]]`).
-    let routed = if routes.is_empty() {
-        None
-    } else {
-        let mut caps_map: HashMap<String, Capabilities> = components
-            .iter()
-            .map(|c| (c.name.clone(), capabilities_for(&c.capability, profiles)))
-            .collect();
-        for spec in specs.iter().filter(|s| s.protocol.is_http()) {
-            register_handler_component(dir, wasm, &spec.name)?;
-            caps_map.insert(
-                spec.name.clone(),
-                capabilities_for(&spec.capability, profiles),
-            );
-        }
-        Some((routed_resolver(routes.clone()), caps_map))
-    };
+    // The unified serving model: an HTTP/SSE listener with a `[serve.routes]` table
+    // routes each request to `component#action` (process-per-request). Build the
+    // per-component capability map the routed gateways spawn under — every
+    // `[[components]]` plus each routed listener's own handler (registered for
+    // spawn-by-name here). Shared across listeners so a route may target any of them.
+    let mut caps_map: HashMap<String, Capabilities> = components
+        .iter()
+        .map(|c| (c.name.clone(), capabilities_for(&c.capability, profiles)))
+        .collect();
+    for spec in specs
+        .iter()
+        .filter(|s| s.protocol.is_http() && !s.routes.is_empty())
+    {
+        register_handler_component(dir, wasm, &spec.name)?;
+        caps_map.insert(
+            spec.name.clone(),
+            capabilities_for(&spec.capability, profiles),
+        );
+    }
 
     let mut endpoints = Vec::with_capacity(specs.len());
     for spec in specs {
@@ -238,23 +236,25 @@ pub async fn serve_apps(
         // Resolve a `source` (url/kv) bundle once, up front (a remote source is always
         // a JS handler); `None` → the builder falls back to the local artifact.
         let remote = remote_bundle(spec.source.as_deref(), wasm).await?;
+        let routed = spec.protocol.is_http() && !spec.routes.is_empty();
         // Build the server up front so a load/compile error surfaces here (before we
         // claim the endpoint is up), then drive the accept loop on its own task.
-        let task = match (&routed, spec.protocol.is_http()) {
-            // Routed per-request HTTP/SSE: resolve the route, spawn the matched handler
-            // fresh, dispatch the action. The shape RUSM standardizes serving on.
-            (Some((resolve, caps_map)), true) => tokio::spawn(
-                wasm.routed_http_server(resolve.clone(), caps_map.clone())
+        let task = if routed {
+            // Routed per-request HTTP/SSE: resolve this listener's routes, spawn the
+            // matched handler fresh, dispatch the action. The shape RUSM standardizes on.
+            let table = spec
+                .route_table()
+                .map_err(|e| anyhow!("invalid [serve.routes] for `{}`: {e}", spec.name))?;
+            tokio::spawn(
+                wasm.routed_http_server(routed_resolver(table), caps_map.clone())
                     .serve(listener),
-            ),
-            // No `[routes]` table: a single handler-less `wasi:http` component per request.
-            (None, true) => tokio::spawn(
-                build_http_server(dir, wasm, &spec.name, caps, remote)?.serve(listener),
-            ),
+            )
+        } else if spec.protocol.is_http() {
+            // No routes: a single handler-less `wasi:http` component per request.
+            tokio::spawn(build_http_server(dir, wasm, &spec.name, caps, remote)?.serve(listener))
+        } else {
             // WebSocket: one sandboxed component process per connection.
-            (_, false) => {
-                tokio::spawn(build_ws_server(dir, wasm, &spec.name, caps, remote)?.serve(listener))
-            }
+            tokio::spawn(build_ws_server(dir, wasm, &spec.name, caps, remote)?.serve(listener))
         };
         endpoints.push(ServedEndpoint {
             name: spec.name.clone(),
@@ -266,8 +266,8 @@ pub async fn serve_apps(
     Ok(endpoints)
 }
 
-/// Bridge the manifest [`RouteTable`] into the engine's routing-agnostic [`Resolver`]
-/// — the only place the config's `[routes]` shape meets the Wasm gateway.
+/// Bridge a listener's [`RouteTable`] into the engine's routing-agnostic [`Resolver`]
+/// — the only place the config's `[serve.routes]` shape meets the Wasm gateway.
 fn routed_resolver(table: RouteTable) -> Resolver {
     Arc::new(
         move |method: &str, path: &str| match table.resolve(method, path) {
@@ -544,18 +544,12 @@ mod tests {
             protocol: ServeProtocol::Http,
             listen: "127.0.0.1:0".to_string(), // ephemeral; we read back the real port
             capability: "trusted".to_string(),
+            routes: HashMap::new(), // no routes → the handler-less wasi:http path
             source: None,
         }];
-        let endpoints = serve_apps(
-            dir.path(),
-            &wasm,
-            &specs,
-            &RouteTable::default(),
-            &[],
-            &HashMap::new(),
-        )
-        .await
-        .unwrap();
+        let endpoints = serve_apps(dir.path(), &wasm, &specs, &[], &HashMap::new())
+            .await
+            .unwrap();
         assert_eq!(endpoints.len(), 1);
         let addr = endpoints[0].addr;
         assert_ne!(addr.port(), 0, "an ephemeral port was bound and reported");
@@ -595,18 +589,12 @@ mod tests {
             protocol: ServeProtocol::Ws,
             listen: "127.0.0.1:0".to_string(),
             capability: "trusted".to_string(),
+            routes: HashMap::new(),
             source: None,
         }];
-        let endpoints = serve_apps(
-            dir.path(),
-            &wasm,
-            &specs,
-            &RouteTable::default(),
-            &[],
-            &HashMap::new(),
-        )
-        .await
-        .unwrap();
+        let endpoints = serve_apps(dir.path(), &wasm, &specs, &[], &HashMap::new())
+            .await
+            .unwrap();
         let addr = endpoints[0].addr;
 
         let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/"))
@@ -627,7 +615,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn a_routes_table_dispatches_per_request_to_a_handler_component() {
-        // The unified model end-to-end via `rusm serve`: a `[routes]` table fronts an
+        // The unified model end-to-end via `rusm serve`: a `[serve.routes]` table on an
         // HTTP `[[serve]]` listener; each request spawns the matched handler fresh and
         // dispatches `component#action`. The handler is just `fn`s — no router code.
         let dir = tempfile::tempdir().unwrap();
@@ -641,14 +629,13 @@ mod tests {
             protocol: ServeProtocol::Http,
             listen: "127.0.0.1:0".to_string(),
             capability: "sandboxed".to_string(),
+            routes: HashMap::from([
+                ("GET /hello/:name".to_string(), "api#hello".to_string()),
+                ("POST /echo".to_string(), "api#echo".to_string()),
+            ]),
             source: None,
         }];
-        let routes = RouteTable::from_map(&HashMap::from([
-            ("GET /hello/:name".to_string(), "api#hello".to_string()),
-            ("POST /echo".to_string(), "api#echo".to_string()),
-        ]))
-        .unwrap();
-        let endpoints = serve_apps(dir.path(), &wasm, &specs, &routes, &[], &HashMap::new())
+        let endpoints = serve_apps(dir.path(), &wasm, &specs, &[], &HashMap::new())
             .await
             .unwrap();
         let addr = endpoints[0].addr;
@@ -686,19 +673,13 @@ mod tests {
             protocol: ServeProtocol::Http,
             listen: "127.0.0.1:0".to_string(),
             capability: "trusted".to_string(),
+            routes: HashMap::new(),
             source: None,
         }];
-        let err = serve_apps(
-            dir.path(),
-            &wasm,
-            &specs,
-            &RouteTable::default(),
-            &[],
-            &HashMap::new(),
-        )
-        .await
-        .err()
-        .expect("missing artifact must error");
+        let err = serve_apps(dir.path(), &wasm, &specs, &[], &HashMap::new())
+            .await
+            .err()
+            .expect("missing artifact must error");
         assert!(err.to_string().contains("ghost.wasm"));
     }
 

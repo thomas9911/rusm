@@ -37,18 +37,6 @@ pub struct NodeConfig {
     /// state somewhere to survive a restart.
     #[serde(default)]
     pub store: Option<String>,
-    /// Declarative HTTP routing, the `[routes]` table: `"METHOD /path/:param" =
-    /// "component#action"`. The serving gateway resolves each request to a component +
-    /// action (with path params) and dispatches it per-request. Empty → no HTTP routing.
-    #[serde(default)]
-    pub routes: HashMap<String, String>,
-}
-
-impl NodeConfig {
-    /// The compiled [`RouteTable`] for the `[routes]` map (errors on a malformed entry).
-    pub fn route_table(&self) -> Result<crate::routes::RouteTable, String> {
-        crate::routes::RouteTable::from_map(&self.routes)
-    }
 }
 
 /// A custom capability profile (`[capabilities.<name>]`) — mirrors Cargo's
@@ -208,10 +196,24 @@ pub struct ServeSpec {
     /// Capability profile id (`sandboxed` / `network-client` / `trusted` / custom).
     #[serde(default = "default_capability")]
     pub capability: String,
+    /// Declarative HTTP routing for **this** listener, the `[serve.routes]` table:
+    /// `"METHOD /path/:param" = "component#action"`. The gateway resolves each request
+    /// to a component + action (with path params) and dispatches it per-request. Empty →
+    /// the handler-less per-request `wasi:http` path. Ignored for `protocol = "ws"`.
+    #[serde(default)]
+    pub routes: HashMap<String, String>,
     /// Load the (JS) bundle from a `url:`/`http(s)://` URL or `kv:<bucket>/<key>`
     /// instead of `./wasm/<name>` (see [`BundleSource`]). Omitted → the local artifact.
     #[serde(default)]
     pub source: Option<String>,
+}
+
+impl ServeSpec {
+    /// The compiled [`RouteTable`] for this listener's `[serve.routes]` map (errors on a
+    /// malformed entry). Empty when no routes are declared.
+    pub fn route_table(&self) -> Result<crate::routes::RouteTable, String> {
+        crate::routes::RouteTable::from_map(&self.routes)
+    }
 }
 
 impl Default for NodeConfig {
@@ -224,7 +226,6 @@ impl Default for NodeConfig {
             serve: Vec::new(),
             capabilities: HashMap::new(),
             store: None,
-            routes: HashMap::new(),
         }
     }
 }
@@ -501,19 +502,45 @@ mod tests {
     }
 
     #[test]
-    fn parses_a_routes_table() {
+    fn parses_per_listener_routes() {
+        // Routes are scoped to their listener: `[serve.routes]` attaches to the
+        // preceding `[[serve]]` entry, so each port carries its own table.
         let cfg = NodeConfig::from_toml(
             r#"
-            [routes]
+            [[serve]]
+            name = "api"
+            protocol = "http"
+            listen = "127.0.0.1:8080"
+
+            [serve.routes]
             "GET /" = "api#home"
             "POST /users/:id" = "api#update"
+
+            [[serve]]
+            name = "admin"
+            protocol = "http"
+            listen = "127.0.0.1:9090"
+
+            [serve.routes]
+            "GET /health" = "admin#health"
             "#,
         )
         .unwrap();
-        let table = cfg.route_table().expect("routes compile");
-        assert!(!table.is_empty());
-        // The matcher itself is unit-tested in `routes.rs`; here we only prove the
-        // manifest `[routes]` table parses and compiles into a usable table.
+        assert_eq!(cfg.serve.len(), 2);
+        // Each listener compiles its own table; the matcher itself is unit-tested in `routes.rs`.
+        assert!(!cfg.serve[0]
+            .route_table()
+            .expect("api routes compile")
+            .is_empty());
+        assert!(!cfg.serve[1]
+            .route_table()
+            .expect("admin routes compile")
+            .is_empty());
+        // A listener with no `[serve.routes]` yields an empty table (the wasi:http path).
+        assert!(NodeConfig::default()
+            .serve
+            .first()
+            .map_or(true, |s| s.route_table().unwrap().is_empty()));
     }
 
     #[test]
