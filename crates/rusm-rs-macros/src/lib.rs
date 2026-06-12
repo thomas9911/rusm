@@ -82,16 +82,26 @@ pub fn handlers(_attr: TokenStream, item: TokenStream) -> TokenStream {
     };
     let module_ident = &module.ident;
     // Each `pub fn` in the module is an action, dispatched by its name (the `#action` half
-    // of a `component#action` route).
+    // of a `component#action` route). Arity selects the kind: a 2-arg `fn(Request, Params)
+    // -> Response` is buffered; a 3-arg `fn(Request, Params, Sse)` streams (SSE).
     let arms = items.iter().filter_map(|item| match item {
         syn::Item::Fn(f) if matches!(f.vis, syn::Visibility::Public(_)) => {
             let name = &f.sig.ident;
             let action = name.to_string();
-            Some(quote! {
-                #action => ::core::option::Option::Some(
-                    super::#module_ident::#name(__request, __params)
-                ),
-            })
+            let body = if f.sig.inputs.len() == 3 {
+                quote! {
+                    ::rusm_rs::http::Outcome::Streamed(::std::boxed::Box::new(
+                        move |__sse| super::#module_ident::#name(__request, __params, __sse)
+                    ))
+                }
+            } else {
+                quote! {
+                    ::rusm_rs::http::Outcome::Buffered(
+                        super::#module_ident::#name(__request, __params)
+                    )
+                }
+            };
+            Some(quote! { #action => ::core::option::Option::Some(#body), })
         }
         _ => None,
     });

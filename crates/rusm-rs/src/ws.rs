@@ -35,7 +35,9 @@ pub fn serve<H: Handler>(mut handler: H) -> ! {
         if raw.len() < 9 {
             continue;
         }
-        let conn = Pid(u64::from_le_bytes(raw[1..9].try_into().expect("8-byte conn")));
+        let conn = Pid(u64::from_le_bytes(
+            raw[1..9].try_into().expect("8-byte conn"),
+        ));
         match raw[0] {
             0 => handler.open(conn),
             1 => handler.message(conn, raw[9..].to_vec()),

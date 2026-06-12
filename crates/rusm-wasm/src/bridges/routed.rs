@@ -270,6 +270,7 @@ mod tests {
         let table = RouteTable::from_map(&HashMap::from([
             ("GET /hello/:name".to_string(), "demo#hello".to_string()),
             ("POST /echo".to_string(), "demo#echo".to_string()),
+            ("GET /ticks".to_string(), "demo#ticks".to_string()),
         ]))
         .unwrap();
         let caps = HashMap::from([(
@@ -295,6 +296,21 @@ mod tests {
             again.contains("hi bob"),
             "fresh instance per request: {again}"
         );
+
+        // A 3-arg (`Sse`) action streams a chunked text/event-stream body.
+        let ticks = request(addr, "GET", "/ticks", "").await;
+        let lower = ticks.to_lowercase();
+        assert!(ticks.starts_with("HTTP/1.1 200"), "got: {ticks}");
+        assert!(
+            lower.contains("text/event-stream") && lower.contains("transfer-encoding: chunked"),
+            "streamed SSE body: {ticks}"
+        );
+        for n in 0..3 {
+            assert!(
+                ticks.contains(&format!("data: tick {n}")),
+                "event {n}: {ticks}"
+            );
+        }
 
         // Unmatched path → 404; matched path, wrong method → 405.
         assert!(
