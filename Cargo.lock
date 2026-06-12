@@ -2596,6 +2596,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "rusm-kv",
+ "rusm-node",
  "rusm-otp",
  "rusm-wire",
  "serde",

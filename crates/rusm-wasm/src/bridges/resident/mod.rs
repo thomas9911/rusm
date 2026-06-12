@@ -35,9 +35,10 @@ use crate::bridges::wasip2::PreparedComponent;
 use crate::caps::Capabilities;
 use crate::WasmRuntime;
 
-/// The response body type the resident gateway produces — a boxed body, so a
+/// The response body type an actor-wire HTTP gateway produces — a boxed body, so a
 /// buffered (`Full`) and a streamed/SSE (`StreamBody`) response share one type.
-type ResBody = http_body_util::combinators::BoxBody<Bytes, Infallible>;
+/// Shared with the per-request [`routed`](super::routed) gateway.
+pub(crate) type ResBody = http_body_util::combinators::BoxBody<Bytes, Infallible>;
 
 /// A resident HTTP server: a supervised pool of long-lived instances that serve
 /// every request and hold state. Cheap to clone, so it spawns one task per
@@ -195,13 +196,13 @@ impl ResidentHttpServer {
         let reply = rx.await;
         drop(lease); // release the in-flight permit once the reply (head) is in
         Ok(match reply {
-            Ok(ResidentReply::Buffered(resp)) => build_response(resp),
-            Ok(ResidentReply::Streaming {
+            Ok(GatewayReply::Buffered(resp)) => build_response(resp),
+            Ok(GatewayReply::Streaming {
                 status,
                 headers,
                 handle,
             }) => build_streaming_response(status, headers, handle),
-            Ok(ResidentReply::Err(message)) => {
+            Ok(GatewayReply::Err(message)) => {
                 error_response(StatusCode::INTERNAL_SERVER_ERROR, &message)
             }
             Err(_) => error_response(StatusCode::BAD_GATEWAY, "resident handler did not reply"),
@@ -209,8 +210,9 @@ impl ResidentHttpServer {
     }
 }
 
-/// The resident's reply, as the responder hands it to the HTTP task.
-enum ResidentReply {
+/// A handler's reply, as the responder hands it to the HTTP task. Shared by the
+/// resident and per-request ([`routed`](super::routed)) gateways.
+pub(crate) enum GatewayReply {
     /// A complete buffered response.
     Buffered(rusm_wire::Response),
     /// A streaming response (SSE): the head, plus the guest's byte stream which the
@@ -229,7 +231,10 @@ enum ResidentReply {
 /// reply the guest sends the head, then opens a byte stream to us (`Received::Stream`);
 /// we forward the stream **handle** itself (already a back-pressured Tokio channel),
 /// so the HTTP body reads the guest directly with no extra hop.
-fn spawn_responder(rt: &Runtime, tx: tokio::sync::oneshot::Sender<ResidentReply>) -> ProcessHandle {
+pub(crate) fn spawn_responder(
+    rt: &Runtime,
+    tx: tokio::sync::oneshot::Sender<GatewayReply>,
+) -> ProcessHandle {
     rt.spawn(move |mut ctx| async move {
         // The head reply (a plain message).
         let head = loop {
@@ -241,19 +246,19 @@ fn spawn_responder(rt: &Runtime, tx: tokio::sync::oneshot::Sender<ResidentReply>
         let resp = match parse_reply(&head) {
             Ok(resp) => resp,
             Err(err) => {
-                let _ = tx.send(ResidentReply::Err(err));
+                let _ = tx.send(GatewayReply::Err(err));
                 return;
             }
         };
         if !resp.stream {
-            let _ = tx.send(ResidentReply::Buffered(resp));
+            let _ = tx.send(GatewayReply::Buffered(resp));
             return;
         }
         // Streaming: the guest opens a byte stream to us next; hand its read end to
         // the HTTP task and exit (no forwarding loop).
         loop {
             if let Received::Stream(handle) = ctx.recv().await {
-                let _ = tx.send(ResidentReply::Streaming {
+                let _ = tx.send(GatewayReply::Streaming {
                     status: resp.status,
                     headers: resp.headers,
                     handle,
@@ -290,7 +295,7 @@ fn response_builder(status: u16, headers: Vec<(String, String)>) -> hyper::http:
     builder
 }
 
-fn build_response(resp: rusm_wire::Response) -> Response<ResBody> {
+pub(crate) fn build_response(resp: rusm_wire::Response) -> Response<ResBody> {
     response_builder(resp.status, resp.headers)
         .body(Full::new(Bytes::from(resp.body)).boxed())
         .unwrap_or_else(|_| error_response(StatusCode::INTERNAL_SERVER_ERROR, "invalid response"))
@@ -299,7 +304,7 @@ fn build_response(resp: rusm_wire::Response) -> Response<ResBody> {
 /// Build a chunked, streamed response by draining the guest's byte stream — each
 /// chunk becomes a body frame as it's produced (true SSE), with the stream's own
 /// Tokio back-pressure carrying through.
-fn build_streaming_response(
+pub(crate) fn build_streaming_response(
     status: u16,
     headers: Vec<(String, String)>,
     handle: StreamHandle,
@@ -315,7 +320,7 @@ fn build_streaming_response(
         .unwrap_or_else(|_| error_response(StatusCode::INTERNAL_SERVER_ERROR, "invalid response"))
 }
 
-fn error_response(status: StatusCode, message: &str) -> Response<ResBody> {
+pub(crate) fn error_response(status: StatusCode, message: &str) -> Response<ResBody> {
     Response::builder()
         .status(status)
         .body(Full::new(Bytes::from(message.to_owned())).boxed())
