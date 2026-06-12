@@ -137,7 +137,7 @@ pub async fn spawn_components(
         // A configured `source` (url/kv) supplies a JS bundle directly — the
         // dynamic-deploy path, no local artifact needed.
         if let Some(bundle) = remote_bundle(spec.source.as_deref(), wasm).await? {
-            wasm.register_js_component(spec.name.clone(), bundle.clone());
+            wasm.register_js_component_with(spec.name.clone(), bundle.clone(), caps.clone());
             handles.push((spec.name.clone(), wasm.spawn_js_with(bundle, caps)));
             continue;
         }
@@ -150,8 +150,9 @@ pub async fn spawn_components(
         let handle = if let Some(path) = bundle_path {
             let bundle =
                 std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
-            // Register by name so a running sibling may `spawn` it as a TS service.
-            wasm.register_js_component(spec.name.clone(), bundle.clone());
+            // Register by name (under its declared profile) so a running sibling may
+            // `spawn` it as a TS service.
+            wasm.register_js_component_with(spec.name.clone(), bundle.clone(), caps.clone());
             wasm.spawn_js_with(bundle, caps)
         } else {
             let path = wasm_dir.join(format!("{}.wasm", spec.name));
@@ -165,7 +166,7 @@ pub async fn spawn_components(
             // by siblings); otherwise run it unchanged as a standard command component.
             match wasm.prepare_component(&component, "run") {
                 Ok(prepared) => {
-                    wasm.register_component(spec.name.clone(), prepared.clone());
+                    wasm.register_component_with(spec.name.clone(), prepared.clone(), caps.clone());
                     wasm.spawn_component_with(&prepared, caps)
                 }
                 Err(_) => wasm.spawn_command_with(&component, caps).with_context(|| {
@@ -217,11 +218,9 @@ pub async fn serve_apps(
         .iter()
         .filter(|s| s.protocol.is_http() && !s.routes.is_empty())
     {
-        register_handler_component(dir, wasm, &spec.name)?;
-        caps_map.insert(
-            spec.name.clone(),
-            capabilities_for(&spec.capability, profiles),
-        );
+        let caps = capabilities_for(&spec.capability, profiles);
+        register_handler_component(dir, wasm, &spec.name, caps.clone())?;
+        caps_map.insert(spec.name.clone(), caps);
     }
 
     let mut endpoints = Vec::with_capacity(specs.len());
@@ -286,20 +285,26 @@ fn routed_resolver(table: RouteTable) -> Resolver {
     )
 }
 
-/// Register a routed HTTP handler component for spawn-by-name: a `.js` bundle on the
-/// js-runner, else a `.wasm` actor component (the `run` export, a `#[rusm_rs::handlers]`
-/// dispatcher). The routed gateway spawns it fresh per request.
-fn register_handler_component(dir: &Path, wasm: &WasmRuntime, name: &str) -> Result<()> {
+/// Register a routed HTTP handler component for spawn-by-name **under its declared
+/// profile** `caps`: a `.js` bundle on the js-runner, else a `.wasm` actor component
+/// (the `run` export, a `#[rusm_rs::handlers]` dispatcher). The routed gateway spawns
+/// it fresh per request under that profile.
+fn register_handler_component(
+    dir: &Path,
+    wasm: &WasmRuntime,
+    name: &str,
+    caps: Capabilities,
+) -> Result<()> {
     let wasm_dir = dir.join("wasm");
     let js_path = wasm_dir.join(format!("{name}.js"));
     if js_path.is_file() {
         let bundle =
             std::fs::read(&js_path).with_context(|| format!("reading {}", js_path.display()))?;
-        wasm.register_js_component(name.to_string(), bundle);
+        wasm.register_js_component_with(name.to_string(), bundle, caps);
         return Ok(());
     }
     let prepared = prepare_actor_component(wasm, &wasm_dir, name)?;
-    wasm.register_component(name.to_string(), prepared);
+    wasm.register_component_with(name.to_string(), prepared, caps);
     Ok(())
 }
 

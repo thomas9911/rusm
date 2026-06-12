@@ -337,6 +337,10 @@ mod tests {
         (core instance $i (instantiate $m))
         (func (export "run") (canon lift (core func $i "run"))))"#;
 
+    /// Exits Normal iff its declared env grant `RUSM_CAP_PROBE="granted"` reached it,
+    /// else panics (trap → Crashed). See `tests/fixtures/env-gate`.
+    const ENV_GATE: &[u8] = include_bytes!("../../tests/fixtures/env_gate.wasm");
+
     /// Monitors a freshly spawned guest and returns the exit reason it observes.
     async fn exit_reason_of(rt: &Runtime, guest: &ProcessHandle) -> ExitReason {
         let (tx, rx) = tokio::sync::oneshot::channel();
@@ -412,6 +416,44 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         }
         assert_eq!(rt.finished(), 1, "the spawned child ran and was reaped");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_registered_component_runs_under_its_declared_profile_not_the_spawners() {
+        use crate::actor::rusm::runtime::actor::Host;
+        let rt = Runtime::new();
+        let wr = WasmRuntime::new(rt.clone()).unwrap();
+        let gate = wr
+            .prepare_component(&wr.compile_component(ENV_GATE).unwrap(), "run")
+            .unwrap();
+        // Registered WITH a declared profile that grants the env var the component needs.
+        wr.register_component_with(
+            "gate",
+            gate,
+            CapabilityProfile::Trusted
+                .capabilities()
+                .env("RUSM_CAP_PROBE", "granted"),
+        );
+
+        // The spawner has `spawn` (Trusted) but NOT the env grant. If the child inherited
+        // the spawner's caps (the old behavior) it would see no env and panic; the
+        // component's own declared profile must win instead.
+        let mut host = test_host(&wr, &rt, CapabilityProfile::Trusted.capabilities());
+        host.spawn("gate".to_string())
+            .await
+            .expect("spawn of a registered component succeeds");
+
+        for _ in 0..200 {
+            if rt.finished() == 1 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        assert_eq!(
+            rt.finished(),
+            1,
+            "the child must run under its declared profile (env granted), not the spawner's"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

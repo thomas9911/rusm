@@ -1,0 +1,24 @@
+# Proves a guest-spawned **registered** component runs under its OWN declared
+# capability profile (which grants an env var), not the spawner's inherited caps.
+# Built for wasm32-wasip2, checked in as env_gate.wasm. Regenerate:
+#   cargo build --target wasm32-wasip2 --release
+#   cp target/wasm32-wasip2/release/env_gate.wasm ../env_gate.wasm
+[workspace]
+
+[package]
+name = "env-gate"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+name = "env_gate"
+
+[profile.release]
+opt-level = "z"
+strip = true
+
+[dependencies]
+rusm-rs = { path = "../../../../rusm-rs" }
+wit-bindgen = "0.46"

@@ -83,6 +83,11 @@ pub(crate) struct Registered {
     pub(crate) prepared: PreparedComponent,
     /// `Arc` so a lookup clone is cheap; the bytes copy once, on the actual send.
     pub(crate) bundle: Option<Arc<Vec<u8>>>,
+    /// The component's **declared** capability profile. When set, a guest `spawn`-by-name
+    /// runs the child under *this* profile (the node operator's explicit per-component
+    /// policy — what the manifest declares is what runs), instead of inheriting the
+    /// spawner's caps. `None` → inherit the spawner's caps (ad-hoc registration / tests).
+    pub(crate) caps: Option<Capabilities>,
 }
 
 pub(crate) struct Spawner {
@@ -289,21 +294,46 @@ impl WasmRuntime {
     }
 
     /// Registers a prepared component under `name` so a **running guest** may
-    /// `spawn` it by that name through the actor ABI (capability-gated). The app
-    /// loader registers each manifest component so siblings can spawn one another.
+    /// `spawn` it by that name through the actor ABI (capability-gated). The child
+    /// inherits the spawner's caps (non-escalating) — use
+    /// [`register_component_with`](Self::register_component_with) to run it under an
+    /// explicit declared profile regardless of who spawns it.
     pub fn register_component(&self, name: impl Into<String>, prepared: PreparedComponent) {
         self.spawner.register(
             name,
             Registered {
                 prepared,
                 bundle: None,
+                caps: None,
+            },
+        );
+    }
+
+    /// Like [`register_component`](Self::register_component) but pins the component's
+    /// **declared** capability profile: a guest `spawn`-by-name runs the child under
+    /// `caps` (the node operator's explicit per-component policy — what the manifest
+    /// declares is what runs), not the spawner's inherited caps. The app loader uses
+    /// this so each `[[components]]`/serve handler runs under its own profile.
+    pub fn register_component_with(
+        &self,
+        name: impl Into<String>,
+        prepared: PreparedComponent,
+        caps: Capabilities,
+    ) {
+        self.spawner.register(
+            name,
+            Registered {
+                prepared,
+                bundle: None,
+                caps: Some(caps),
             },
         );
     }
 
     /// Registers a **TypeScript service** under `name`: a guest `spawn`ing it gets a
     /// fresh js-runner instance fed this Bun-built bundle (the runner's protocol).
-    /// Lets a TS commander reach a TS service via the concealed typed client.
+    /// The child inherits the spawner's caps; use
+    /// [`register_js_component_with`](Self::register_js_component_with) to pin a profile.
     pub fn register_js_component(&self, name: impl Into<String>, bundle: impl Into<Vec<u8>>) {
         let prepared = self.js_runner().clone();
         self.spawner.register(
@@ -311,6 +341,27 @@ impl WasmRuntime {
             Registered {
                 prepared,
                 bundle: Some(Arc::new(bundle.into())),
+                caps: None,
+            },
+        );
+    }
+
+    /// Like [`register_js_component`](Self::register_js_component) but pins the TS
+    /// component's **declared** capability profile (see
+    /// [`register_component_with`](Self::register_component_with)).
+    pub fn register_js_component_with(
+        &self,
+        name: impl Into<String>,
+        bundle: impl Into<Vec<u8>>,
+        caps: Capabilities,
+    ) {
+        let prepared = self.js_runner().clone();
+        self.spawner.register(
+            name,
+            Registered {
+                prepared,
+                bundle: Some(Arc::new(bundle.into())),
+                caps: Some(caps),
             },
         );
     }

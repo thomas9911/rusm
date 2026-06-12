@@ -48,8 +48,12 @@ impl actor::Host for WasiHost {
         let entry = spawner
             .lookup(&component)
             .ok_or_else(|| format!("unknown component `{component}`"))?;
-        // No escalation: the child gets exactly this process's capabilities.
-        let child = spawner.spawn_component(&entry.prepared, self.caps.clone());
+        // A node-registered component runs under its **declared** profile (the manifest's
+        // explicit per-component policy — what's declared is what runs); an ad-hoc
+        // registration with no declared profile inherits this process's caps
+        // (non-escalating). Either way the `spawn` capability above gates who may spawn.
+        let caps = entry.caps.clone().unwrap_or_else(|| self.caps.clone());
+        let child = spawner.spawn_component(&entry.prepared, caps);
         // A TS service carries its bundle as message 1 (the js-runner's protocol).
         if let Some(bundle) = &entry.bundle {
             self.rt
