@@ -448,16 +448,19 @@ fn load_node_config(args: &[String]) -> NodeConfig {
 /// components granted `storage` can persist; otherwise a store-less runtime. The
 /// store's parent dir is created so a fresh app's first run doesn't trip on it.
 fn wasm_runtime(rt: Runtime, cfg: &NodeConfig) -> anyhow::Result<WasmRuntime> {
-    match &cfg.store {
+    let wasm = match &cfg.store {
         Some(rel) => {
             let path = Path::new(".").join(rel);
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent).ok();
             }
-            Ok(WasmRuntime::with_store(rt, &path)?)
+            WasmRuntime::with_store(rt, &path)?
         }
-        None => Ok(WasmRuntime::new(rt)?),
-    }
+        None => WasmRuntime::new(rt)?,
+    };
+    // Platform lifecycle logging: explicit, off by default — declared via `[log] level`.
+    wasm.set_log_level(cfg.log_level());
+    Ok(wasm)
 }
 
 async fn attach(url: &str) -> Result<(), Box<dyn std::error::Error>> {

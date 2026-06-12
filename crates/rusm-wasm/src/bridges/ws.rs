@@ -206,9 +206,11 @@ impl WsServer {
 
         // The sandboxed handler. For a JS bundle, the runner's first message is the
         // bundle itself; the writer pid then lands as the guest's first receive.
+        // (Per-connection handlers aren't named in the platform lifecycle log — the
+        // server doesn't carry the serve name; add it to `WsServer` if that's wanted.)
         let component = self
             .spawner
-            .spawn_component(&self.prepared, self.caps.clone());
+            .spawn_component(&self.prepared, self.caps.clone(), None);
         if let Some(bundle) = &self.bundle {
             rt.send(component.pid(), bundle.as_ref().clone());
         }

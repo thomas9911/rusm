@@ -53,7 +53,7 @@ impl actor::Host for WasiHost {
         // registration with no declared profile inherits this process's caps
         // (non-escalating). Either way the `spawn` capability above gates who may spawn.
         let caps = entry.caps.clone().unwrap_or_else(|| self.caps.clone());
-        let child = spawner.spawn_component(&entry.prepared, caps);
+        let child = spawner.spawn_component(&entry.prepared, caps, Some(&component));
         // A TS service carries its bundle as message 1 (the js-runner's protocol).
         if let Some(bundle) = &entry.bundle {
             self.rt
@@ -191,10 +191,14 @@ impl actor::Host for WasiHost {
                 .ok_or_else(|| format!("unknown component `{name}`"))?;
             let prepared = entry.prepared.clone();
             let bundle = entry.bundle.clone();
-            let caps = self.caps.clone();
+            // A supervised child runs under its OWN declared profile — consistent with a
+            // direct spawn-by-name — falling back to the supervisor's caps for an ad-hoc
+            // (un-declared) registration.
+            let caps = entry.caps.clone().unwrap_or_else(|| self.caps.clone());
+            let label = name.clone();
             let spawner = Arc::clone(spawner);
             sup = sup.child(move |rt: &Runtime| {
-                let child = spawner.spawn_component(&prepared, caps.clone());
+                let child = spawner.spawn_component(&prepared, caps.clone(), Some(&label));
                 if let Some(bundle) = &bundle {
                     rt.send(Pid::from_raw(child.pid().raw()), (**bundle).clone());
                 }

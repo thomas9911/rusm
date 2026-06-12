@@ -107,6 +107,37 @@ impl Capabilities {
         }
     }
 
+    /// A compact one-line summary of the **effective** grants, for the platform spawn
+    /// log — e.g. `net spawn storage env=2 mem=512M`. Only granted capabilities show;
+    /// a bare sandbox reads `sandboxed mem=…M`. This is what makes a process's real
+    /// privileges visible at the moment it spawns.
+    pub fn summary(&self) -> String {
+        let mut parts: Vec<String> = Vec::new();
+        if self.allow_network {
+            parts.push("net".into());
+        }
+        if self.allow_spawn {
+            parts.push("spawn".into());
+        }
+        if self.allow_storage {
+            parts.push("storage".into());
+        }
+        if self.allow_process_control {
+            parts.push("proc".into());
+        }
+        if self.inherit_stdio {
+            parts.push("stdio".into());
+        }
+        if !self.env.is_empty() {
+            parts.push(format!("env={}", self.env.len()));
+        }
+        if parts.is_empty() {
+            parts.push("sandboxed".into());
+        }
+        parts.push(format!("mem={}M", self.max_memory >> 20));
+        parts.join(" ")
+    }
+
     /// Grants one environment variable (seen by the guest via `wasi:cli/environment`).
     pub fn env(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.env.push((key.into(), value.into()));

@@ -138,7 +138,9 @@ pub async fn spawn_components(
         // dynamic-deploy path, no local artifact needed.
         if let Some(bundle) = remote_bundle(spec.source.as_deref(), wasm).await? {
             wasm.register_js_component_with(spec.name.clone(), bundle.clone(), caps.clone());
-            handles.push((spec.name.clone(), wasm.spawn_js_with(bundle, caps)));
+            let handle = wasm.spawn_js_with(bundle, caps.clone());
+            wasm.note_spawn(&handle, &spec.name, &caps);
+            handles.push((spec.name.clone(), handle));
             continue;
         }
         // TypeScript component: prefer the precompiled QuickJS bytecode
@@ -153,7 +155,7 @@ pub async fn spawn_components(
             // Register by name (under its declared profile) so a running sibling may
             // `spawn` it as a TS service.
             wasm.register_js_component_with(spec.name.clone(), bundle.clone(), caps.clone());
-            wasm.spawn_js_with(bundle, caps)
+            wasm.spawn_js_with(bundle, caps.clone())
         } else {
             let path = wasm_dir.join(format!("{}.wasm", spec.name));
             let bytes = std::fs::read(&path)
@@ -167,16 +169,21 @@ pub async fn spawn_components(
             match wasm.prepare_component(&component, "run") {
                 Ok(prepared) => {
                     wasm.register_component_with(spec.name.clone(), prepared.clone(), caps.clone());
-                    wasm.spawn_component_with(&prepared, caps)
+                    wasm.spawn_component_with(&prepared, caps.clone())
                 }
-                Err(_) => wasm.spawn_command_with(&component, caps).with_context(|| {
-                    format!(
-                        "`{}` is neither a rusm actor component nor a wasi:cli command",
-                        spec.name
-                    )
-                })?,
+                Err(_) => wasm
+                    .spawn_command_with(&component, caps.clone())
+                    .with_context(|| {
+                        format!(
+                            "`{}` is neither a rusm actor component nor a wasi:cli command",
+                            spec.name
+                        )
+                    })?,
             }
         };
+        // Platform log: name this boot component (so its exit can name it) + log its
+        // spawn at Debug. No-op unless `[log]` is set.
+        wasm.note_spawn(&handle, &spec.name, &caps);
         handles.push((spec.name.clone(), handle));
     }
     Ok(handles)

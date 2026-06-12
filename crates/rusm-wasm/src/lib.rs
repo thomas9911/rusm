@@ -366,6 +366,23 @@ impl WasmRuntime {
         );
     }
 
+    /// Record a **named** component the app loader spawned directly (not via the
+    /// by-name guest path) in the [platform lifecycle log](rusm_otp::LogLevel): label
+    /// it so its `exit` line can name it, and emit its `spawn` line at `Debug`. No-op
+    /// unless logging is on. Use after `spawn_component_with` / `spawn_js_with` for a
+    /// `[[serve]]` / `[[components]]` entry.
+    pub fn note_spawn(&self, handle: &ProcessHandle, name: &str, caps: &Capabilities) {
+        if self.spawner.rt.wants_log(rusm_otp::LogLevel::Error) {
+            self.spawner.record_spawn(handle.pid(), name, caps);
+        }
+    }
+
+    /// Set the [platform lifecycle log](rusm_otp::LogLevel) level (spawn / exit, from
+    /// `rusm.toml [log] level`). Off by default; set once at startup.
+    pub fn set_log_level(&self, level: rusm_otp::LogLevel) {
+        self.spawner.rt.set_log_level(level);
+    }
+
     /// Aborts **every** process on this runtime, returning how many were stopped —
     /// the kill-switch that makes teardown deterministic. A guest process (a Wasm
     /// instance) ending here drops its `Store`, freeing its pooled-allocator slot, so

@@ -216,6 +216,11 @@ struct Inner {
     mailbox_capacity: Option<usize>,
     /// User messages shed because a bounded mailbox was at capacity.
     dropped: AtomicU64,
+    /// **Platform lifecycle log** verbosity (a [`LogLevel`] rank; `0` = `Off`, the
+    /// default → zero hot-path cost). When above `Off`, a labeled process's spawn /
+    /// exit / restart is logged to stderr at its event level. Set via
+    /// [`Runtime::set_log_level`].
+    log_level: std::sync::atomic::AtomicU8,
     next_id: AtomicU64,
     next_ref: AtomicU64,
     spawned: AtomicU64,
@@ -273,6 +278,16 @@ impl Inner {
         };
         self.finished.fetch_add(1, Ordering::Relaxed);
         let reason = entry.exit_reason.unwrap_or(reason);
+
+        // Platform log (opt-in): only labeled processes — i.e. components the host
+        // named — so the stream is signal, not internal plumbing. `for_exit` is the one
+        // place that maps a reason to its level (crash → Error, kill → Warn, clean → Info).
+        if let Some(label) = &entry.label {
+            let want = crate::LogLevel::for_exit(reason);
+            if self.log_level.load(Ordering::Relaxed) >= want as u8 {
+                crate::lifecycle::log_exit(pid, label, reason);
+            }
+        }
 
         for name in &entry.names {
             self.registry.remove(name);
@@ -516,6 +531,31 @@ impl Runtime {
             }
             None => false,
         }
+    }
+
+    /// Set the **platform lifecycle log** level (spawn / exit / restart, coloured to
+    /// stderr — see [`lifecycle`](crate::lifecycle)). `Off` by default; a node sets it
+    /// explicitly (`rusm.toml [log] level = "debug"`). Set once at startup.
+    pub fn set_log_level(&self, level: crate::LogLevel) {
+        self.inner.log_level.store(level as u8, Ordering::Relaxed);
+    }
+
+    /// Whether the configured level would log an event at `event` — a spawn site checks
+    /// this before building a label/detail it would otherwise not need (off path free).
+    pub fn wants_log(&self, event: crate::LogLevel) -> bool {
+        self.inner.log_level.load(Ordering::Relaxed) >= event as u8
+    }
+
+    /// Emit a platform `spawn` log line (`detail` = the process's effective
+    /// capabilities). The caller gates this with [`wants_log`](Self::wants_log)`(Debug)`
+    /// and separately [`set_label`](Self::set_label)s the process (so the later `exit`
+    /// line can name it even at levels below `Debug`).
+    ///
+    /// A **restart** needs no special event: it reads as the crashed instance's
+    /// abnormal `exit` line followed by a fresh `spawn` line for the same component —
+    /// with the crash reason and the new pid, which a bare "restart" couldn't carry.
+    pub fn log_spawn(&self, pid: Pid, label: &str, detail: &str) {
+        crate::lifecycle::log_spawn(pid, label, detail);
     }
 
     /// Stops `pid` at its next suspension point. Returns `false` if there is no
@@ -771,6 +811,22 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wants_log_respects_the_configured_threshold() {
+        let rt = Runtime::new();
+        // Off by default: nothing is logged.
+        assert!(!rt.wants_log(crate::LogLevel::Error));
+        // At Warn: crashes (Error) and kills (Warn) log; clean exits / spawns don't.
+        rt.set_log_level(crate::LogLevel::Warn);
+        assert!(rt.wants_log(crate::LogLevel::Error));
+        assert!(rt.wants_log(crate::LogLevel::Warn));
+        assert!(!rt.wants_log(crate::LogLevel::Info));
+        assert!(!rt.wants_log(crate::LogLevel::Debug));
+        // At Debug: everything logs.
+        rt.set_log_level(crate::LogLevel::Debug);
+        assert!(rt.wants_log(crate::LogLevel::Debug));
+    }
 
     #[tokio::test]
     async fn a_process_receives_a_message_sent_to_its_pid() {

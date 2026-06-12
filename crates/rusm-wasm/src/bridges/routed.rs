@@ -170,7 +170,9 @@ impl RoutedHttpServer {
         };
 
         // Process-per-request: a fresh instance handles this one request, then exits.
-        let child = self.spawner.spawn_component(&entry.prepared, caps);
+        let child = self
+            .spawner
+            .spawn_component(&entry.prepared, caps, Some(&component));
         let child_pid = child.pid();
         // A TS handler carries its bundle as message 1 (the js-runner's protocol).
         if let Some(bundle) = &entry.bundle {

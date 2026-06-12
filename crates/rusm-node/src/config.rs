@@ -37,6 +37,27 @@ pub struct NodeConfig {
     /// state somewhere to survive a restart.
     #[serde(default)]
     pub store: Option<String>,
+    /// Platform logging, the `[log]` table — explicit, off by default.
+    #[serde(default)]
+    pub log: LogConfig,
+}
+
+/// The `[log]` table: opt-in **platform lifecycle logging**. Off by default; set
+/// `level` to see the runtime spawn/exit/crash processes (coloured, `component#pid`).
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LogConfig {
+    /// `off` (default) / `error` (crashes) / `warn` (+ kills) / `info` (+ clean exits)
+    /// / `debug` (+ every spawn). Anything unrecognised is `off`.
+    #[serde(default)]
+    pub level: String,
+}
+
+impl NodeConfig {
+    /// The configured platform-log level (`[log] level`), parsed — `Off` when unset.
+    pub fn log_level(&self) -> rusm_otp::LogLevel {
+        rusm_otp::LogLevel::parse(&self.log.level)
+    }
 }
 
 /// A custom capability profile (`[capabilities.<name>]`) — mirrors Cargo's
@@ -226,6 +247,7 @@ impl Default for NodeConfig {
             serve: Vec::new(),
             capabilities: HashMap::new(),
             store: None,
+            log: LogConfig::default(),
         }
     }
 }
@@ -546,6 +568,17 @@ mod tests {
     #[test]
     fn no_servers_by_default() {
         assert!(NodeConfig::from_toml("").unwrap().serve.is_empty());
+    }
+
+    #[test]
+    fn log_level_defaults_off_and_parses_the_log_table() {
+        // Default: no `[log]` → Off (explicit opt-in; nothing logs by surprise).
+        assert_eq!(NodeConfig::default().log_level(), rusm_otp::LogLevel::Off);
+        // Declared level parses; an unknown value quiets to Off rather than erroring.
+        let cfg = NodeConfig::from_toml("[log]\nlevel = \"debug\"\n").unwrap();
+        assert_eq!(cfg.log_level(), rusm_otp::LogLevel::Debug);
+        let bad = NodeConfig::from_toml("[log]\nlevel = \"loud\"\n").unwrap();
+        assert_eq!(bad.log_level(), rusm_otp::LogLevel::Off);
     }
 
     #[test]

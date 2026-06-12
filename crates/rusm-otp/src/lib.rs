@@ -7,6 +7,7 @@
 //! Wasm is a separate, optional backend (`rusm-wasm`). See `docs/01-architecture.md`.
 
 mod exit;
+mod lifecycle;
 mod message;
 mod net;
 mod pid;
@@ -15,6 +16,7 @@ mod stream;
 mod supervisor;
 
 pub use exit::{ExitReason, MonitorRef};
+pub use lifecycle::LogLevel;
 pub use message::{Message, Received};
 pub use pid::Pid;
 pub use runtime::{Context, ProcessHandle, ProcessInfo, Runtime, TimerRef};

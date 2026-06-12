@@ -112,7 +112,9 @@ impl WasmRuntime {
         prepared: &PreparedComponent,
         caps: Capabilities,
     ) -> ProcessHandle {
-        self.spawner.spawn_component(prepared, caps)
+        // Unnamed: the platform log names only components spawned *by name* (see the
+        // named sites / `note_spawn`); this raw entry stays out of the lifecycle log.
+        self.spawner.spawn_component(prepared, caps, None)
     }
 
     /// Spawns a **stock command component** (one exporting `wasi:cli/run` — any
@@ -149,10 +151,32 @@ impl Spawner {
         self: &Arc<Self>,
         prepared: &PreparedComponent,
         caps: Capabilities,
+        label: Option<&str>,
     ) -> ProcessHandle {
+        // Capture what the platform log needs *before* `caps` moves into the body, and
+        // only when a named spawn is actually being logged — so the off path (and every
+        // unnamed/internal spawn) stays allocation-free on the hot path.
+        let log_caps = label
+            .filter(|_| self.rt.wants_log(rusm_otp::LogLevel::Error))
+            .map(|_| caps.clone());
         let spawner = Arc::clone(self);
         let prepared = prepared.clone();
-        self.rt.spawn(move |ctx| run(spawner, prepared, caps, ctx))
+        let handle = self.rt.spawn(move |ctx| run(spawner, prepared, caps, ctx));
+        if let (Some(label), Some(caps)) = (label, &log_caps) {
+            self.record_spawn(handle.pid(), label, caps);
+        }
+        handle
+    }
+
+    /// The single platform-log policy for a **named** spawn: label the process (so its
+    /// later `exit` line can name it, even below `Debug`) and, at `Debug`, emit the
+    /// `spawn` line carrying its effective capabilities. Every named spawn site funnels
+    /// here; call only when [`Runtime::wants_log`]`(Error)` (the caller has gated it).
+    pub(crate) fn record_spawn(&self, pid: rusm_otp::Pid, label: &str, caps: &Capabilities) {
+        self.rt.set_label(pid, label);
+        if self.rt.wants_log(rusm_otp::LogLevel::Debug) {
+            self.rt.log_spawn(pid, label, &caps.summary());
+        }
     }
 }
 
