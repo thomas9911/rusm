@@ -86,6 +86,7 @@ const sections = [
           { text: 'Fibers & blocking→async', link: '/concepts/fibers-and-blocking-to-async' },
           { text: 'Epoch preemption', link: '/concepts/epoch-preemption' },
           { text: 'Process management', link: '/concepts/process-management' },
+          { text: 'Component lifecycle', link: '/concepts/component-lifecycle' },
         ],
       },
       {
