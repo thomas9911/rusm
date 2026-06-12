@@ -211,7 +211,14 @@ impl WasmRuntime {
     fn base_config() -> Config {
         let mut config = Config::new();
         config.epoch_interruption(true);
-        config.wasm_component_model_async(true);
+        // Fibers (always on in wasmtime 45) make a host async fn — `actor::receive`, a
+        // `wasi:io` poll — **suspend** the guest's fiber and free the worker ("write
+        // blocking code, get async"). The component-model-**async** ABI is deliberately
+        // left OFF: with it on, a sync (p2) guest's `wasi:io` poll is routed through the
+        // `concurrent` task machinery, which *busy-polls* instead of parking — it pegged
+        // a core per in-flight streaming `fetch`. Off, the poll suspends the fiber. The
+        // p3 interfaces in use (`wasi:random@0.3.0`) are synchronous and don't need it.
+        config.wasm_component_model_async(false);
         config.memory_init_cow(true);
         config
     }
