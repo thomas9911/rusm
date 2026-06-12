@@ -7,20 +7,35 @@ vocabulary.
 
 ## Shape (what you write)
 
-```rust
+::: code-group
+
+```rust [Rust]
 #[rusm_rs::main]
 fn run() {
-    let job = rusm_rs::receive_bytes();      // the work item (blocks; the fiber parks)
-    let result = do_work(&job);              // your logic
-    if let Some(caller) = /* … */ { rusm_rs::send_bytes(caller, &result); }
+    let job: Job = rusm_rs::receive().unwrap(); // the work item (blocks; the fiber parks)
+    let result = do_work(&job);                 // your logic
+    rusm_rs::send(job.reply_to, &result).ok();  // reply to the caller
     // returning ends the process — it exits Normal
 }
 ```
 
-A worker is spawned on demand by another process (`rusm_rs::spawn("worker")`), does its
-job — optionally streaming results back over a [byte stream](./byte-streams.md) or
-messages — and returns. The dispatch-from-`commander` pattern in the
-[app model](./app-model.md) is exactly this.
+```ts [TypeScript]
+import { Process } from "rusm-ts";
+
+// The process body: receive one job, do it, reply, then return (the process exits).
+export default async function () {
+  const job = JSON.parse(await Process.receiveText()); // blocks; the fiber parks
+  const result = doWork(job);
+  Process.send(job.replyTo, JSON.stringify(result));   // reply to the caller
+}
+```
+
+:::
+
+A worker is spawned on demand by another process (`rusm_rs::spawn("worker")` in Rust,
+`spawn("worker")` in TypeScript), does its job — optionally streaming results back over
+a [byte stream](./byte-streams.md) or messages — and returns. The dispatch-from-
+`commander` pattern in the [app model](./app-model.md) is exactly this.
 
 ## Platform owns / you write
 

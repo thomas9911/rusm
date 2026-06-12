@@ -8,7 +8,9 @@ vocabulary.
 
 ## Shape (what you write)
 
-```rust
+::: code-group
+
+```rust [Rust]
 use rusm_rs::http::{Params, Request, Sse};
 
 #[rusm_rs::handlers]
@@ -25,9 +27,27 @@ pub mod api {
 }
 ```
 
-`sse.data(bytes)` writes one `data:` event; `sse.run(heartbeat_ms, map)` live-tails a
-source (e.g. a pub/sub topic) with idle heartbeats. The loop ends when a write returns
-`false`.
+```ts [TypeScript]
+// A wasi:http component returning a streaming text/event-stream body. The runtime
+// pulls events and applies back-pressure; closing the controller ends the stream.
+export default function handle(_request: Request): Response {
+  const enc = new TextEncoder();
+  let n = 0;
+  const body = new ReadableStream({
+    pull(controller) {
+      controller.enqueue(enc.encode(`data: tick ${n++}\n\n`));
+    },
+  });
+  return new Response(body, { headers: { "content-type": "text/event-stream" } });
+}
+```
+
+:::
+
+In Rust, `sse.data(bytes)` writes one `data:` event and `sse.run(heartbeat_ms, map)`
+live-tails a source (e.g. a pub/sub topic) with idle heartbeats — the loop ends when a
+write returns `false`. In TypeScript the runtime drives the `ReadableStream`'s `pull`,
+parking it on back-pressure and ending it on disconnect — the same lifecycle.
 
 ## Platform owns / you write
 
@@ -58,7 +78,5 @@ source (e.g. a pub/sub topic) with idle heartbeats. The loop ends when a write r
   (a broker) and `sse.run(...)` to forward each published message. The service
   `monitor`s subscribers, so this process's exit (on disconnect) prunes the
   subscription automatically — crash-safe cleanup with no unsubscribe call.
-- **TypeScript** streams via a `ReadableStream` body from `export default { fetch }`;
-  same per-request streaming lifecycle.
 
 Prev: [HTTP component](./lifecycle-http.md) · Next: [WebSocket component](./lifecycle-websocket.md)

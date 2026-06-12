@@ -8,7 +8,9 @@ vocabulary this chapter builds on.
 
 ## Shape (what you write)
 
-```rust
+::: code-group
+
+```rust [Rust]
 use rusm_rs::http::{Params, Request, Response};
 
 #[rusm_rs::handlers]
@@ -21,8 +23,23 @@ pub mod api {
 }
 ```
 
-That's the **application domain** in full — a function from `Request` + path `Params`
-to a `Response`. No `main`, no router, no request/response wire.
+```ts [TypeScript]
+// A wasi:http component — instantiated per request. It dispatches itself, so it
+// needs no `[serve.routes]` table; read path params off the URL.
+export default function handle(request: Request): Response {
+  const id = new URL(request.url).pathname.split("/").pop();
+  return new Response(`user ${id ?? "?"}`, {
+    headers: { "content-type": "text/plain" },
+  });
+}
+```
+
+:::
+
+That's the **application domain** in full — a function from a request to a response. No
+`main`, no router, no request/response wire. (The Rust `#[handlers]` form is routed by
+`[serve.routes]` to a named action; the TypeScript `export default` form is a
+`wasi:http` component that dispatches itself.)
 
 ## Platform owns / you write
 
@@ -54,8 +71,7 @@ to a `Response`. No `main`, no router, no request/response wire.
 - **Where state goes.** A handler is stateless and disposable. Cross-request state
   lives in a [service component](./lifecycle-service.md) (reached via `whereis` +
   `call`) or in durable `kv` — never in the handler.
-- **TypeScript** uses the web-standard `export default function handle(req): Response`
-  on the `wasi:http` path; same per-request lifecycle, no `[serve.routes]` needed (the
-  component dispatches itself).
+- **Same lifecycle, both languages.** The Rust and TypeScript forms above share the
+  exact per-request lifecycle in the table — a fresh instance, one request, then exit.
 
 Next: [SSE component](./lifecycle-sse.md) · [WebSocket component](./lifecycle-websocket.md)

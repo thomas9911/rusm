@@ -7,7 +7,9 @@ model and failure vocabulary.
 
 ## Shape (what you write)
 
-```rust
+::: code-group
+
+```rust [Rust]
 use rusm_rs::ws::{self, Connection, Handler};
 
 struct Echo;
@@ -26,9 +28,24 @@ fn run() {
 }
 ```
 
-There is **one handler instance per connection**, so `&mut self` is *this connection's*
-state — no cross-connection sharing. (TypeScript: `export default websocket({ open,
-message })` from the `rusm-ts` package, one worker per connection.)
+```ts [TypeScript]
+import { websocket } from "rusm-ts";
+
+// One worker per connection; reply with `socket.send(…)`.
+export default websocket({
+  open(socket) {
+    socket.send("welcome\n");
+  },
+  message(socket, data) {
+    socket.send(data); // echo this connection's frame
+  },
+});
+```
+
+:::
+
+There is **one handler instance per connection**, so its state (Rust `&mut self`, or a
+TypeScript closure) is *this connection's* state — no cross-connection sharing.
 
 ## Platform owns / you write
 

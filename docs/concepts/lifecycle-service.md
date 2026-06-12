@@ -8,18 +8,33 @@ vocabulary.
 
 ## Shape (what you write)
 
-```rust
+::: code-group
+
+```rust [Rust]
 #[rusm_rs::service]
 pub mod counter {
-    // state lives in the module; the macro writes the receive→dispatch→reply loop
-    pub fn bump(by: u64) -> u64 { /* mutate + return */ }
-    pub fn total() -> u64       { /* read */ }
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNT: AtomicU64 = AtomicU64::new(0); // state the loop owns
+    // the macro writes the receive → dispatch → reply loop
+    pub fn bump(by: u64) -> u64 { COUNT.fetch_add(by, Ordering::Relaxed) + by }
+    pub fn total() -> u64 { COUNT.load(Ordering::Relaxed) }
 }
 ```
 
+```ts [TypeScript]
+// counter.ts — each exported function is a call; module scope holds the state.
+let count = 0;
+export function bump(by: number): number { count += by; return count; }
+export function total(): number { return count; }
+```
+
+:::
+
 Declared as a `[[components]]` entry (with `restart = true` to be supervised), spawned
 when the node starts, and addressed by name. A sibling calls it through the generated
-typed client; the round-trip reads like a local call.
+typed client — `spawn<Counter>("counter")` then `await counter.bump(1)` — and the
+cross-process round-trip reads like a local call (Rust and TypeScript interoperate over
+one wire).
 
 ## Platform owns / you write
 
