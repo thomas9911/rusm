@@ -7,7 +7,7 @@ build, load, supervise, and run them — so you write *source*, not glue.
 
 ```
 my-app/
-├── rusm.toml          # node config + [[components]] (name, capability, restart)
+├── rusm.toml          # node config + [components.<name>] (capability, resident)
 │                       #   and/or [[serve]] listeners (protocol, listen; routes name handlers)
 ├── components/        # SOURCE — a cargo workspace, one crate per component
 │   └── <name>/        # Rust (and TS via Bun + rquickjs, embedded — no jco)
@@ -27,15 +27,16 @@ load directory.
 - **`rusm build`** — discovers `components/<name>/`, builds each with one
   toolchain (`cargo build --target wasm32-wasip2`, which componentizes — no jco,
   no cargo-component), and emits `./wasm/<name>.wasm`.
-- **`rusm run`** — loads each manifest component, spawns it under its capability
-  profile, and supervises it per its restart policy. Code can also spawn
+- **`rusm run`** — registers each manifest component under its capability profile so a
+  route or a sibling can `spawn` it by name; the **`resident = true`** ones are also
+  boot-spawned and supervised (auto-restarted on crash). Code can also spawn
   dynamically — both work together.
 - **`rusm dev`** — build, then run, then watch `./components` and rebuild + reload
   on edit.
 - **`rusm serve`** — hosts the `rusm.toml` **`[[serve]]`** listeners (`protocol` =
   `http` | `sse` | `ws`, `listen`, and — for HTTP/SSE — a `[serve.routes]` table) on
   real TCP ports. Each listener is pure: a routed HTTP/SSE listener names its handlers
-  in `[serve.routes]` (each a `[[components]]` entry with its own capability); a WS or
+  in `[serve.routes]` (each a `[components.<name>]` entry with its own capability); a WS or
   routes-less HTTP listener names its single handler with an optional `name`. Handlers
   load from `wasm/<name>.{wasm,js}` (HTTP and SSE via the `http_server` path, WS via
   `ws_server`). The node only serves; it never generates load.

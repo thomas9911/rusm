@@ -21,7 +21,7 @@ In an app you don't embed the bundle; you write source and let RUSM build it:
 
 ```
 my-app/
-├── rusm.toml                 # [[components]] name = "worker", capability = "sandboxed"
+├── rusm.toml                 # [components.worker] capability = "sandboxed"
 └── components/worker/index.ts
 ```
 

@@ -172,7 +172,7 @@ fn files(app: &NewApp) -> Vec<(PathBuf, String)> {
 }
 
 /// A Rust HTTP/SSE app uses the `#[rusm_rs::handlers]` model — named actions reached
-/// through a `[serve.routes]` table to a `[[components]]` handler. TS HTTP/SSE (a
+/// through a `[serve.routes]` table to a `[components.<name>]` handler. TS HTTP/SSE (a
 /// `wasi:http` `export default`) and WebSocket (per-connection) are a single named
 /// handler component with no routes.
 fn has_routes(app: &NewApp) -> bool {
@@ -186,7 +186,7 @@ const TOML_HEADER: &str =
 fn rusm_toml(app: &NewApp) -> String {
     let proto = app.protocol.as_str();
     if has_routes(app) {
-        // Routed: a pure listener whose `[serve.routes]` dispatch to a `[[components]]`
+        // Routed: a pure listener whose `[serve.routes]` dispatch to a `[components.api]`
         // handler (which carries its own capability profile).
         format!(
             "{TOML_HEADER}\
@@ -195,8 +195,7 @@ fn rusm_toml(app: &NewApp) -> String {
              listen = \"127.0.0.1:8080\"\n\n\
              [serve.routes]\n\
              \"GET /\" = \"api#home\"        # METHOD /path = component#action\n\n\
-             [[components]]\n\
-             name = \"api\"               # the handler, built from components/api\n\
+             [components.api]              # the handler, built from components/api\n\
              capability = \"sandboxed\"    # default-deny; see [capabilities.<name>] for more\n"
         )
     } else {
@@ -360,7 +359,7 @@ pub mod api {
             "\
 //! A RUSM WebSocket component: the host runs one instance **per connection**, so the
 //! handler is naturally isolated. Reply with `conn.send(...)`; keep shared state in a
-//! `[[components]]` service or `kv` (not in this per-connection process).
+//! `[components.<name>]` service or `kv` (not in this per-connection process).
 use rusm_rs::ws::{self, Connection, Handler};
 
 #[derive(Default)]
@@ -490,7 +489,7 @@ mod tests {
 
             // The generated rusm.toml parses through the real config and declares the
             // right protocol. A routed (Rust HTTP/SSE) app is a pure listener + a
-            // `[[components]]` handler; a non-routed app names its handler on the listener.
+            // `[components.<name>]` handler; a non-routed app names its handler on the listener.
             let toml = std::fs::read_to_string(root.join("rusm.toml")).unwrap();
             let cfg = NodeConfig::from_toml(&toml).expect("scaffolded rusm.toml must parse");
             assert_eq!(cfg.serve.len(), 1);
@@ -503,9 +502,9 @@ mod tests {
                 "{lang:?}/{protocol:?}: routes present iff Rust HTTP/SSE"
             );
             if routed {
-                // Routes name the `[[components]]` handler; the listener has no `name`.
+                // Routes name the `[components.api]` handler; the listener has no `name`.
                 assert!(cfg.serve[0].name.is_none(), "{lang:?}/{protocol:?}");
-                assert_eq!(cfg.components.first().map(|c| c.name.as_str()), Some("api"));
+                assert!(cfg.components.contains_key("api"), "{lang:?}/{protocol:?}");
             } else {
                 // A single named handler component on the listener.
                 assert_eq!(

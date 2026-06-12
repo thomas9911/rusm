@@ -30,8 +30,8 @@ export function total(): number { return count; }
 
 :::
 
-Declared as a `[[components]]` entry (with `restart = true` to be supervised), spawned
-when the node starts, and addressed by name. A sibling calls it through the generated
+Declared as a `[components.<name>]` entry (with `resident = true` to be boot-spawned and
+supervised), spawned when the node starts, and addressed by name. A sibling calls it through the generated
 typed client — `spawn<Counter>("counter")` then `await counter.bump(1)` — and the
 cross-process round-trip reads like a local call (Rust and TypeScript interoperate over
 one wire).

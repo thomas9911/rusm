@@ -56,7 +56,8 @@ serving instance.
 State that must outlive a single request goes in one of two places, **never** in the
 serving instance:
 
-- **A `[[components]]` service** — a long-lived, supervised, stateful process you reach
+- **A `[components.<name>]` service** (`resident = true`) — a long-lived, supervised,
+  stateful process you reach
   over the [actor API](./concepts/components-and-the-actor-world) (`whereis` / `call` /
   `send`). This is your counter, cache, session map, rate limiter, chat-room registry,
   pub/sub hub. A handler `call`s it and shapes the reply into a response.
@@ -64,15 +65,15 @@ serving instance:
   survive a restart (see the [configuration reference](./reference-configuration)).
 
 This is where the old "resident vs per-call" distinction now lives — and it lives in
-`[[components]]`, not in serving: a **service** holds state and is reached by name; a
-**worker** is spawned per call. Serving components themselves are always
+`[components.<name>]`, not in serving: a `resident = true` **service** holds state and is
+reached by name; a **worker** is spawned per call. Serving components themselves are always
 stateless and per-request. The serving instance is the cheap, disposable front; the
 service or `kv` is the durable back. Clean separation, no compromise on isolation.
 
 > **What changed (migration).** Earlier RUSM had a `mode = "resident"` serving option
 > with `instances` / `shard_by` / `max_inflight` and a `rusm_rs::http::{Handler,
 > serve}` trait API. That is **gone**. A stateful handler becomes: a stateless serving
-> component (the route handler) plus a `[[components]]` service (the state) it `call`s,
+> component (the route handler) plus a `[components.<name>]` service (the state) it `call`s,
 > or `kv` for durable state. The `[[serve]]` fields `mode`, `instances`, `shard_by`,
 > and `max_inflight` are removed (unknown keys are now a hard config error).
 
@@ -187,7 +188,7 @@ A 3-arg action receives an `Sse` handle to the live stream:
 - `sse.write(frame)` — write a raw, pre-framed SSE chunk (e.g. with `event:`/`id:`
   fields).
 - `sse.run(heartbeat_ms, map)` — **live-tail** an event source: block receiving messages
-  (e.g. from a `[[components]]` pub/sub hub you subscribed to), passing each to `map`
+  (e.g. from a `[components.<name>]` pub/sub hub you subscribed to), passing each to `map`
   (return a frame to emit, `None` to skip); on an idle `heartbeat_ms` it writes a
   heartbeat comment. It returns on disconnect — let the action then end so the process
   exits and a monitoring broker prunes this subscriber automatically.
@@ -206,8 +207,8 @@ no busy-looping, no unbounded buffering. (See [byte streams](./concepts/byte-str
 ## `[[serve]]` — declaring a listener
 
 A `[[serve]]` entry is a **pure listener**. It carries no handler and no capability of
-its own — the handler components live in `[[components]]` (with their own capability),
-and `[serve.routes]` names them. Its fields:
+its own — the handler components live in `[components.<name>]` (with their own
+capability), and `[serve.routes]` names them. Its fields:
 
 | Key | Meaning |
 |---|---|
@@ -216,13 +217,13 @@ and `[serve.routes]` names them. Its fields:
 | `name` *(optional)* | The single handler component for a listener that has **no routes**: a **WS** listener, or a routes-less `wasi:http` **HTTP** listener (e.g. a TS `export default` fetch). A routed HTTP/SSE listener has **no `name`** — its `[serve.routes]` name the handlers instead. |
 
 For **HTTP/SSE** with a `[serve.routes]` subtable, each request is resolved against that
-listener's routes → the matched handler component (a `[[components]]` entry) is spawned
+listener's routes → the matched handler component (a `[components.<name>]` entry) is spawned
 fresh under **its own** capability → the matched action is dispatched → its reply becomes
 the HTTP response. A **WS** `[[serve]]` (or a routes-less HTTP one) runs the `name`d
 component once per connection / request; that component's capability comes from a matching
-`[[components]]` entry, else default-deny `sandboxed`.
+`[components.<name>]` entry, else default-deny `sandboxed`.
 
-So the model is a clean split: **`[[serve]]` = the listener; `[[components]]` = the
+So the model is a clean split: **`[[serve]]` = the listener; `[components.<name>]` = the
 handler/service components (each with its capability); `[serve.routes]` ties them
 together.**
 
@@ -242,16 +243,15 @@ listen    = "127.0.0.1:8080"
 "GET  /events/:room"   = "api#events"   # 3-arg action → SSE
 "GET  /static/*"       = "api#static"   # wildcard tail
 
-# The handler the routes name — declared in [[components]], carries its own capability:
-[[components]]
-name = "api"                      # wasm/api.wasm
+# The handler the routes name — declared in [components.<name>], carries its own
+# capability; spawned per request, so no `resident`:
+[components.api]                  # wasm/api.wasm
 capability = "sandboxed"          # default-deny profile
 
-# Shared state is NOT in the handler — it's a long-lived service:
-[[components]]
-name = "sessions"                 # a stateful GenServer-style process
+# Shared state is NOT in the handler — it's a long-lived, resident service:
+[components.sessions]             # a stateful GenServer-style process
 capability = "sandboxed"
-restart = true
+resident = true                   # boot-spawned + supervised
 ```
 
 `components/api/src/lib.rs`:

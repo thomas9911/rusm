@@ -34,11 +34,11 @@ ticks_per_second = 20
 # env = ["OPENAI_API_KEY"]      # grant these keys (values from process env / .env)
 # preopen = [{ host = "./data", guest = "/data", read-only = false }]
 
-# Components to run as an app. Each loads from ./wasm/<name>.{wasm,js} (Rust
-# component or TS bundle) and runs under its capability profile, optionally
-# restarted on exit (supervision).
+# Components, keyed by name. Each loads from ./wasm/<name>.{wasm,js} (Rust
+# component or TS bundle) and is registered under its capability profile so a
+# route or sibling can spawn it by name. `resident = true` additionally
+# boot-spawns it at startup and supervises it (auto-restarted on crash).
 #
-# [[components]]
-# name = "pages-agent"
+# [components.pages-agent]
 # capability = "agent"          # a custom profile above, or a built-in
-# restart = true
+# resident = true               # long-lived service: boot-spawned + supervised

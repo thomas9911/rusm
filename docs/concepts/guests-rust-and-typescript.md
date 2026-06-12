@@ -65,8 +65,8 @@ fn main() { ws::serve(Echo::default()); }
 ```
 
 State that must outlive a request never lives in the serving instance — it goes in a
-long-lived `[[components]]` service reached over the actor API (`whereis` / `call` /
-`send`) or in durable `kv`.
+long-lived `[components.<name>]` service (`resident = true`) reached over the actor API
+(`whereis` / `call` / `send`) or in durable `kv`.
 
 ## TypeScript guests (`rusm-ts`)
 

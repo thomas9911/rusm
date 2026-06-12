@@ -43,7 +43,7 @@ handler.
 
 The scaffolded `rusm.toml` is the app manifest — see the
 [configuration reference](./reference-configuration.md) for every table and field
-(`[[serve]]`, `[[components]]`, `[capabilities.<name>]`, env), and the
+(`[[serve]]`, `[serve.routes]`, `[capabilities.<name>]`, `[components.<name>]`, env), and the
 [`rusm` CLI reference](./reference-cli.md) for the full command set.
 
 ### See it live — the dashboard
@@ -172,21 +172,27 @@ and supervise them from `./wasm/`:
 listen = "127.0.0.1:4000"
 profile = "balanced"
 
-[[components]]
-name = "worker"          # loaded from ./wasm/worker.wasm
+[components.worker]      # loaded from ./wasm/worker.wasm
 capability = "sandboxed" # a built-in or a custom profile (below)
-restart = true           # supervise: restart if it exits
+resident = true          # long-lived service: boot-spawned + supervised
 ```
 
 ```sh
-rusm run          # load every [[components]] from ./wasm/, spawn under its profile
+rusm run          # load every [components.<name>] from ./wasm/, register them, boot
+                  # + supervise the resident ones
 ```
+
+A component keyed `[components.<name>]` is always **registered** so a route or a sibling
+can `spawn` it by name. `resident = true` additionally makes the node **boot-spawn** it
+at startup and **supervise** it (auto-restart on crash, bounded by restart-intensity).
+Without `resident`, it is spawned only on demand (a per-request handler, an on-demand
+worker) — no idle parked instance.
 
 **Serving on a real port.** To run a component as an HTTP / WS / SSE server, declare
 a `[[serve]]` listener and run `rusm serve` — it binds each on its TCP `listen` address.
 A `[[serve]]` entry is a **pure listener**: a routed HTTP/SSE listener names its handlers
-in `[serve.routes]` (each a `[[components]]` entry that carries its own capability); a WS
-or routes-less HTTP listener names its single handler component with `name`. The fastest
+in `[serve.routes]` (each a `[components.<name>]` entry that carries its own capability);
+a WS or routes-less HTTP listener names its single handler component with `name`. The fastest
 way in is **`rusm new <name>`**, which scaffolds a ready-to-serve app (a zero-dependency
 TS HTTP component, a `rusm.toml` with a `[[serve]]` entry, `.gitignore`, README):
 
@@ -220,8 +226,7 @@ max-memory-mb = 256
 env = ["OPENAI_API_KEY"]      # grant these keys (values from process env / .env)
 preopen = [{ host = "./data", guest = "/data", read-only = false }]
 
-[[components]]
-name = "pages-agent"
+[components.pages-agent]
 capability = "agent"          # resolves to the custom profile above
 ```
 
@@ -328,12 +333,10 @@ Declare both in `rusm.toml`, with capability profiles (the commander needs the
 [capabilities.orchestrator]
 inherits = "trusted"
 
-[[components]]
-name = "calc"
+[components.calc]
 capability = "sandboxed"
 
-[[components]]
-name = "commander"
+[components.commander]
 capability = "orchestrator"
 ```
 
@@ -398,8 +401,8 @@ Any component can be a high-throughput **HTTP / WS / SSE** server — declare a
 `[[serve]]` entry and run `rusm serve`. Serving is always **ephemeral**: HTTP/SSE run
 a fresh sandboxed instance per request, WS one sandboxed process per connection. A
 serving instance never holds state across requests — for that, run a long-lived
-`[[components]]` service and reach it over the actor API (`whereis` / `call`), or
-persist to the node `store` (`kv`). The fastest start is `rusm new <name>`; here is
+`[components.<name>]` service (`resident = true`) and reach it over the actor API
+(`whereis` / `call`), or persist to the node `store` (`kv`). The fastest start is `rusm new <name>`; here is
 the whole shape so you can copy and adapt it.
 
 The layout (a Rust component shown; a TS one swaps `Cargo.toml` + `src/lib.rs` for a
@@ -419,7 +422,7 @@ my-api/
 `rusm.toml` — one `[[serve]]` listener hosts the component on a real port; its own
 `[serve.routes]` subtable maps requests to handler actions (Rust only — TS handlers
 dispatch themselves). The `[[serve]]` entry is a pure listener; the handler it routes to
-is a `[[components]]` entry that carries its own capability:
+is a `[components.<name>]` entry that carries its own capability:
 
 ```toml
 [[serve]]                    # a pure listener — no name, no capability
@@ -430,9 +433,8 @@ listen = "127.0.0.1:8080"
 "GET /" = "api#home"               # → the `home` action in the `api` component
 "GET /users/:id" = "api#show"      # :id is a path param, read from `Params`
 
-[[components]]
-name = "api"                 # the handler the routes name → ./wasm/api.{wasm,qjsbc,js}
-capability = "sandboxed"     # carries its own capability
+[components.api]             # the handler the routes name → ./wasm/api.{wasm,qjsbc,js}
+capability = "sandboxed"     # carries its own capability (spawned per request)
 ```
 
 The handler — same job, your language.

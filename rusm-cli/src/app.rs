@@ -1,15 +1,17 @@
 //! The **app model**: build a project's components and run them from `./wasm/`.
 //!
-//! A RUSM app is a directory with `rusm.toml` (`[[components]]`), a `components/`
+//! A RUSM app is a directory with `rusm.toml` (`[components.<name>]`), a `components/`
 //! tree of source crates, and a `wasm/` dir of built artifacts. `rusm build`
 //! compiles each `components/<name>/` to either `wasm/<name>.wasm` (a Rust
 //! component) or `wasm/<name>.js` (a TypeScript bundle, Bun-built); the loader
-//! resolves whichever exists and spawns each declared component as a supervised
-//! process under its capability profile. A `.js` artifact runs on the shared
-//! rquickjs js-runner via [`WasmRuntime::spawn_js`]; a `.wasm` artifact is a
-//! component instance. Env vars are the Rust way: process env first, then `.env`.
+//! resolves whichever exists and **registers** each declared component for
+//! spawn-by-name (a route or a sibling spawns it on demand). A component marked
+//! `resident = true` is additionally boot-spawned and supervised as a long-lived
+//! service. A `.js` artifact runs on the shared rquickjs js-runner; a `.wasm`
+//! artifact is a component instance (or a stock `wasi:cli` command, run once).
+//! Env vars are the Rust way: process env first, then `.env`.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
@@ -18,7 +20,7 @@ use anyhow::{anyhow, Context, Result};
 use rusm_node::{
     BundleSource, CapabilitySpec, ComponentSpec, Resolution, RouteTable, ServeProtocol, ServeSpec,
 };
-use rusm_otp::ProcessHandle;
+use rusm_otp::{ProcessHandle, Runtime};
 use rusm_wasm::{
     Capabilities, CapabilityProfile, HttpServer, Resolver, Routed, WasmRuntime, WsServer,
 };
@@ -118,75 +120,146 @@ async fn fetch_url(url: &str) -> Result<Vec<u8>> {
         .to_vec())
 }
 
-/// Loads each manifest component from `<dir>/wasm/` and spawns it as a process
-/// under its capability profile. A `<name>.js` artifact (a TypeScript bundle)
-/// takes precedence and runs on the shared js-runner; otherwise `<name>.wasm` is
-/// loaded as a component instance. Returns the live `(name, handle)` pairs (hold
-/// them to keep the processes alive). Errors if no artifact exists or it won't
-/// compile — a clear signal to run `rusm build` first.
+/// The app's hosted components after [`spawn_components`]: every entry is
+/// registered for spawn-by-name, and the `resident` subset is boot-spawned under a
+/// single supervisor. Hold this for the node's lifetime (the `supervisor` keeps the
+/// resident tree alive); [`teardown`](Self::teardown) stops it for a `rusm dev` reload.
+pub struct Hosted {
+    /// Every hosted component name (all registered, spawnable by a route or sibling).
+    pub names: Vec<String>,
+    /// The `resident = true` subset: boot-spawned and supervised as long-lived services.
+    pub resident: Vec<String>,
+    /// The one-for-one supervisor over the residents (`None` if there are none).
+    supervisor: Option<ProcessHandle>,
+    /// One-shot stock `wasi:cli` commands, spawned at boot and held.
+    commands: Vec<ProcessHandle>,
+}
+
+impl Hosted {
+    /// No components were declared at all (nothing to register, boot, or serve).
+    pub fn is_empty(&self) -> bool {
+        self.names.is_empty()
+    }
+
+    /// Tears the hosted processes down for a `rusm dev` reload: stop the resident
+    /// supervisor (so it ceases restarting), kill each resident by its registered
+    /// name (a resident service registers itself — the RUSM convention), and kill any
+    /// one-shot command. Registered-but-not-resident components hold no instance, so
+    /// re-registering on reload simply overwrites their factory.
+    pub fn teardown(&self, rt: &Runtime) {
+        if let Some(sup) = &self.supervisor {
+            sup.kill();
+        }
+        for name in &self.resident {
+            if let Some(pid) = rt.whereis(name) {
+                rt.kill(pid);
+            }
+        }
+        for cmd in &self.commands {
+            cmd.kill();
+        }
+    }
+}
+
+/// The outcome of registering one component: a registrable service (actor/JS,
+/// spawnable by name) or a stock `wasi:cli` command (run once at boot).
+enum Registration {
+    Service,
+    Command(ProcessHandle),
+}
+
+/// Resolves one component's artifact from `<wasm_dir>` and registers it for
+/// spawn-by-name under `caps`. A `source` (url/kv) or a `<name>.{qjsbc,js}` bundle is
+/// a TS service; a `<name>.wasm` is an actor component (registrable) or, failing the
+/// actor world, a stock `wasi:cli` command spawned once. Errors if no artifact exists
+/// or it won't compile — a clear signal to run `rusm build` first.
+async fn register_component(
+    wasm_dir: &Path,
+    wasm: &WasmRuntime,
+    name: &str,
+    caps: &Capabilities,
+    source: Option<&str>,
+) -> Result<Registration> {
+    // A configured `source` (url/kv) supplies a JS bundle directly — the
+    // dynamic-deploy path, no local artifact needed.
+    if let Some(bundle) = remote_bundle(source, wasm).await? {
+        wasm.register_js_component_with(name.to_string(), bundle, caps.clone());
+        return Ok(Registration::Service);
+    }
+    // TypeScript component: prefer the precompiled QuickJS bytecode (`<name>.qjsbc`,
+    // no runtime parse) and fall back to the `.js` source. Both run on the shared
+    // js-runner, which detects the form by its magic prefix.
+    let bc_path = wasm_dir.join(format!("{name}.qjsbc"));
+    let js_path = wasm_dir.join(format!("{name}.js"));
+    if let Some(path) = [bc_path, js_path].into_iter().find(|p| p.is_file()) {
+        let bundle = std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
+        wasm.register_js_component_with(name.to_string(), bundle, caps.clone());
+        return Ok(Registration::Service);
+    }
+    let path = wasm_dir.join(format!("{name}.wasm"));
+    let bytes = std::fs::read(&path)
+        .with_context(|| format!("reading {} (run `rusm build`?)", path.display()))?;
+    let component = wasm
+        .compile_component(&bytes)
+        .with_context(|| format!("compiling component `{name}`"))?;
+    // An actor component exports `run` (rusm:runtime); a stock component exports
+    // `wasi:cli/run`. Prefer the actor path (registrable + spawnable by siblings, and
+    // resident-supervisable); otherwise run it unchanged as a one-shot command.
+    match wasm.prepare_component(&component, "run") {
+        Ok(prepared) => {
+            wasm.register_component_with(name.to_string(), prepared, caps.clone());
+            Ok(Registration::Service)
+        }
+        Err(_) => {
+            let handle = wasm
+                .spawn_command_with(&component, caps.clone())
+                .with_context(|| {
+                    format!("`{name}` is neither a rusm actor component nor a wasi:cli command")
+                })?;
+            Ok(Registration::Command(handle))
+        }
+    }
+}
+
+/// Loads each manifest `[components.<name>]` from `<dir>/wasm/` and **registers** it
+/// for spawn-by-name under its capability profile. A component marked
+/// `resident = true` is also boot-spawned and supervised as a long-lived service
+/// (one-for-one, restart-intensity-bounded); a non-resident one holds no instance
+/// until a route or sibling spawns it. A stock `wasi:cli` command runs once at boot.
+/// Returns the [`Hosted`] set (hold it to keep residents alive). Errors if an
+/// artifact is missing or won't compile.
 pub async fn spawn_components(
     dir: &Path,
     wasm: &WasmRuntime,
-    specs: &[ComponentSpec],
+    specs: &BTreeMap<String, ComponentSpec>,
     profiles: &HashMap<String, CapabilitySpec>,
-) -> Result<Vec<(String, ProcessHandle)>> {
+) -> Result<Hosted> {
     let wasm_dir = dir.join("wasm");
-    let mut handles = Vec::with_capacity(specs.len());
-    for spec in specs {
+    let mut names = Vec::with_capacity(specs.len());
+    let mut resident = Vec::new();
+    let mut commands = Vec::new();
+    for (name, spec) in specs {
         let caps = capabilities_for(&spec.capability, profiles);
-        // A configured `source` (url/kv) supplies a JS bundle directly — the
-        // dynamic-deploy path, no local artifact needed.
-        if let Some(bundle) = remote_bundle(spec.source.as_deref(), wasm).await? {
-            wasm.register_js_component_with(spec.name.clone(), bundle.clone(), caps.clone());
-            let handle = wasm.spawn_js_with(bundle, caps.clone());
-            wasm.note_spawn(&handle, &spec.name, &caps);
-            handles.push((spec.name.clone(), handle));
-            continue;
-        }
-        // TypeScript component: prefer the precompiled QuickJS bytecode
-        // (`<name>.qjsbc`, no runtime parse) and fall back to the `.js` source. Both
-        // run on the shared js-runner, which detects the form by its magic prefix.
-        let bc_path = wasm_dir.join(format!("{}.qjsbc", spec.name));
-        let js_path = wasm_dir.join(format!("{}.js", spec.name));
-        let bundle_path = [bc_path, js_path].into_iter().find(|p| p.is_file());
-        let handle = if let Some(path) = bundle_path {
-            let bundle =
-                std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
-            // Register by name (under its declared profile) so a running sibling may
-            // `spawn` it as a TS service.
-            wasm.register_js_component_with(spec.name.clone(), bundle.clone(), caps.clone());
-            wasm.spawn_js_with(bundle, caps.clone())
-        } else {
-            let path = wasm_dir.join(format!("{}.wasm", spec.name));
-            let bytes = std::fs::read(&path)
-                .with_context(|| format!("reading {} (run `rusm build`?)", path.display()))?;
-            let component = wasm
-                .compile_component(&bytes)
-                .with_context(|| format!("compiling component `{}`", spec.name))?;
-            // An actor component exports `run` (rusm:runtime); a stock component
-            // exports `wasi:cli/run`. Prefer the actor path (registrable + spawnable
-            // by siblings); otherwise run it unchanged as a standard command component.
-            match wasm.prepare_component(&component, "run") {
-                Ok(prepared) => {
-                    wasm.register_component_with(spec.name.clone(), prepared.clone(), caps.clone());
-                    wasm.spawn_component_with(&prepared, caps.clone())
-                }
-                Err(_) => wasm
-                    .spawn_command_with(&component, caps.clone())
-                    .with_context(|| {
-                        format!(
-                            "`{}` is neither a rusm actor component nor a wasi:cli command",
-                            spec.name
-                        )
-                    })?,
+        names.push(name.clone());
+        match register_component(&wasm_dir, wasm, name, &caps, spec.source.as_deref()).await? {
+            Registration::Service if spec.resident => resident.push(name.clone()),
+            Registration::Service => {}
+            Registration::Command(handle) => {
+                // Platform log: name this boot component (so its exit can name it) +
+                // log its spawn at Debug. No-op unless `[log]` is set.
+                wasm.note_spawn(&handle, name, &caps);
+                commands.push(handle);
             }
-        };
-        // Platform log: name this boot component (so its exit can name it) + log its
-        // spawn at Debug. No-op unless `[log]` is set.
-        wasm.note_spawn(&handle, &spec.name, &caps);
-        handles.push((spec.name.clone(), handle));
+        }
     }
-    Ok(handles)
+    // One supervisor boots + keeps every resident service alive (logs each (re)start).
+    let supervisor = wasm.supervise(&resident);
+    Ok(Hosted {
+        names,
+        resident,
+        supervisor,
+        commands,
+    })
 }
 
 /// A `[[serve]]` server now running: its name, protocol, the address it actually
@@ -209,16 +282,16 @@ pub async fn serve_apps(
     dir: &Path,
     wasm: &WasmRuntime,
     specs: &[ServeSpec],
-    components: &[ComponentSpec],
+    components: &BTreeMap<String, ComponentSpec>,
     profiles: &HashMap<String, CapabilitySpec>,
 ) -> Result<Vec<ServedEndpoint>> {
     // A listener is pure: protocol + listen (+ routes). Its handler components are
-    // `[[components]]`, each under its own declared profile — already registered for
-    // spawn-by-name by `spawn_components`. The routed gateway spawns the matched
+    // `[components.<name>]`, each under its own declared profile — already registered
+    // for spawn-by-name by `spawn_components`. The routed gateway spawns the matched
     // handler per request under that profile (the map below, shared across listeners).
     let caps_map: HashMap<String, Capabilities> = components
         .iter()
-        .map(|c| (c.name.clone(), capabilities_for(&c.capability, profiles)))
+        .map(|(name, c)| (name.clone(), capabilities_for(&c.capability, profiles)))
         .collect();
 
     let mut endpoints = Vec::with_capacity(specs.len());
@@ -235,7 +308,7 @@ pub async fn serve_apps(
         // claim the endpoint is up), then drive the accept loop on its own task.
         let task = if routed {
             // Routed per-request HTTP/SSE: resolve this listener's routes, spawn the
-            // matched `[[components]]` handler fresh, dispatch the action.
+            // matched `[components.<name>]` handler fresh, dispatch the action.
             let table = spec
                 .route_table()
                 .map_err(|e| anyhow!("invalid [serve.routes] for {}: {e}", spec.listen))?;
@@ -254,11 +327,10 @@ pub async fn serve_apps(
                     spec.listen
                 )
             })?;
-            // Its capability profile comes from a matching `[[components]]` entry,
+            // Its capability profile comes from a matching `[components.<name>]` entry,
             // else default-deny `sandboxed`.
             let caps = components
-                .iter()
-                .find(|c| c.name == name)
+                .get(name)
                 .map(|c| capabilities_for(&c.capability, profiles))
                 .unwrap_or_else(|| CapabilityProfile::Sandboxed.capabilities());
             let remote = remote_bundle(spec.source.as_deref(), wasm).await?;
@@ -362,9 +434,48 @@ fn build_ws_server(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rusm_otp::Runtime;
+    use rusm_otp::Pid;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpStream;
+
+    /// A `[components.<name>]` map from `(name, spec)` pairs (the loader's input).
+    fn components(entries: &[(&str, ComponentSpec)]) -> BTreeMap<String, ComponentSpec> {
+        entries
+            .iter()
+            .map(|(n, s)| (n.to_string(), s.clone()))
+            .collect()
+    }
+
+    /// A `ComponentSpec` with a capability id and the resident flag (no remote source).
+    fn spec(capability: &str, resident: bool) -> ComponentSpec {
+        ComponentSpec {
+            capability: capability.to_string(),
+            resident,
+            source: None,
+        }
+    }
+
+    /// Poll until `name` resolves (the process registered itself), or give up (~2 s).
+    async fn await_named(rt: &Runtime, name: &str) -> Option<Pid> {
+        for _ in 0..400 {
+            if let Some(pid) = rt.whereis(name) {
+                return Some(pid);
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        None
+    }
+
+    /// Poll until `name` resolves to a pid different from `old` (a restart re-registered).
+    async fn await_renamed(rt: &Runtime, name: &str, old: Pid) -> Option<Pid> {
+        for _ in 0..400 {
+            match rt.whereis(name) {
+                Some(pid) if pid != old => return Some(pid),
+                _ => tokio::time::sleep(std::time::Duration::from_millis(5)).await,
+            }
+        }
+        None
+    }
 
     #[test]
     fn a_custom_profile_inherits_then_overrides() {
@@ -449,58 +560,65 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn loads_and_spawns_manifest_components_from_wasm_dir() {
+    async fn non_resident_components_register_without_booting() {
+        // A non-resident component is registered for spawn-by-name (a route or sibling
+        // spawns it on demand) but is NOT boot-spawned — no idle instance is parked.
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir(dir.path().join("wasm")).unwrap();
         std::fs::write(dir.path().join("wasm/echo.wasm"), COMPONENT).unwrap();
 
         let rt = Runtime::new();
         let wasm = WasmRuntime::new(rt.clone()).unwrap();
-        let specs = vec![ComponentSpec {
-            name: "echo".to_string(),
-            capability: "sandboxed".to_string(),
-            restart: false,
-            source: None,
-        }];
-        let handles = spawn_components(dir.path(), &wasm, &specs, &HashMap::new())
-            .await
-            .unwrap();
-        assert_eq!(handles.len(), 1);
-        assert_eq!(handles[0].0, "echo");
-        // The component runs to completion as a real process.
-        let (_name, handle) = handles.into_iter().next().unwrap();
-        handle.join().await;
-        assert_eq!(rt.finished(), 1);
+        let hosted = spawn_components(
+            dir.path(),
+            &wasm,
+            &components(&[("echo", spec("sandboxed", false))]),
+            &HashMap::new(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(hosted.names, ["echo"]);
+        assert!(hosted.resident.is_empty(), "echo is not resident");
+        assert!(
+            rt.list().is_empty(),
+            "registered only — no boot instance was spawned"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn a_typescript_js_bundle_runs_on_the_js_runner() {
-        // A `wasm/<name>.js` artifact is a TS component: it runs on the shared
-        // js-runner via spawn_js, not the component path. The bundle drives the
-        // Process API and exits, finishing as a real process.
+    async fn a_resident_service_is_boot_spawned_and_supervised() {
+        // `resident = true` boot-spawns the component AND supervises it: it comes up
+        // (registers its well-known name), and on a crash the supervisor restarts it
+        // under a fresh pid — the robustness that replaces the old dead `restart` flag.
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir(dir.path().join("wasm")).unwrap();
+        // A long-lived JS service: register a name, then loop on receive forever.
         std::fs::write(
-            dir.path().join("wasm/greeter.js"),
-            "Process.setLabel('ts-greeter');",
+            dir.path().join("wasm/svc.js"),
+            "module.exports.default = async function(){ Process.register('svc'); for(;;) await Process.receive(); };",
         )
         .unwrap();
 
         let rt = Runtime::new();
         let wasm = WasmRuntime::new(rt.clone()).unwrap();
-        let specs = vec![ComponentSpec {
-            name: "greeter".to_string(),
-            capability: "sandboxed".to_string(),
-            restart: false,
-            source: None,
-        }];
-        let handles = spawn_components(dir.path(), &wasm, &specs, &HashMap::new())
+        let hosted = spawn_components(
+            dir.path(),
+            &wasm,
+            &components(&[("svc", spec("sandboxed", true))]),
+            &HashMap::new(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(hosted.resident, ["svc"]);
+
+        // It booted and registered its name.
+        let first = await_named(&rt, "svc").await.expect("resident booted");
+        // Crash it; the supervisor restarts it under a fresh pid, re-registering `svc`.
+        rt.kill(first);
+        let second = await_renamed(&rt, "svc", first)
             .await
-            .unwrap();
-        assert_eq!(handles.len(), 1);
-        let (_name, handle) = handles.into_iter().next().unwrap();
-        handle.join().await;
-        assert_eq!(rt.finished(), 1, "the TS bundle ran to completion");
+            .expect("supervisor restarted the crashed resident");
+        assert_ne!(first, second, "a fresh instance replaced the crashed one");
     }
 
     // A lean `wasi:http` component fixture (the same one rusm-wasm/http_bench uses),
@@ -525,7 +643,7 @@ mod tests {
             name: Some("api".to_string()),
             source: None,
         }];
-        let endpoints = serve_apps(dir.path(), &wasm, &specs, &[], &HashMap::new())
+        let endpoints = serve_apps(dir.path(), &wasm, &specs, &BTreeMap::new(), &HashMap::new())
             .await
             .unwrap();
         assert_eq!(endpoints.len(), 1);
@@ -569,7 +687,7 @@ mod tests {
             name: Some("echo".to_string()),
             source: None,
         }];
-        let endpoints = serve_apps(dir.path(), &wasm, &specs, &[], &HashMap::new())
+        let endpoints = serve_apps(dir.path(), &wasm, &specs, &BTreeMap::new(), &HashMap::new())
             .await
             .unwrap();
         let addr = endpoints[0].addr;
@@ -601,15 +719,10 @@ mod tests {
 
         let rt = Runtime::new();
         let wasm = WasmRuntime::new(rt).unwrap();
-        // The handler is a `[[components]]` entry (registered for spawn-by-name); the
+        // The handler is a `[components.api]` entry (registered for spawn-by-name); the
         // listener is pure routes — no name/capability.
-        let components = vec![ComponentSpec {
-            name: "api".to_string(),
-            capability: "sandboxed".to_string(),
-            restart: false,
-            source: None,
-        }];
-        spawn_components(dir.path(), &wasm, &components, &HashMap::new())
+        let handlers = components(&[("api", spec("sandboxed", false))]);
+        spawn_components(dir.path(), &wasm, &handlers, &HashMap::new())
             .await
             .unwrap();
         let specs = vec![ServeSpec {
@@ -622,7 +735,7 @@ mod tests {
             name: None,
             source: None,
         }];
-        let endpoints = serve_apps(dir.path(), &wasm, &specs, &components, &HashMap::new())
+        let endpoints = serve_apps(dir.path(), &wasm, &specs, &handlers, &HashMap::new())
             .await
             .unwrap();
         let addr = endpoints[0].addr;
@@ -662,7 +775,7 @@ mod tests {
             name: Some("ghost".to_string()),
             source: None,
         }];
-        let err = serve_apps(dir.path(), &wasm, &specs, &[], &HashMap::new())
+        let err = serve_apps(dir.path(), &wasm, &specs, &BTreeMap::new(), &HashMap::new())
             .await
             .err()
             .expect("missing artifact must error");
@@ -675,16 +788,15 @@ mod tests {
         std::fs::create_dir(dir.path().join("wasm")).unwrap();
         let rt = Runtime::new();
         let wasm = WasmRuntime::new(rt).unwrap();
-        let specs = vec![ComponentSpec {
-            name: "absent".to_string(),
-            capability: "sandboxed".to_string(),
-            restart: false,
-            source: None,
-        }];
-        let err = spawn_components(dir.path(), &wasm, &specs, &HashMap::new())
-            .await
-            .err()
-            .expect("missing artifact must error");
+        let err = spawn_components(
+            dir.path(),
+            &wasm,
+            &components(&[("absent", spec("sandboxed", false))]),
+            &HashMap::new(),
+        )
+        .await
+        .err()
+        .expect("missing artifact must error");
         assert!(err.to_string().contains("absent.wasm"));
     }
 
@@ -704,25 +816,20 @@ mod tests {
             .set("greeter", bundle)
             .unwrap();
 
-        let specs = vec![ComponentSpec {
-            name: "greeter".to_string(),
-            capability: "sandboxed".to_string(),
-            restart: false,
-            source: Some("kv:bundles/greeter".to_string()),
-        }];
-        let handles = spawn_components(dir.path(), &wasm, &specs, &HashMap::new())
-            .await
-            .unwrap();
-        assert_eq!(handles.len(), 1);
+        let mut greeter = spec("sandboxed", true);
+        greeter.source = Some("kv:bundles/greeter".to_string());
+        let hosted = spawn_components(
+            dir.path(),
+            &wasm,
+            &components(&[("greeter", greeter)]),
+            &HashMap::new(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(hosted.resident, ["greeter"]);
         // The kv-sourced bundle actually ran on the js-runner: it registered its name.
-        for _ in 0..200 {
-            if rt.whereis("from-kv").is_some() {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-        }
         assert!(
-            rt.whereis("from-kv").is_some(),
+            await_named(&rt, "from-kv").await.is_some(),
             "the kv-sourced JS component ran and registered its name"
         );
     }

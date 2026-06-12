@@ -34,7 +34,7 @@ killable, preemptible process — the BEAM model, for the component ecosystem.
 4. **Introspection & byte streams** (`rusm-otp`, Wasm-free) — `list`/`info`/
    `set_label`, opt-in `mailbox_depth`, and `Received::Stream` over a
    Tokio-backpressured `StreamHandle`.
-5. **App model** (`rusm-cli`) — `rusm.toml [[components]]`, a `./wasm/` loader that
+5. **App model** (`rusm-cli`) — `rusm.toml [components.<name>]`, a `./wasm/` loader that
    spawns each component under its profile, and `rusm build` / `rusm run` /
    `rusm dev` (one toolchain: `cargo build --target wasm32-wasip2`, no jco). Env is
    the Rust way: process env, then `.env`.

@@ -168,6 +168,24 @@ impl Spawner {
         handle
     }
 
+    /// Spawns a component registered by `name` under its **declared** profile — the
+    /// host twin of the guest `spawn` ABI (`actor::spawn`), without a guest's
+    /// caps-or-spawn gating (the node operator is the caller). `None` if nothing is
+    /// registered under `name`. Feeds a TS service its bundle as message 1, exactly
+    /// like the guest path. Re-runnable, so it backs a supervised resident's restart.
+    pub(crate) fn spawn_registered(self: &Arc<Self>, name: &str) -> Option<ProcessHandle> {
+        let entry = self.lookup(name)?;
+        let caps = entry
+            .caps
+            .clone()
+            .unwrap_or_else(|| CapabilityProfile::Sandboxed.capabilities());
+        let handle = self.spawn_component(&entry.prepared, caps, Some(name));
+        if let Some(bundle) = &entry.bundle {
+            self.rt.send(handle.pid(), (**bundle).clone());
+        }
+        Some(handle)
+    }
+
     /// The single platform-log policy for a **named** spawn: label the process (so its
     /// later `exit` line can name it, even below `Debug`) and, at `Debug`, emit the
     /// `spawn` line carrying its effective capabilities. Every named spawn site funnels

@@ -25,21 +25,21 @@ max-memory-mb = 256
 env = ["OPENAI_API_KEY"]
 preopen = [{ host = "./data", guest = "/data", read-only = false }]
 
-# Components to run as supervised processes (`rusm run` / `rusm dev`)
-[[components]]
-name = "calc"                 # loads ./wasm/calc.{qjsbc,js,wasm}
-capability = "sandboxed"
-restart = true
-
 # A network listener (`rusm serve`) — just a port + its routes
 [[serve]]
 protocol = "http"             # http | sse | ws
 listen = "127.0.0.1:8080"
 
-# This listener's HTTP/SSE routes → actions on a [[components]] handler
+# This listener's HTTP/SSE routes → actions on a [components.<name>] handler
 [serve.routes]
 "GET /" = "api#home"
 "GET /users/:id" = "api#show"
+
+# Components, keyed by name — registered for spawn-by-name; `resident` ones
+# are boot-spawned + supervised (`rusm run` / `rusm dev`)
+[components.calc]              # loads ./wasm/calc.{qjsbc,js,wasm}
+capability = "sandboxed"
+resident = true               # long-lived service: boot-spawned + supervised
 ```
 
 ## Node settings
@@ -92,17 +92,29 @@ Levels are cumulative. A **restart** needs no special event — it reads as a cr
 named components are logged (not internal plumbing), and the spawn line's capability
 summary makes a process's real privileges visible at the moment it starts.
 
-## `[[components]]` — run as supervised processes
+## `[components.<name>]` — registered, optionally resident components
 
-Each entry loads `./wasm/<name>.{qjsbc,js,wasm}` (TS bytecode → TS bundle → Rust
-component, in that preference) and spawns it under its capability profile. Used by
-`rusm run` and `rusm dev`. See [the app model](./concepts/app-model).
+Keyed by the component **name** (the table key, like `[capabilities.<name>]` — there is
+no `name` field). Each entry loads `./wasm/<name>.{qjsbc,js,wasm}` (TS bytecode → TS
+bundle → Rust component, in that preference) and **registers** it under its capability
+profile so a route or a sibling can `spawn` it by name. Used by `rusm run` and `rusm
+dev`. See [the app model](./concepts/app-model).
+
+Every `[components.<name>]` is **spawnable by name**. The `resident` flag decides
+whether the node also boots an instance:
+
+- **`resident = true`** — a long-lived service: boot-spawned at startup **and
+  supervised** (auto-restarted on crash, bounded by the runtime's restart-intensity so
+  a crash-loop is capped). Use it for stateful services reached over the actor API.
+- **default (no `resident`)** — registered for **spawn-by-name only**: a route or a
+  sibling spawns it on demand (a per-request HTTP handler, an on-demand worker). It is
+  **not** boot-spawned — no idle parked instance.
 
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `name` | string | — (required) | Component name → `./wasm/<name>.*`; also registered so a sibling can `spawn` it by name. |
+| _(table key)_ | string | — (required) | The component **name** (`[components.<name>]`) → `./wasm/<name>.*`; registered so a route or sibling can `spawn` it by name. |
 | `capability` | string | `"sandboxed"` | A built-in profile or a `[capabilities.<name>]` id. |
-| `restart` | bool | `false` | Restart the component if it exits (supervision). |
+| `resident` | bool | `false` | `true` = boot-spawned at startup and supervised (auto-restarted on crash). Default = registered for spawn-by-name only, not boot-spawned. |
 | `source` | string? | none | Load the (JS) bundle from a `url:`/`http(s)://` URL or `kv:<bucket>/<key>` instead of the local `./wasm/<name>` artifact — deploy JS live, no node rebuild (re-fetched on each spawn / `rusm dev` reload). See [dynamic bundle sourcing](#dynamic-bundle-sourcing). |
 
 ## `[[serve]]` — a network listener
@@ -113,28 +125,30 @@ Each entry is a **pure listener** on its own TCP port. Used by `rusm serve`. Ser
 request/connection, never the listener. See [the serving model](./concepts/serving-model).
 
 A listener carries no handler details of its own: the **handler components live in
-`[[components]]`** (with their own capability), and `[serve.routes]` names them. So a
-routed HTTP/SSE listener is just a port + a routes table.
+`[components.<name>]`** (with their own capability), and `[serve.routes]` names them. So
+a routed HTTP/SSE listener is just a port + a routes table.
 
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `protocol` | enum | — (required) | `http` · `sse` · `ws`. |
 | `listen` | string | — (required) | TCP address to bind, e.g. `"127.0.0.1:8080"`. |
-| `name` | string? | none | The single handler **component** for a listener with **no** `[serve.routes]` — a WebSocket listener, or a routes-less `wasi:http` HTTP component (e.g. a TS `export default fetch`). Resolves to `./wasm/<name>.*`; its capability comes from a matching `[[components]]` entry, else `sandboxed`. **Omitted** for a routed HTTP/SSE listener — its routes name the handlers. |
+| `name` | string? | none | The single handler **component** for a listener with **no** `[serve.routes]` — a WebSocket listener, or a routes-less `wasi:http` HTTP component (e.g. a TS `export default fetch`). Resolves to `./wasm/<name>.*`; its capability comes from a matching `[components.<name>]` entry, else `sandboxed`. **Omitted** for a routed HTTP/SSE listener — its routes name the handlers. |
 | `source` | string? | none | Load the named handler's (JS) bundle from a URL or `kv:` instead of `./wasm/<name>` — see [dynamic bundle sourcing](#dynamic-bundle-sourcing). |
 
 > **Migration.** `[[serve]]` lost `name`-as-required and `capability` (and earlier the
 > resident `mode` / `instances` / `shard-by` / `max-inflight`). A serving handler is now
-> a `[[components]]` entry the routes name; a **stateful** handler is a long-lived
-> `[[components]]` service reached over the actor API (`whereis` / `call`) holding its
-> state in [`kv`](#dynamic-bundle-sourcing) or process memory.
+> a `[components.<name>]` entry the routes name; a **stateful** handler is a long-lived
+> `[components.<name>]` service (`resident = true`) reached over the actor API
+> (`whereis` / `call`) holding its state in [`kv`](#dynamic-bundle-sourcing) or process
+> memory.
 
 > **Migration.** Resident serving has been removed — the `mode`, `instances`,
 > `shard-by`, and `max-inflight` fields no longer exist. Serving is uniformly
 > process-per-request (HTTP/SSE) / process-per-connection (WS). A **stateful**
-> handler now lives as a long-lived `[[components]]` service (reached over the actor
-> API — `whereis` / `call`) that keeps its state in [`kv`](#dynamic-bundle-sourcing)
-> or in process memory; serving instances stay stateless and ephemeral.
+> handler now lives as a long-lived `[components.<name>]` service (`resident = true`,
+> reached over the actor API — `whereis` / `call`) that keeps its state in
+> [`kv`](#dynamic-bundle-sourcing) or in process memory; serving instances stay
+> stateless and ephemeral.
 
 ## `[serve.routes]` — per-listener HTTP/SSE route table
 
@@ -160,8 +174,7 @@ listen = "127.0.0.1:8080"
 "POST /plans/:plan/events" = "api#events"
 "GET /assets/*" = "api#assets"           # trailing * matches the rest of the path
 
-[[components]]
-name = "api"                             # the handler the routes name (its own caps)
+[components.api]                         # the handler the routes name (its own caps)
 capability = "sandboxed"
 ```
 
@@ -174,8 +187,8 @@ Path segments may be:
 - **a wildcard** — a trailing `*` matches the remainder of the path (zero or more
   segments).
 
-**Value — `"component#action"`:** the handler **component's name** (a `[[components]]`
-entry), then `#`, then the exported action to invoke. The separator is **`#`**, not
+**Value — `"component#action"`:** the handler **component's name** (a
+`[components.<name>]` entry), then `#`, then the exported action to invoke. The separator is **`#`**, not
 `:`, because `:` is reserved for RUSM scheme syntax (`kv:`, `url:`) elsewhere in the
 manifest.
 
@@ -237,31 +250,30 @@ listen = "127.0.0.1:8080"
 "GET /events" = "api#events"       # an SSE action (3-arg handler) if `api` serves sse
 "GET /assets/*" = "api#assets"
 
-# The HTTP handler the routes name — a component with its own capability.
-[[components]]
-name = "api"                       # → ./wasm/api.wasm
-capability = "api-caps"
-
-# A long-lived, stateful service — reached over the actor API (whereis / call),
-# *not* over a port. State that used to live in a "resident" server lives here.
-[[components]]
-name = "sessions"                  # → ./wasm/sessions.wasm
-capability = "trusted"
-restart = true
-
 # A custom capability profile for the API handler
 [capabilities.api-caps]
 inherits = "network-client"
 storage = true                     # may read/write the node `store`
 max-memory-mb = 128
 env = ["API_BASE_URL"]
+
+# The HTTP handler the routes name — spawned per request, so no `resident`.
+[components.api]                   # → ./wasm/api.wasm
+capability = "api-caps"
+
+# A long-lived, stateful service — boot-spawned + supervised, reached over the
+# actor API (whereis / call), *not* over a port. State that used to live in a
+# "resident" server lives here.
+[components.sessions]              # → ./wasm/sessions.wasm
+capability = "trusted"
+resident = true
 ```
 
 ## Dynamic bundle sourcing
 
-A `[[components]]` or `[[serve]]` entry can set **`source`** to load its JS bundle
+A `[components.<name>]` or `[[serve]]` entry can set **`source`** to load its JS bundle
 from somewhere other than the local `./wasm/<name>` artifact — so you deploy new JS
-by updating the source, with **no node rebuild**. A `[[components]]` process fetches
+by updating the source, with **no node rebuild**. A `[components.<name>]` process fetches
 its bundle **once** at spawn (and again on each `rusm dev` reload); a `[[serve]]`
 endpoint fetches at bind time, then each ephemeral serving instance runs from that
 cached bundle.
@@ -281,8 +293,7 @@ protocol = "http"
 listen = "127.0.0.1:8080"
 source = "https://cdn.example/api.js"   # deploy by replacing this bundle
 
-[[components]]
-name = "worker"
+[components.worker]
 source = "kv:bundles/worker"            # publish to kv, then re-spawn
 ```
 

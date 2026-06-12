@@ -7,10 +7,9 @@
 [capabilities.orchestrator]
 inherits = "trusted"
 
-[[components]]
-name = "calc"             # a service; registered so the commander can spawn it
+[components.calc]         # a service; registered so the commander can spawn it
 capability = "sandboxed"
 
-[[components]]
-name = "commander"
+[components.commander]    # boot-spawned worker that drives the demo
 capability = "orchestrator"
+resident = true

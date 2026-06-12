@@ -67,8 +67,8 @@ that teaches it.
   streams for the life of the connection), per-connection WS processes, Tokio
   back-pressure throughout.
 - **Shared state lives elsewhere** — never in the ephemeral serving instance: a
-  long-lived `[[components]]` service reached over the actor API (`whereis` / `call` /
-  `send`), or durable `kv`. Pairs with the `pubsub::Topics` primitive (keyed fan-out,
+  long-lived `[components.<name>]` service (`resident = true`) reached over the actor API
+  (`whereis` / `call` / `send`), or durable `kv`. Pairs with the `pubsub::Topics` primitive (keyed fan-out,
   monitor-based pruning): one publish → every connected client, no subscriber
   bookkeeping in app code.
 - **Cross-process byte streams** — a bounded, back-pressured byte channel between

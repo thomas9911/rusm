@@ -76,7 +76,7 @@ rusm-otp  ◀── rusm-wasm ┼─ bridges/wasip2 (components + rusm:runtime W
 (Wasm-free │            └─ bridges/wasip3 (WASI @0.3.0 async interfaces)
  OTP core) │            caps.rs (default-deny profiles) · epoch · pooling + CoW
            │
-           └── rusm-cli (app model: rusm.toml [[components]], build/run/dev, attach)
+           └── rusm-cli (app model: rusm.toml [components.<name>], build/run/dev, attach)
 
 observability ── rusm-metrics + rusm-observer ─→ rusm-bench (runner + WebSocket
                  server) ─→ dashboard / rusm attach

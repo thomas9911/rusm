@@ -5,7 +5,7 @@ use anyhow::{anyhow, Context};
 use futures_util::{SinkExt, StreamExt};
 use rusm_cli::{
     normalize_target, parse, parse_new_args, render_message, scaffold, serve_apps,
-    spawn_components, Protocol, ReplInput, DEFAULT_HOST, HELP,
+    spawn_components, Hosted, Protocol, ReplInput, DEFAULT_HOST, HELP,
 };
 use rusm_node::{serve, ClientCommand, Node, NodeConfig, ServerMessage};
 use rusm_otp::Runtime;
@@ -102,7 +102,7 @@ async fn main() {
         );
         eprintln!("  rusm build                 compile ./components/* -> ./wasm/*.wasm");
         eprintln!(
-            "  rusm run                   run ./wasm components per rusm.toml [[components]]"
+            "  rusm run                   run ./wasm components per rusm.toml [components.<name>]"
         );
         eprintln!("  rusm dev                   build + run, then watch & reload on edits");
         eprintln!(
@@ -113,7 +113,7 @@ async fn main() {
     }
 }
 
-/// `rusm node start`: host the app's `[[components]]` (like `rusm run`) and expose
+/// `rusm node start`: host the app's `[components.<name>]` (like `rusm run`) and expose
 /// a live **attach** endpoint on `cfg.listen`, so `rusm attach` can observe the
 /// node's processes. The served runtime + held handles keep everything alive for
 /// the lifetime of the server (which runs until Ctrl-C or a bind error).
@@ -121,16 +121,16 @@ async fn start_node(args: &[String]) -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
     let cfg = load_node_config(args);
     let rt = Runtime::new();
-    // `wasm` + `handles` stay bound for the whole function: they own the hosted
-    // components' runtime, so they must outlive the server below.
+    // `wasm` + `hosted` stay bound for the whole function: they own the hosted
+    // components' runtime + resident supervisor, so they must outlive the server below.
     let wasm = wasm_runtime(rt.clone(), &cfg)?;
-    let handles =
+    let hosted =
         spawn_components(Path::new("."), &wasm, &cfg.components, &cfg.capabilities).await?;
     let node = Node::new(rt.clone(), node_name(), cfg.ticks_per_second);
     println!(
         "rusm node listening on ws://{} ({} component(s), {} Hz)",
         cfg.listen,
-        handles.len(),
+        hosted.names.len(),
         cfg.ticks_per_second
     );
     println!("attach with:  rusm attach {}", cfg.listen);
@@ -147,9 +147,10 @@ fn node_name() -> String {
         .unwrap_or_else(|| "rusm".to_string())
 }
 
-/// Runs the app's components: load `.env` (process env wins), then spawn each
-/// `[[components]]` entry from `./wasm` under its capability profile, and wait
-/// for Ctrl-C. Held handles + runtime keep the processes alive.
+/// Runs the app's components: load `.env` (process env wins), then register each
+/// `[components.<name>]` entry from `./wasm` under its capability profile (booting +
+/// supervising the resident ones), and wait for Ctrl-C. `wasm` + `hosted` keep the
+/// processes alive.
 async fn run_app(args: &[String]) -> anyhow::Result<()> {
     // Environment variables the Rust way: process env first, then ./.env.
     dotenvy::dotenv().ok();
@@ -157,22 +158,34 @@ async fn run_app(args: &[String]) -> anyhow::Result<()> {
     let cfg = load_node_config(args);
     let rt = Runtime::new();
     let wasm = wasm_runtime(rt.clone(), &cfg)?;
-    let handles =
+    let hosted =
         spawn_components(Path::new("."), &wasm, &cfg.components, &cfg.capabilities).await?;
-    if handles.is_empty() {
-        println!("no [[components]] in rusm.toml — nothing to run");
+    if hosted.is_empty() {
+        println!("no [components] in rusm.toml — nothing to run");
         return Ok(());
     }
-    let names: Vec<&str> = handles.iter().map(|(n, _)| n.as_str()).collect();
-    println!(
-        "running {} component(s): {}",
-        handles.len(),
-        names.join(", ")
-    );
+    print_hosted(&hosted);
     println!("press Ctrl-C to stop");
     tokio::signal::ctrl_c().await?;
-    println!("\nstopping {} component(s)…", rt.shutdown());
+    println!("\nstopping {} process(es)…", rt.shutdown());
     Ok(())
+}
+
+/// One line describing what the node is hosting: the resident services (boot-spawned
+/// + supervised) and the on-demand components (registered, spawned per request/call).
+fn print_hosted(hosted: &Hosted) {
+    let on_demand: Vec<&str> = hosted
+        .names
+        .iter()
+        .filter(|n| !hosted.resident.contains(*n))
+        .map(String::as_str)
+        .collect();
+    if !hosted.resident.is_empty() {
+        println!("resident: {}", hosted.resident.join(", "));
+    }
+    if !on_demand.is_empty() {
+        println!("on demand: {}", on_demand.join(", "));
+    }
 }
 
 /// `rusm serve`: host each `[[serve]]` component as a real network server on its
@@ -186,11 +199,11 @@ async fn serve_app(args: &[String]) -> anyhow::Result<()> {
     let cfg = load_node_config(args);
     let rt = Runtime::new();
     let wasm = wasm_runtime(rt.clone(), &cfg)?;
-    // Bring up the supporting `[[components]]` (e.g. a `meta-json` sink) on the **same**
-    // node first, so a `[[serve]]` entry can reach them via `whereis` / `spawn` — an app
-    // that serves HTTP *and* runs sibling services comes up with one `rusm serve`. Held
-    // to keep them alive.
-    let components =
+    // Register the app's `[components.<name>]` on the **same** node first, so a
+    // `[[serve]]` route can spawn a matched handler and a sibling can `whereis` a
+    // resident service — an app that serves HTTP *and* runs resident services comes
+    // up with one `rusm serve`. `hosted` holds the resident supervisor alive.
+    let hosted =
         spawn_components(Path::new("."), &wasm, &cfg.components, &cfg.capabilities).await?;
     let endpoints = serve_apps(
         Path::new("."),
@@ -200,17 +213,12 @@ async fn serve_app(args: &[String]) -> anyhow::Result<()> {
         &cfg.capabilities,
     )
     .await?;
-    if endpoints.is_empty() && components.is_empty() {
-        println!("no [[serve]] entries or [[components]] in rusm.toml — nothing to do");
+    if endpoints.is_empty() && hosted.is_empty() {
+        println!("no [[serve]] entries or [components] in rusm.toml — nothing to do");
         return Ok(());
     }
-    if !components.is_empty() {
-        let names: Vec<&str> = components.iter().map(|(n, _)| n.as_str()).collect();
-        println!(
-            "running {} component(s): {}",
-            components.len(),
-            names.join(", ")
-        );
+    if !hosted.is_empty() {
+        print_hosted(&hosted);
     }
     println!("serving {} endpoint(s):", endpoints.len());
     for ep in &endpoints {
@@ -234,15 +242,13 @@ async fn dev(args: &[String]) -> anyhow::Result<()> {
     let root = Path::new(".");
 
     build_components(root)?;
-    let mut handles = spawn_components(root, &wasm, &cfg.components, &cfg.capabilities).await?;
-    if handles.is_empty() {
-        println!("no [[components]] in rusm.toml — nothing to run");
+    let mut hosted = spawn_components(root, &wasm, &cfg.components, &cfg.capabilities).await?;
+    if hosted.is_empty() {
+        println!("no [components] in rusm.toml — nothing to run");
         return Ok(());
     }
-    println!(
-        "running {} component(s); watching ./components — edit to reload, Ctrl-C to stop",
-        handles.len()
-    );
+    print_hosted(&hosted);
+    println!("watching ./components — edit to reload, Ctrl-C to stop");
 
     let components = root.join("components");
     let mut fingerprint = source_fingerprint(&components);
@@ -256,24 +262,24 @@ async fn dev(args: &[String]) -> anyhow::Result<()> {
                 }
                 fingerprint = next;
                 println!("change detected — rebuilding…");
-                for (_, handle) in &handles {
-                    handle.kill();
-                }
+                // Tear down the resident supervisor + its services, then re-register
+                // (which overwrites every component's factory) and re-boot residents.
+                hosted.teardown(&rt);
                 if let Err(error) = build_components(root) {
                     eprintln!("build failed: {error}");
                     continue;
                 }
                 match spawn_components(root, &wasm, &cfg.components, &cfg.capabilities).await {
                     Ok(reloaded) => {
-                        handles = reloaded;
-                        println!("reloaded {} component(s)", handles.len());
+                        hosted = reloaded;
+                        print_hosted(&hosted);
                     }
                     Err(error) => eprintln!("reload failed: {error}"),
                 }
             }
         }
     }
-    println!("\nstopping {} component(s)…", rt.shutdown());
+    println!("\nstopping {} process(es)…", rt.shutdown());
     Ok(())
 }
 

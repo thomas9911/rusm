@@ -7,7 +7,7 @@ mod render;
 mod repl;
 mod scaffold;
 
-pub use app::{capabilities_for, serve_apps, spawn_components, ServedEndpoint};
+pub use app::{capabilities_for, serve_apps, spawn_components, Hosted, ServedEndpoint};
 pub use endpoint::{normalize_target, DEFAULT_HOST};
 pub use render::render_message;
 pub use repl::{parse, ReplInput, HELP};

@@ -16,7 +16,7 @@ where any goroutine/process can touch the whole machine.
   itself.
 - **Spawn**: whether the process may **spawn other components by name** via the
   actor ABI — default-deny. The `spawn` capability gates *who* may spawn; a
-  **node-registered** component (a `[[components]]` / serve entry) then runs under
+  **node-registered** component (a `[components.<name>]` / serve entry) then runs under
   **its own manifest-declared profile** — the operator's explicit per-component
   policy, so what the manifest declares is what runs, whoever spawns it. An *ad-hoc*
   registration with no declared profile inherits the spawner's caps. Either way a

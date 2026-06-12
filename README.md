@@ -116,7 +116,7 @@ beat the runtime that inspired this.
   streaming + callbacks), an in-guest `Supervisor`, and `rusm dev` watch + reload. The
   [`rusm-ts`](packages/rusm-ts) npm package and [`rusm-rs`](crates/rusm-rs) crate share
   one wire and interoperate.
-- **An app model** — `rusm.toml [[components]]`, source under `components/`, built to
+- **An app model** — `rusm.toml [components.<name>]`, source under `components/`, built to
   `./wasm/`, spawned under their capabilities; env the Rust way (process env, then
   `.env`).
 - **Serving** — a component runs as a high-throughput **HTTP / WS / SSE** server
@@ -164,13 +164,14 @@ a **pure listener**, no handler or capability of its own), each routed HTTP/SSE 
 carrying its own `[serve.routes]` subtable (declarative
 `"METHOD /path/:param" = "component#action"` routing, so multiple listeners route
 independently; a WS or routes-less HTTP listener names its single handler with `name`),
-`[[components]]` (supervised, optionally stateful processes — the routes' handlers live
-here and carry their **own** capability), and custom `[capabilities.<name>]` profiles
+`[components.<name>]` (keyed by name — registered for spawn-by-name; the routes' handlers
+live here and carry their **own** capability, while `resident = true` entries are
+boot-spawned + supervised long-lived services), and custom `[capabilities.<name>]` profiles
 (default-deny). Serving is always
 process-per-request (HTTP/SSE) / process-per-connection (WS) — a fresh sandboxed
 instance per unit of work, so head-of-line blocking is impossible by construction and
-a crash drops only that request; shared state lives in a `[[components]]` service or
-`kv`, never in the serving instance. A Rust handler is just named functions —
+a crash drops only that request; shared state lives in a `[components.<name>]` service
+(`resident = true`) or `kv`, never in the serving instance. A Rust handler is just named functions —
 `#[rusm_rs::handlers] pub mod api { pub fn home(req, params) -> Response { … } }` (a
 3-arg action taking `Sse` streams Server-Sent Events) — no `main`, no router code. Env
 is resolved the Rust way — process env first, then `.env`. Full reference:

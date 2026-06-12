@@ -143,7 +143,7 @@ honest framing of "why it exists", not a claim that it is more battle-tested:
 - Serving is **process-per-unit-of-work** (a fresh sandboxed instance per HTTP/SSE
   request, one process per WS connection), so head-of-line blocking is impossible and a
   crash drops one unit of work, never the server. Shared state lives in a long-lived
-  `[[components]]` service (reached over the actor API) or durable `kv`, never in the
+  `[components.<name>]` service (`resident = true`, reached over the actor API) or durable `kv`, never in the
   ephemeral serving instance.
 - Its spawn path is **pooling + an on-demand overflow tier bounded by memory** rather
   than a fixed instance count, and instances are reclaimed on exit — so thousands of

@@ -29,13 +29,14 @@ This single choice buys properties you'd otherwise have to engineer around:
 The serving instance is stateless and disposable. Anything that must outlive a request
 lives elsewhere — **never** in the serving instance:
 
-- a **`[[components]]` service** — a long-lived, supervised, stateful process reached
+- a **`[components.<name>]` service** (`resident = true`) — a long-lived, supervised,
+  stateful process reached
   over the actor API (`whereis` / `call` / `send`): a counter, cache, session map,
   pub/sub hub, chat-room registry; or
 - durable **`kv`** for state that must survive restarts.
 
-This is where the old "resident vs per-call" decision now lives: a `[[components]]`
-**service** holds state; a **worker** spawns per call. Serving components are always
+This is where the old "resident vs per-call" decision now lives: a resident
+`[components.<name>]` **service** holds state; a **worker** spawns per call. Serving components are always
 per-request. A handler that needs state simply `call`s a service and shapes the reply.
 
 ## Declarative routing

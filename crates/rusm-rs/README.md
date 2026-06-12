@@ -90,8 +90,9 @@ impl Handler for Echo {
 fn main() { ws::serve(Echo::default()); }
 ```
 
-State that must outlive a request lives in a long-lived `[[components]]` service (reached
-over the actor API) or durable `kv` — never in the ephemeral serving instance.
+State that must outlive a request lives in a long-lived `[components.<name>]` service
+(`resident = true`, reached over the actor API) or durable `kv` — never in the ephemeral
+serving instance.
 
 ## Services & the typed client
 

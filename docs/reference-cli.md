@@ -68,8 +68,10 @@ Emits a clear error if Bun / the `wasm32-wasip2` target is missing.
 
 ## `rusm run`
 
-Load every `[[components]]` entry from `./wasm/` and spawn it as a supervised process
-under its capability profile; waits for Ctrl-C. Loads `./.env` (process env wins).
+Load every `[components.<name>]` entry from `./wasm/` and register it under its
+capability profile so a route or sibling can `spawn` it by name; the `resident = true`
+entries are also boot-spawned and supervised. Waits for Ctrl-C. Loads `./.env` (process
+env wins).
 
 ```sh
 rusm run
@@ -104,7 +106,7 @@ rusm dev
 
 ## `rusm node start`
 
-Start an **attachable node**: host the app's `[[components]]` (like `rusm run`)
+Start an **attachable node**: host the app's `[components.<name>]` (like `rusm run`)
 **and** expose a live observe/attach endpoint on `listen`, so `rusm attach` can
 watch the node's processes. The hosted components keep running until Ctrl-C.
 

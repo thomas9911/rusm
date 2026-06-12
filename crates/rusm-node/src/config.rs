@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
 use serde::Deserialize;
@@ -19,9 +19,11 @@ pub struct NodeConfig {
     pub profile: ResourceProfile,
     /// Snapshot/sampling rate in Hz.
     pub ticks_per_second: u32,
-    /// Components to run as an app, declared as `[[components]]` tables. Each is
-    /// loaded from `./wasm/<name>.wasm` and spawned under its capability profile.
-    pub components: Vec<ComponentSpec>,
+    /// Components the app hosts, declared as `[components.<name>]` tables keyed by
+    /// name (consistent with `[capabilities.<name>]`). Every entry is registered so
+    /// a route or a sibling can `spawn` it by name; one marked `resident = true` is
+    /// also boot-spawned and supervised. Ordered by name for deterministic boot/logs.
+    pub components: BTreeMap<String, ComponentSpec>,
     /// Servers to host, declared as `[[serve]]` tables. Each loads a component
     /// from `./wasm/<name>.{wasm,js}` and serves it on a real TCP port over HTTP
     /// (also SSE) or WebSocket — what `rusm serve` runs and a load driver hits.
@@ -108,19 +110,21 @@ pub struct PreopenSpec {
 // `rusm_wasm::Capabilities`) lives in the CLI, the only consumer that links
 // `rusm-wasm` — keeping this manifest crate free of the Wasm backend.
 
-/// One `[[components]]` entry: a component to load from `./wasm/<name>.wasm` and
-/// run as a supervised process under a capability profile.
+/// One `[components.<name>]` entry: a component the app hosts under a capability
+/// profile. The table key is the component name (resolving the `./wasm/<name>`
+/// artifact); every entry is registered as spawnable-by-name.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ComponentSpec {
-    /// Component name; resolves to the artifact `./wasm/<name>.wasm`.
-    pub name: String,
     /// Capability profile id (`sandboxed` / `network-client` / `trusted`).
     #[serde(default = "default_capability")]
     pub capability: String,
-    /// Restart the component if it exits (supervision). Off by default.
+    /// A long-lived service: boot-spawn it at startup and supervise it (auto-restart
+    /// on crash, bounded by the runtime's restart-intensity). Off by default — a
+    /// component without `resident` is registered only, spawned on demand by a route
+    /// or a sibling (e.g. a per-request handler), never boot-parked.
     #[serde(default)]
-    pub restart: bool,
+    pub resident: bool,
     /// Where to load the (JS) bundle from instead of the local `./wasm/<name>`
     /// artifact: a `url:`/`http(s)://` URL or a `kv:<bucket>/<key>` store entry
     /// (see [`BundleSource`]). Omitted → the local artifact. Lets JS deploy live —
@@ -213,14 +217,14 @@ pub struct ServeSpec {
     pub listen: String,
     /// Declarative HTTP routing for **this** listener, the `[serve.routes]` table:
     /// `"METHOD /path/:param" = "component#action"`. The gateway resolves each request
-    /// to a `[[components]]` handler + action (with path params) and dispatches it
+    /// to a `[components.<name>]` handler + action (with path params) and dispatches it
     /// per-request. This is the usual HTTP/SSE shape; ignored for `protocol = "ws"`.
     #[serde(default)]
     pub routes: HashMap<String, String>,
     /// The single handler **component** for a listener that has no `[serve.routes]`: a
     /// WebSocket listener (one process per connection) or a handler-less `wasi:http`
     /// HTTP component. Resolves to `./wasm/<name>.{wasm,js}`; its capability profile
-    /// comes from a matching `[[components]]` entry (else default-deny `sandboxed`).
+    /// comes from a matching `[components.<name>]` entry (else default-deny `sandboxed`).
     /// Omitted for a routed HTTP/SSE listener — its routes name the components.
     #[serde(default)]
     pub name: Option<String>,
@@ -244,7 +248,7 @@ impl Default for NodeConfig {
             listen: "127.0.0.1:4000".to_string(),
             profile: ResourceProfile::default(),
             ticks_per_second: 20,
-            components: Vec::new(),
+            components: BTreeMap::new(),
             serve: Vec::new(),
             capabilities: HashMap::new(),
             store: None,
@@ -340,23 +344,20 @@ mod tests {
     fn parses_component_manifest_with_defaults() {
         let cfg = NodeConfig::from_toml(
             r#"
-            [[components]]
-            name = "source"
+            [components.source]
             capability = "network-client"
 
-            [[components]]
-            name = "sink"
-            restart = true
+            [components.sink]
+            resident = true
             "#,
         )
         .unwrap();
         assert_eq!(cfg.components.len(), 2);
-        assert_eq!(cfg.components[0].name, "source");
-        assert_eq!(cfg.components[0].capability, "network-client");
-        assert!(!cfg.components[0].restart);
-        // capability defaults to sandboxed; restart parsed.
-        assert_eq!(cfg.components[1].capability, "sandboxed");
-        assert!(cfg.components[1].restart);
+        assert_eq!(cfg.components["source"].capability, "network-client");
+        assert!(!cfg.components["source"].resident);
+        // capability defaults to sandboxed; resident parsed.
+        assert_eq!(cfg.components["sink"].capability, "sandboxed");
+        assert!(cfg.components["sink"].resident);
     }
 
     #[test]
@@ -366,7 +367,7 @@ mod tests {
 
     #[test]
     fn unknown_component_field_is_an_error() {
-        let toml = "[[components]]\nname = \"x\"\nnope = 1\n";
+        let toml = "[components.x]\nnope = 1\n";
         assert!(NodeConfig::from_toml(toml).is_err());
     }
 
@@ -380,8 +381,7 @@ mod tests {
             max-memory-mb = 256
             preopen = [{ host = "./data", guest = "/data", read-only = false }]
 
-            [[components]]
-            name = "pages-agent"
+            [components.pages-agent]
             capability = "agent"
             "#,
         )
@@ -399,8 +399,7 @@ mod tests {
     fn parses_bundle_source_field_on_components_and_serve() {
         let cfg = NodeConfig::from_toml(
             r#"
-            [[components]]
-            name = "api"
+            [components.api]
             source = "kv:bundles/api"
 
             [[serve]]
@@ -411,15 +410,18 @@ mod tests {
             "#,
         )
         .unwrap();
-        assert_eq!(cfg.components[0].source.as_deref(), Some("kv:bundles/api"));
+        assert_eq!(
+            cfg.components["api"].source.as_deref(),
+            Some("kv:bundles/api")
+        );
         assert_eq!(
             cfg.serve[0].source.as_deref(),
             Some("https://cdn.example/web.js")
         );
         // Default: no source (use the local ./wasm artifact).
-        assert!(NodeConfig::from_toml("[[components]]\nname = \"x\"\n")
+        assert!(NodeConfig::from_toml("[components.x]\n")
             .unwrap()
-            .components[0]
+            .components["x"]
             .source
             .is_none());
     }

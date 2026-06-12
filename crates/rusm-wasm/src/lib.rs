@@ -320,7 +320,7 @@ impl WasmRuntime {
     /// **declared** capability profile: a guest `spawn`-by-name runs the child under
     /// `caps` (the node operator's explicit per-component policy — what the manifest
     /// declares is what runs), not the spawner's inherited caps. The app loader uses
-    /// this so each `[[components]]`/serve handler runs under its own profile.
+    /// this so each `[components.<name>]`/serve handler runs under its own profile.
     pub fn register_component_with(
         &self,
         name: impl Into<String>,
@@ -377,7 +377,7 @@ impl WasmRuntime {
     /// by-name guest path) in the [platform lifecycle log](rusm_otp::LogLevel): label
     /// it so its `exit` line can name it, and emit its `spawn` line at `Debug`. No-op
     /// unless logging is on. Use after `spawn_component_with` / `spawn_js_with` for a
-    /// `[[serve]]` / `[[components]]` entry.
+    /// `[[serve]]` / `[components.<name>]` entry.
     pub fn note_spawn(&self, handle: &ProcessHandle, name: &str, caps: &Capabilities) {
         if self.spawner.rt.wants_log(rusm_otp::LogLevel::Error) {
             self.spawner.record_spawn(handle.pid(), name, caps);
@@ -388,6 +388,37 @@ impl WasmRuntime {
     /// `rusm.toml [log] level`). Off by default; set once at startup.
     pub fn set_log_level(&self, level: rusm_otp::LogLevel) {
         self.spawner.rt.set_log_level(level);
+    }
+
+    /// Spawn a component registered by `name` under its declared profile — the host
+    /// twin of the guest `spawn` ABI. `None` if no component is registered under
+    /// `name`. Used to (re)start a resident service.
+    pub fn spawn_registered(&self, name: &str) -> Option<ProcessHandle> {
+        self.spawner.spawn_registered(name)
+    }
+
+    /// Boot-spawn and **supervise** the named (already-registered) components as
+    /// long-lived services: a one-for-one supervisor (re)starts each under its
+    /// declared profile via [`spawn_registered`](Self::spawn_registered), bounded by
+    /// the runtime's restart-intensity (3 restarts / 5 s) so a crash-loop is capped,
+    /// not infinite. Returns the supervisor handle — hold it to keep the tree alive
+    /// (and to tear it down). It stops abnormally only if a service blows the budget.
+    /// `names` empty → no supervisor is started and `None` is returned.
+    pub fn supervise(&self, names: &[String]) -> Option<ProcessHandle> {
+        if names.is_empty() {
+            return None;
+        }
+        let mut sup = self.spawner.rt.supervisor(rusm_otp::Strategy::OneForOne);
+        for name in names {
+            let spawner = Arc::clone(&self.spawner);
+            let name = name.clone();
+            sup = sup.child(move |_rt| {
+                spawner
+                    .spawn_registered(&name)
+                    .expect("a supervised component stays registered for its lifetime")
+            });
+        }
+        Some(sup.start())
     }
 
     /// Aborts **every** process on this runtime, returning how many were stopped —

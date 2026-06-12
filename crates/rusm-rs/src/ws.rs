@@ -29,7 +29,7 @@ impl Connection {
 
 /// A per-connection WebSocket handler. There is one handler instance per connection,
 /// so `&mut self` is *this connection's* state (no cross-connection sharing — keep
-/// shared state in a `[[components]]` service or `kv`).
+/// shared state in a `[components.<name>]` service or `kv`).
 pub trait Handler {
     /// The connection opened. Default: do nothing.
     fn open(&mut self, conn: &Connection) {

@@ -42,7 +42,7 @@ domain*.
 
 | Phase | Platform domain (RUSM) | Application domain (you) |
 | --- | --- | --- |
-| **Register** | resolve a name → a prepared component (compiled module + linked imports) | declare `[[serve]]` / `[[components]]` / `[serve.routes]` |
+| **Register** | resolve a name → a prepared component (compiled module + linked imports) | declare `[[serve]]` / `[components.<name>]` / `[serve.routes]` |
 | **Spawn** | instantiate on the pooling allocator + copy-on-write + `InstancePre` (~440k/s); apply default-deny **capabilities** + a `StoreLimiter` memory ceiling; create the mailbox, fiber, and abort handle | — |
 | **Dispatch** | match the route, own the socket, spawn the handler, send the request over the actor wire, run the ephemeral reply *responder* | — |
 | **Run** | suspend/resume the fiber on every blocking call (`receive`, `Stream::read`, a service `call`); enforce [epoch preemption](./epoch-preemption.md) on CPU-bound guests | your action / service / worker body — straight-line, blocking-looking code |

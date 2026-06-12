@@ -30,8 +30,9 @@ RS compiles to `wasi:http`/the actor world; **TS** runs on embedded rquickjs run
 pull-based streaming for SSE) and `ws_server_js` (a TS worker, one process per
 connection). **The unified serving model: serving is ALWAYS process-per-request
 (HTTP/SSE) / process-per-connection (WS) — there is no "resident" serving mode**
-(removed; resident-vs-per-call now lives only in `[[components]]`, and shared state in
-a `[[components]]` service or `kv`, never in the ephemeral serving instance — so
+(removed; resident-vs-per-call now lives only in `[components.<name>]` via the
+`resident` flag, and shared state in
+a resident `[components.<name>]` service or `kv`, never in the ephemeral serving instance — so
 head-of-line blocking is impossible by construction and a crash drops one unit).
 **Routing is declarative** in a per-listener `rusm.toml` `[serve.routes]` subtable (one
 per `[[serve]]` HTTP/SSE listener, so multiple ports route independently) —
@@ -116,7 +117,7 @@ The spawn path is optimized — pooling allocator + copy-on-write + per-module
 off → zero hot-path atomics) + single runtime-handle clone — sustaining **~440k
 component spawns/sec** (live `component-storm` scenario). Trap → process
 `Crashed`. An **app model** (`rusm-cli`): `rusm new <name>` (scaffold),
-`rusm.toml [[components]]`/`[[serve]]`, `rusm build`
+`rusm.toml [components.<name>]`/`[[serve]]`, `rusm build`
 (cargo `wasm32-wasip2` per `components/*`, no jco), `rusm run`/`rusm dev`/`rusm
 serve`; env the Rust way (process env, then `.env` via `dotenvy`). `rusm-otp` stays Wasm-free
 (verified: no `wasmtime` in its dep tree).

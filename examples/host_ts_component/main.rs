@@ -8,7 +8,7 @@
 //! first-class RUSM process, message-passing with the rest of the node.
 //!
 //! In a real app you'd write `components/worker/index.ts`, run `rusm build`
-//! (Bun → `wasm/worker.js`), and declare it in `rusm.toml [[components]]`. The
+//! (Bun → `wasm/worker.js`), and declare it in `rusm.toml [components.worker]`. The
 //! bundle below is exactly what `bun build --format=iife` emits for such a file.
 //!
 //! Run: `cargo run -p rusm-bench --example host_ts_component`
