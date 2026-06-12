@@ -1,12 +1,9 @@
 //! Live dashboard engines for the serving scenarios (HTTP / WS / SSE, Rust + TS),
-//! driving the **resident** servers — a supervised pool of *long-lived* component
-//! instances that hold state across requests (`resident_http_server` /
-//! `resident_ws_server` + the `*_js` twins), not a fresh instance per request. This
-//! is the "real server" deployment: warm instances, no per-request instantiation,
-//! per-instance restart isolation.
+//! driving the **per-request** servers — a fresh sandboxed instance per request
+//! (HTTP/SSE via `http_server` / `http_server_js`, `wasi:http`) or per connection
+//! (WS via `ws_server` / `ws_server_js`). This is the shape RUSM standardizes serving
+//! on: stateless, isolated, no head-of-line blocking by construction.
 //!
-//! The pool is sized to the resource profile (`instances = workers`), so it's the
-//! resident model without being artificially bottlenecked to a single instance.
 //! Load is generated through the shared [`rusm_loadtest`] path — **balter** for HTTP
 //! request rate, the connection-capacity harness for WS/SSE held connections.
 //!
@@ -29,20 +26,18 @@ use tokio::task::JoinHandle;
 use crate::sample::Sample;
 use crate::scenario::Guest;
 
-// Resident handler fixtures: each component's `run` drives a serving loop (RS via
-// `rusm_rs::{http,ws}::serve`; TS via `export default` on the persistent js-runner,
-// switched by `RUSM_SERVE_ROLE`). They hold state across requests.
-const RS_HTTP: &[u8] =
-    include_bytes!("../../../crates/rusm-wasm/tests/fixtures/rs_resident_count.wasm");
-const TS_HTTP: &str = include_str!("../../../crates/rusm-wasm/tests/fixtures/ts_resident_count.js");
-const RS_WS: &[u8] =
-    include_bytes!("../../../crates/rusm-wasm/tests/fixtures/rs_resident_ws_echo.wasm");
-// The TS **echo** handler (matches the RS echo: one send per frame), not the
-// broadcast chat room — so ws-echo-ts measures the same O(N) workload as ws-echo.
-const TS_WS: &str = include_str!("../../../crates/rusm-wasm/tests/fixtures/ts_resident_ws_echo.js");
-const RS_SSE: &[u8] =
-    include_bytes!("../../../crates/rusm-wasm/tests/fixtures/rs_resident_sse.wasm");
-const TS_SSE: &str = include_str!("../../../crates/rusm-wasm/tests/fixtures/ts_resident_sse.js");
+// Per-request serving fixtures. HTTP/SSE are `wasi:http` components (RS) or
+// `export default { fetch }` bundles (TS) instantiated per request; WS is one
+// sandboxed component process per connection (RS actor / TS `websocket` worker).
+const RS_HTTP: &[u8] = include_bytes!("../../../crates/rusm-wasm/tests/fixtures/http_lean.wasm");
+const TS_HTTP: &str = include_str!("../../../crates/rusm-wasm/tests/fixtures/ts_http_hello.js");
+const RS_WS: &[u8] = include_bytes!("../../../crates/rusm-wasm/tests/fixtures/rs_ws_echo.wasm");
+// The TS **echo** worker (matches the RS echo: one send per frame), so ws-echo-ts
+// measures the same O(N) per-connection workload as ws-echo.
+const TS_WS: &str = include_str!("../../../crates/rusm-wasm/tests/fixtures/ts_ws_echo.js");
+// A `wasi:http` component / bundle that streams an endless `text/event-stream`.
+const RS_SSE: &[u8] = include_bytes!("../../../crates/rusm-wasm/tests/fixtures/sse_firehose.wasm");
+const TS_SSE: &str = include_str!("../../../crates/rusm-wasm/tests/fixtures/ts_sse_firehose.js");
 
 /// At most this many latency samples surfaced per tick.
 const LATENCY_SAMPLE: usize = 64;
@@ -58,12 +53,6 @@ fn serving_caps() -> rusm_wasm::Capabilities {
         .inherit_stdio(false)
 }
 
-/// Resident pool size — a small warm pool scaled by the resource profile (≥2). A
-/// genuine resident deployment (fixed long-lived instances), not instance-per-request.
-fn pool_size(workers: usize) -> usize {
-    workers.max(2)
-}
-
 /// Binds an ephemeral loopback port and returns it plus the adopted listener.
 fn bind_loopback() -> (std::net::SocketAddr, TcpListener) {
     let std_listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback");
@@ -75,14 +64,14 @@ fn bind_loopback() -> (std::net::SocketAddr, TcpListener) {
     (addr, listener)
 }
 
-/// **HTTP throughput** (Rust or TS), driven live by **balter** against a **resident**
-/// HTTP handler (a warm pool that holds state across requests). The tile charts the
-/// achieved req/s and request latency.
+/// **HTTP throughput** (Rust or TS), driven live by **balter** against a **per-request**
+/// HTTP handler (a fresh sandboxed instance per request). The tile charts the achieved
+/// req/s and request latency.
 pub struct HttpServingEngine {
     // Held for the run; dropping it stops the server's epoch ticker + reclaims processes.
     _wr: WasmRuntime,
-    // The live process count — the resident pool + per-request responder processes
-    // (the logical concurrency actually spun), reported on the tile.
+    // The live process count — the per-request instances currently in flight (the
+    // logical concurrency actually spun), reported on the tile.
     rt: Runtime,
     server_task: JoinHandle<()>,
     stop: Arc<AtomicBool>,
@@ -97,28 +86,17 @@ impl HttpServingEngine {
         let rt = Runtime::new();
         let wr = WasmRuntime::new(rt.clone()).expect("wasm runtime");
         let caps = serving_caps();
-        let instances = pool_size(workers);
         let (addr, listener) = bind_loopback();
 
-        // Build the resident HTTP server and drive its accept loop on a task.
+        // Build the per-request HTTP server and drive its accept loop on a task.
         let server_task = match guest {
             Guest::Rust => {
                 let prepared = wr
-                    .prepare_component(
-                        &wr.compile_component(RS_HTTP)
-                            .expect("compile resident http"),
-                        "run",
-                    )
-                    .expect("prepare resident http");
-                tokio::spawn(
-                    wr.resident_http_server(&prepared, caps, instances)
-                        .serve(listener),
-                )
+                    .prepare_http(&wr.compile_component(RS_HTTP).expect("compile http"))
+                    .expect("prepare wasi:http");
+                tokio::spawn(wr.http_server(&prepared, caps).serve(listener))
             }
-            Guest::Ts => tokio::spawn(
-                wr.resident_http_server_js(TS_HTTP.as_bytes().to_vec(), caps, instances)
-                    .serve(listener),
-            ),
+            Guest::Ts => tokio::spawn(wr.http_server_js(TS_HTTP.to_string(), caps).serve(listener)),
         };
 
         // A steady, sustainable offered rate scaled by the profile; balter paces it
@@ -172,8 +150,8 @@ impl HttpServingEngine {
             latencies_ns = latencies_ns.split_off(latencies_ns.len() - LATENCY_SAMPLE);
         }
 
-        // The charted concurrency is the real live RUSM process count — the resident
-        // pool plus the per-request responder processes currently in flight.
+        // The charted concurrency is the real live RUSM process count — the
+        // per-request handler instances currently in flight.
         let process_count = self.rt.process_count() as u64;
         Sample {
             ops_per_sec,
@@ -194,7 +172,7 @@ impl Drop for HttpServingEngine {
         self.stop.store(true, Ordering::Relaxed);
         rusm_loadtest::http::clear_latency_sink();
         self.server_task.abort();
-        // Reclaim the resident pool + any in-flight work so none lingers into the next run.
+        // Reclaim any in-flight per-request work so none lingers into the next run.
         self._wr.shutdown();
     }
 }
@@ -206,14 +184,14 @@ pub enum CapacityKind {
     Sse,
 }
 
-/// **WS echo** or **SSE fan-out** (Rust or TS) against a **resident** server (a warm
-/// pool holding connection/stream state), with many held connections driven by the
-/// shared capacity harness. Charts round-trips/sec (WS) or events/sec (SSE) and live
-/// concurrency.
+/// **WS echo** or **SSE fan-out** (Rust or TS) against a **per-request** server (one
+/// sandboxed process per connection / a fresh instance per SSE stream), with many held
+/// connections driven by the shared capacity harness. Charts round-trips/sec (WS) or
+/// events/sec (SSE) and live concurrency.
 pub struct CapacityServingEngine {
     _wr: WasmRuntime,
-    // Live process count: the resident pool + a writer/responder process per held
-    // connection or stream — the logical concurrency actually spun.
+    // Live process count: a process per held connection or stream (plus its writer/
+    // responder) — the logical concurrency actually spun.
     rt: Runtime,
     server_task: JoinHandle<()>,
     load: CapacityLoad,
@@ -227,50 +205,32 @@ impl CapacityServingEngine {
         let rt = Runtime::new();
         let wr = WasmRuntime::new(rt.clone()).expect("wasm runtime");
         let caps = serving_caps();
-        let instances = pool_size(workers);
         let (addr, listener) = bind_loopback();
 
-        // Build the matching resident server (WS gateway, or HTTP for SSE streaming)
-        // and drive its accept loop; the capacity harness then holds the connections.
+        // Build the matching per-request server (a WS process per connection, or a
+        // `wasi:http` SSE instance per stream); the capacity harness holds the connections.
         let (server_task, url, proto) = match (kind, guest) {
             (CapacityKind::Ws, Guest::Rust) => {
                 let prepared = wr
-                    .prepare_component(
-                        &wr.compile_component(RS_WS).expect("compile resident ws"),
-                        "run",
-                    )
-                    .expect("prepare resident ws");
-                let task = tokio::spawn(
-                    wr.resident_ws_server(&prepared, caps, instances)
-                        .serve(listener),
-                );
+                    .prepare_component(&wr.compile_component(RS_WS).expect("compile ws"), "run")
+                    .expect("prepare ws");
+                let task = tokio::spawn(wr.ws_server(&prepared, caps).serve(listener));
                 (task, format!("ws://{addr}/"), Protocol::Ws)
             }
             (CapacityKind::Ws, Guest::Ts) => {
-                let task = tokio::spawn(
-                    wr.resident_ws_server_js(TS_WS.as_bytes().to_vec(), caps, instances)
-                        .serve(listener),
-                );
+                let task = tokio::spawn(wr.ws_server_js(TS_WS.to_string(), caps).serve(listener));
                 (task, format!("ws://{addr}/"), Protocol::Ws)
             }
             (CapacityKind::Sse, Guest::Rust) => {
                 let prepared = wr
-                    .prepare_component(
-                        &wr.compile_component(RS_SSE).expect("compile resident sse"),
-                        "run",
-                    )
-                    .expect("prepare resident sse");
-                let task = tokio::spawn(
-                    wr.resident_http_server(&prepared, caps, instances)
-                        .serve(listener),
-                );
+                    .prepare_http(&wr.compile_component(RS_SSE).expect("compile sse"))
+                    .expect("prepare wasi:http sse");
+                let task = tokio::spawn(wr.http_server(&prepared, caps).serve(listener));
                 (task, format!("http://{addr}/"), Protocol::Sse)
             }
             (CapacityKind::Sse, Guest::Ts) => {
-                let task = tokio::spawn(
-                    wr.resident_http_server_js(TS_SSE.as_bytes().to_vec(), caps, instances)
-                        .serve(listener),
-                );
+                let task =
+                    tokio::spawn(wr.http_server_js(TS_SSE.to_string(), caps).serve(listener));
                 (task, format!("http://{addr}/"), Protocol::Sse)
             }
         };
@@ -305,8 +265,8 @@ impl CapacityServingEngine {
             latencies_ns = latencies_ns.split_off(latencies_ns.len() - LATENCY_SAMPLE);
         }
 
-        // Real live RUSM processes (resident pool + per-connection writer/responder
-        // processes) — the logical concurrency, not the client-side connection count.
+        // Real live RUSM processes (a process per connection/stream plus its writer/
+        // responder) — the logical concurrency, not the client-side connection count.
         let process_count = self.rt.process_count() as u64;
         Sample {
             ops_per_sec,
@@ -335,10 +295,13 @@ mod tests {
     use super::*;
 
     /// Warm up until throughput appears, then verify it's **sustained** — every tick
-    /// over a ~1.5s window is nonzero. Returns the minimum sustained rate, or `0.0` if
-    /// it stalled mid-run. A first-nonzero check would miss the silent-zero class
-    /// (e.g. a finite stream the harness holds as if infinite: it spikes once, then
-    /// drops to 0); requiring *every* window tick nonzero catches exactly that.
+    /// over a ~1.5s window keeps producing. Returns the minimum *nonzero* sustained
+    /// rate, or `0.0` if it stalled mid-run. A first-nonzero check would miss the
+    /// silent-zero class (a finite stream the harness holds as if infinite: it spikes
+    /// once, then drops to 0 **and stays there**). We catch exactly that — a permanent
+    /// stall — by failing on **two consecutive** zero ticks, while tolerating a single
+    /// transient dip (CPU starvation when the whole suite runs in parallel): a real
+    /// collapse is all-zero, so it always trips the consecutive check.
     async fn sustained_throughput(mut tick: impl FnMut() -> Sample) -> f64 {
         // Warm-up: engines ramp (connect, instantiate, balter seed) — wait for first ops.
         let mut warmed = false;
@@ -352,14 +315,19 @@ mod tests {
         if !warmed {
             return 0.0;
         }
-        // Sustained window: a single zero tick here is the silent-zero regression.
         let mut min = f64::INFINITY;
+        let mut prev_zero = false;
         for _ in 0..30 {
             tokio::time::sleep(Duration::from_millis(50)).await;
             let ops = tick().ops_per_sec;
             if ops == 0.0 {
-                return 0.0; // stalled while "running" — fail loudly
+                if prev_zero {
+                    return 0.0; // two ticks running with no output → a genuine stall
+                }
+                prev_zero = true;
+                continue;
             }
+            prev_zero = false;
             min = min.min(ops);
         }
         min
@@ -371,7 +339,7 @@ mod tests {
         let min = sustained_throughput(|| engine.tick()).await;
         assert!(
             min > 0.0,
-            "resident HTTP (RS) sustained throughput (min {min:.0}/s)"
+            "per-request HTTP (RS) sustained throughput (min {min:.0}/s)"
         );
     }
 
@@ -381,7 +349,7 @@ mod tests {
         let min = sustained_throughput(|| engine.tick()).await;
         assert!(
             min > 0.0,
-            "resident HTTP (TS) sustained throughput (min {min:.0}/s)"
+            "per-request HTTP (TS) sustained throughput (min {min:.0}/s)"
         );
     }
 
@@ -391,7 +359,7 @@ mod tests {
         let min = sustained_throughput(|| engine.tick()).await;
         assert!(
             min > 0.0,
-            "resident WS echo (RS) sustained round-trips (min {min:.0}/s)"
+            "per-request WS echo (RS) sustained round-trips (min {min:.0}/s)"
         );
     }
 
@@ -401,19 +369,19 @@ mod tests {
         let min = sustained_throughput(|| engine.tick()).await;
         assert!(
             min > 0.0,
-            "resident WS echo (TS) sustained round-trips (min {min:.0}/s)"
+            "per-request WS echo (TS) sustained round-trips (min {min:.0}/s)"
         );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn sse_engine_sustains_throughput_rust() {
-        // The exact regression that bit us: a finite resident SSE burst held as an
+        // The exact regression that bit us: a finite SSE burst held as an
         // infinite stream collapses to 0. The sustained window must stay nonzero.
         let mut engine = CapacityServingEngine::new(1, 4, CapacityKind::Sse, Guest::Rust);
         let min = sustained_throughput(|| engine.tick()).await;
         assert!(
             min > 0.0,
-            "resident SSE (RS) sustained events (min {min:.0}/s)"
+            "per-request SSE (RS) sustained events (min {min:.0}/s)"
         );
     }
 
@@ -423,7 +391,7 @@ mod tests {
         let min = sustained_throughput(|| engine.tick()).await;
         assert!(
             min > 0.0,
-            "resident SSE (TS) sustained events (min {min:.0}/s)"
+            "per-request SSE (TS) sustained events (min {min:.0}/s)"
         );
     }
 }

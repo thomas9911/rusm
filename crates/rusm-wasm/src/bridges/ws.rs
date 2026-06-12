@@ -75,7 +75,6 @@ async fn echo_upgrade(
 }
 
 /// The `Sec-WebSocket-Accept` for a request, or `None` if it carries no WS key.
-/// Shared with the resident WS server ([`super::resident::ResidentWsServer`]).
 pub(crate) fn ws_accept(req: &hyper::Request<hyper::body::Incoming>) -> Option<String> {
     req.headers()
         .get("sec-websocket-key")

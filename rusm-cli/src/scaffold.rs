@@ -171,14 +171,11 @@ fn files(app: &NewApp) -> Vec<(PathBuf, String)> {
     out
 }
 
-/// A resident handler holds state across requests/connections; per-request gives a
-/// fresh sandboxed instance each time. TS HTTP/SSE run per-request on the js-runner;
-/// TS WS and every Rust handler are resident (the ergonomic `serve` APIs are resident).
-fn is_resident(app: &NewApp) -> bool {
-    matches!(
-        (app.lang, app.protocol),
-        (Lang::TypeScript, Protocol::Ws) | (Lang::Rust, _)
-    )
+/// A Rust HTTP/SSE app uses the `#[rusm_rs::handlers]` model — named actions reached
+/// through a `[routes]` table — so its `rusm.toml` carries a routes block. TS HTTP/SSE
+/// (a `wasi:http` `export default`) and WebSocket (per-connection) need no routes.
+fn has_routes(app: &NewApp) -> bool {
+    app.lang == Lang::Rust && matches!(app.protocol, Protocol::Http | Protocol::Sse)
 }
 
 fn rusm_toml(app: &NewApp) -> String {
@@ -186,15 +183,11 @@ fn rusm_toml(app: &NewApp) -> String {
         Lang::TypeScript => "wasm/api.js",
         Lang::Rust => "wasm/api.wasm",
     };
-    let mode = if is_resident(app) {
-        let note = if app.protocol == Protocol::Ws {
-            "one instance serves every connection (shared state)"
-        } else {
-            "a long-lived instance; state persists across requests"
-        };
-        format!("\nmode = \"resident\"        # {note}")
+    // A Rust HTTP/SSE handler component dispatches by route to a named action.
+    let routes = if has_routes(app) {
+        "\n\n[routes]\n\"GET /\" = \"api#home\"     # METHOD /path = component#action\n"
     } else {
-        String::new()
+        ""
     };
     format!(
         "# RUSM app config. `rusm serve` hosts each [[serve]] entry; `rusm build` compiles\n\
@@ -204,7 +197,8 @@ fn rusm_toml(app: &NewApp) -> String {
          name = \"api\"                # loads {artifact}, built from components/api\n\
          protocol = \"{proto}\"           # http | sse | ws\n\
          listen = \"127.0.0.1:8080\"\n\
-         capability = \"sandboxed\"     # default-deny; see [capabilities.<name>] for more{mode}\n",
+         capability = \"sandboxed\"     # default-deny; see [capabilities.<name>] for more\
+         {routes}",
         proto = app.protocol.as_str(),
     )
 }
@@ -312,56 +306,60 @@ fn rust_component(protocol: Protocol) -> &'static str {
     match protocol {
         Protocol::Http => {
             "\
-//! A RUSM HTTP component: implement `Handler` and serve it. The instance is
-//! long-lived, so `&mut self` state persists across requests.
-use rusm_rs::http::{Handler, Request, Response};
+//! A RUSM HTTP component: a module of named handler **actions**. The `[routes]` table
+//! in rusm.toml maps `METHOD /path` to `api#<action>`; the host spawns a fresh
+//! sandboxed instance per request and dispatches the matched action here — no `main`,
+//! no router, no request/reply plumbing.
+use rusm_rs::http::{Params, Request, Response};
 
-#[derive(Default)]
-struct Api {
-    hits: u64,
-}
+#[rusm_rs::handlers]
+pub mod api {
+    use super::*;
 
-impl Handler for Api {
-    fn handle(&mut self, _request: Request) -> Response {
-        self.hits += 1;
-        Response::text(format!(\"Hello from RUSM \u{1F44B}  (hit #{})\\n\", self.hits))
+    pub fn home(request: Request, _params: Params) -> Response {
+        let url = request.url;
+        Response::text(format!(\"Hello from RUSM \u{1F44B}  (you asked for {url})\\n\"))
     }
-}
-
-#[rusm_rs::main]
-fn main() {
-    rusm_rs::http::serve(Api::default());
 }
 "
         }
         Protocol::Sse => {
             "\
-//! A RUSM SSE component: yield the event chunks for each request; they stream to the
-//! client as a `text/event-stream` body, with the byte stream's natural back-pressure.
-#[rusm_rs::main]
-fn main() {
-    rusm_rs::http::serve_sse(|_request| {
-        (0..5).map(|n| format!(\"data: tick {n}\\n\\n\").into_bytes())
-    });
+//! A RUSM SSE component: a handler **action** taking `Sse` streams a `text/event-stream`
+//! body. Each request is its own process, so the action may block here for the whole
+//! connection — write events as they occur. `[routes]` maps `GET /` to `api#home`.
+use rusm_rs::http::{Params, Request, Sse};
+
+#[rusm_rs::handlers]
+pub mod api {
+    use super::*;
+
+    pub fn home(_request: Request, _params: Params, sse: Sse) {
+        for n in 0..5 {
+            if !sse.data(format!(\"tick {n}\").as_bytes()) {
+                break; // the client disconnected
+            }
+        }
+    }
 }
 "
         }
         Protocol::Ws => {
             "\
-//! A RUSM WebSocket component: one instance serves every connection. Reply to a
-//! connection by sending bytes to its `conn` pid; hold shared state in `self`.
-use rusm_rs::ws::{self, Handler};
-use rusm_rs::Pid;
+//! A RUSM WebSocket component: the host runs one instance **per connection**, so the
+//! handler is naturally isolated. Reply with `conn.send(...)`; keep shared state in a
+//! `[[components]]` service or `kv` (not in this per-connection process).
+use rusm_rs::ws::{self, Connection, Handler};
 
 #[derive(Default)]
 struct Api;
 
 impl Handler for Api {
-    fn open(&mut self, conn: Pid) {
-        ws::send(conn, b\"welcome to RUSM\\n\");
+    fn open(&mut self, conn: &Connection) {
+        conn.send(b\"welcome to RUSM\\n\");
     }
-    fn message(&mut self, conn: Pid, data: Vec<u8>) {
-        ws::send(conn, &data); // echo the frame back to the sender
+    fn message(&mut self, conn: &Connection, data: Vec<u8>) {
+        conn.send(&data); // echo the frame back to the sender
     }
 }
 
@@ -423,7 +421,7 @@ fn validate_name(name: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rusm_node::{NodeConfig, ServeMode, ServeProtocol};
+    use rusm_node::{NodeConfig, ServeProtocol};
 
     fn app(lang: Lang, protocol: Protocol) -> NewApp {
         NewApp {
@@ -433,18 +431,18 @@ mod tests {
         }
     }
 
-    const COMBOS: &[(Lang, Protocol, ServeProtocol, bool)] = &[
-        (Lang::TypeScript, Protocol::Http, ServeProtocol::Http, false),
-        (Lang::TypeScript, Protocol::Sse, ServeProtocol::Sse, false),
-        (Lang::TypeScript, Protocol::Ws, ServeProtocol::Ws, true),
-        (Lang::Rust, Protocol::Http, ServeProtocol::Http, true),
-        (Lang::Rust, Protocol::Sse, ServeProtocol::Sse, true),
-        (Lang::Rust, Protocol::Ws, ServeProtocol::Ws, true),
+    const COMBOS: &[(Lang, Protocol, ServeProtocol)] = &[
+        (Lang::TypeScript, Protocol::Http, ServeProtocol::Http),
+        (Lang::TypeScript, Protocol::Sse, ServeProtocol::Sse),
+        (Lang::TypeScript, Protocol::Ws, ServeProtocol::Ws),
+        (Lang::Rust, Protocol::Http, ServeProtocol::Http),
+        (Lang::Rust, Protocol::Sse, ServeProtocol::Sse),
+        (Lang::Rust, Protocol::Ws, ServeProtocol::Ws),
     ];
 
     #[test]
     fn every_combo_scaffolds_a_coherent_app() {
-        for &(lang, protocol, want_proto, resident) in COMBOS {
+        for &(lang, protocol, want_proto) in COMBOS {
             let dir = tempfile::tempdir().unwrap();
             let app = app(lang, protocol);
             let created = scaffold(dir.path(), &app).unwrap();
@@ -479,32 +477,43 @@ mod tests {
             }
 
             // The generated rusm.toml parses through the real config and declares the
-            // right protocol + mode.
+            // right protocol; a Rust HTTP/SSE app also gets a usable `[routes]` table.
             let toml = std::fs::read_to_string(root.join("rusm.toml")).unwrap();
             let cfg = NodeConfig::from_toml(&toml).expect("scaffolded rusm.toml must parse");
             assert_eq!(cfg.serve.len(), 1);
             assert_eq!(cfg.serve[0].name, "api");
             assert_eq!(cfg.serve[0].protocol, want_proto, "{lang:?}/{protocol:?}");
-            let want_mode = if resident {
-                ServeMode::Resident
-            } else {
-                ServeMode::PerRequest
-            };
-            assert_eq!(cfg.serve[0].mode, want_mode, "{lang:?}/{protocol:?}");
+            let routed = lang == Lang::Rust && matches!(protocol, Protocol::Http | Protocol::Sse);
+            let table = cfg.route_table().expect("routes compile");
+            assert_eq!(
+                table.is_empty(),
+                !routed,
+                "{lang:?}/{protocol:?}: routes present iff Rust HTTP/SSE"
+            );
         }
     }
 
     #[test]
-    fn rust_components_carry_no_wit_dir_and_use_the_main_macro() {
-        let dir = tempfile::tempdir().unwrap();
-        scaffold(dir.path(), &app(Lang::Rust, Protocol::Http)).unwrap();
-        let root = dir.path().join("demo");
-        assert!(
-            !root.join("components/api/wit").exists(),
-            "no wit/ dir needed"
-        );
-        let src = std::fs::read_to_string(root.join("components/api/src/lib.rs")).unwrap();
-        assert!(src.contains("#[rusm_rs::main]"));
+    fn rust_components_carry_no_wit_dir_and_use_a_rusm_macro() {
+        // HTTP is a `#[rusm_rs::handlers]` component; WS is `#[rusm_rs::main]`. Neither
+        // needs a `wit/` dir (the macro inlines the WIT) nor any wit-bindgen boilerplate.
+        for (protocol, macro_attr) in [
+            (Protocol::Http, "#[rusm_rs::handlers]"),
+            (Protocol::Ws, "#[rusm_rs::main]"),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            scaffold(dir.path(), &app(Lang::Rust, protocol)).unwrap();
+            let root = dir.path().join("demo");
+            assert!(
+                !root.join("components/api/wit").exists(),
+                "{protocol:?}: no wit/ dir needed"
+            );
+            let src = std::fs::read_to_string(root.join("components/api/src/lib.rs")).unwrap();
+            assert!(
+                src.contains(macro_attr),
+                "{protocol:?}: expected {macro_attr}"
+            );
+        }
     }
 
     #[test]

@@ -191,30 +191,15 @@ impl ServeProtocol {
     }
 }
 
-/// How the handler for a `[[serve]]` entry is instanced.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum ServeMode {
-    /// A fresh sandboxed instance per request (HTTP/SSE) or per connection (WS):
-    /// stateless and isolated — the default, and the throughput-optimal shape.
-    #[default]
-    PerRequest,
-    /// One (or a pooled set of) long-lived instance(s) serve everything and **hold
-    /// state**, supervised for restart. Set `instances` to shard across a pool.
-    Resident,
-}
-
-fn one() -> usize {
-    1
-}
-
-/// One `[[serve]]` entry: a component to host as a network server on its own port.
-/// Loaded from `./wasm/<name>.{wasm,js}` and run under a capability profile —
-/// HTTP/SSE via `http_server`, WebSocket via `ws_server`.
+/// One `[[serve]]` entry: a network listener hosted on its own port. HTTP/SSE
+/// listeners dispatch each request through the `[routes]` table to a handler
+/// component (process-per-request); a WebSocket listener runs one sandboxed component
+/// process per connection (loaded from `./wasm/<name>.{wasm,js}`).
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ServeSpec {
-    /// Component name; resolves to `./wasm/<name>.wasm` (or `<name>.js`).
+    /// Component name; resolves to `./wasm/<name>.wasm` (or `<name>.js`). For an
+    /// HTTP/SSE listener this is the default handler component routes may target.
     pub name: String,
     /// Wire protocol to host over (`http` / `sse` / `ws`).
     pub protocol: ServeProtocol,
@@ -223,20 +208,6 @@ pub struct ServeSpec {
     /// Capability profile id (`sandboxed` / `network-client` / `trusted` / custom).
     #[serde(default = "default_capability")]
     pub capability: String,
-    /// `per-request` (default) or `resident` (stateful, supervised).
-    #[serde(default)]
-    pub mode: ServeMode,
-    /// Resident pool size (≥1). Only meaningful for `mode = "resident"`.
-    #[serde(default = "one")]
-    pub instances: usize,
-    /// Resident routing affinity: `"header:<name>"` pins requests/connections with
-    /// the same header value to one instance; omitted → round-robin.
-    #[serde(default)]
-    pub shard_by: Option<String>,
-    /// Resident overload back-pressure: max concurrent in-flight requests (HTTP/SSE)
-    /// or connections (WS) **per instance**; excess sheds to 503. Omitted → unbounded.
-    #[serde(default)]
-    pub max_inflight: Option<usize>,
     /// Load the (JS) bundle from a `url:`/`http(s)://` URL or `kv:<bucket>/<key>`
     /// instead of `./wasm/<name>` (see [`BundleSource`]). Omitted → the local artifact.
     #[serde(default)]
@@ -527,31 +498,22 @@ mod tests {
         assert_eq!(cfg.serve[2].protocol, ServeProtocol::Sse);
         assert!(cfg.serve[0].protocol.is_http() && cfg.serve[2].protocol.is_http());
         assert!(!cfg.serve[1].protocol.is_http());
-        // Mode defaults to per-request, instances to 1, no shard affinity.
-        assert_eq!(cfg.serve[0].mode, ServeMode::PerRequest);
-        assert_eq!(cfg.serve[0].instances, 1);
-        assert!(cfg.serve[0].shard_by.is_none());
     }
 
     #[test]
-    fn parses_resident_serve_fields() {
+    fn parses_a_routes_table() {
         let cfg = NodeConfig::from_toml(
             r#"
-            [[serve]]
-            name = "rooms"
-            protocol = "ws"
-            listen = "127.0.0.1:9000"
-            mode = "resident"
-            instances = 4
-            shard_by = "header:x-session"
-            max_inflight = 256
+            [routes]
+            "GET /" = "api#home"
+            "POST /users/:id" = "api#update"
             "#,
         )
         .unwrap();
-        assert_eq!(cfg.serve[0].mode, ServeMode::Resident);
-        assert_eq!(cfg.serve[0].instances, 4);
-        assert_eq!(cfg.serve[0].shard_by.as_deref(), Some("header:x-session"));
-        assert_eq!(cfg.serve[0].max_inflight, Some(256));
+        let table = cfg.route_table().expect("routes compile");
+        assert!(!table.is_empty());
+        // The matcher itself is unit-tested in `routes.rs`; here we only prove the
+        // manifest `[routes]` table parses and compiles into a usable table.
     }
 
     #[test]

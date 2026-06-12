@@ -16,13 +16,11 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, Context, Result};
 use rusm_node::{
-    BundleSource, CapabilitySpec, ComponentSpec, Resolution, RouteTable, ServeMode, ServeProtocol,
-    ServeSpec,
+    BundleSource, CapabilitySpec, ComponentSpec, Resolution, RouteTable, ServeProtocol, ServeSpec,
 };
 use rusm_otp::ProcessHandle;
 use rusm_wasm::{
-    Capabilities, CapabilityProfile, HttpServer, ResidentHttpServer, ResidentWsServer, Resolver,
-    Routed, WasmRuntime, WsServer,
+    Capabilities, CapabilityProfile, HttpServer, Resolver, Routed, WasmRuntime, WsServer,
 };
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
@@ -242,25 +240,21 @@ pub async fn serve_apps(
         let remote = remote_bundle(spec.source.as_deref(), wasm).await?;
         // Build the server up front so a load/compile error surfaces here (before we
         // claim the endpoint is up), then drive the accept loop on its own task.
-        let task = match (&routed, spec.protocol.is_http(), spec.mode) {
+        let task = match (&routed, spec.protocol.is_http()) {
             // Routed per-request HTTP/SSE: resolve the route, spawn the matched handler
             // fresh, dispatch the action. The shape RUSM standardizes serving on.
-            (Some((resolve, caps_map)), true, _) => tokio::spawn(
+            (Some((resolve, caps_map)), true) => tokio::spawn(
                 wasm.routed_http_server(resolve.clone(), caps_map.clone())
                     .serve(listener),
             ),
-            (_, true, ServeMode::PerRequest) => tokio::spawn(
+            // No `[routes]` table: a single handler-less `wasi:http` component per request.
+            (None, true) => tokio::spawn(
                 build_http_server(dir, wasm, &spec.name, caps, remote)?.serve(listener),
             ),
-            (_, true, ServeMode::Resident) => tokio::spawn(
-                build_resident_http_server(dir, wasm, spec, caps, remote)?.serve(listener),
-            ),
-            (_, false, ServeMode::PerRequest) => {
+            // WebSocket: one sandboxed component process per connection.
+            (_, false) => {
                 tokio::spawn(build_ws_server(dir, wasm, &spec.name, caps, remote)?.serve(listener))
             }
-            (_, false, ServeMode::Resident) => tokio::spawn(
-                build_resident_ws_server(dir, wasm, spec, caps, remote)?.serve(listener),
-            ),
         };
         endpoints.push(ServedEndpoint {
             name: spec.name.clone(),
@@ -304,7 +298,7 @@ fn register_handler_component(dir: &Path, wasm: &WasmRuntime, name: &str) -> Res
         wasm.register_js_component(name.to_string(), bundle);
         return Ok(());
     }
-    let prepared = prepare_resident_component(wasm, &wasm_dir, name)?;
+    let prepared = prepare_actor_component(wasm, &wasm_dir, name)?;
     wasm.register_component(name.to_string(), prepared);
     Ok(())
 }
@@ -370,70 +364,9 @@ fn build_ws_server(
     Ok(wasm.ws_server(&prepared, caps))
 }
 
-/// Builds a **resident** HTTP/SSE server for `spec`: a supervised pool of
-/// `spec.instances` long-lived actor handlers (`.js` on the js-runner, else a
-/// `.wasm` actor component driving `rusm_rs::http::serve`), with optional shard
-/// affinity. Unlike the per-request path this is an actor component, not `wasi:http`.
-fn build_resident_http_server(
-    dir: &Path,
-    wasm: &WasmRuntime,
-    spec: &ServeSpec,
-    caps: Capabilities,
-    remote: Option<Vec<u8>>,
-) -> Result<ResidentHttpServer> {
-    let wasm_dir = dir.join("wasm");
-    let name = &spec.name;
-    let js_path = wasm_dir.join(format!("{name}.js"));
-    let server = if let Some(bundle) = remote {
-        wasm.resident_http_server_js(bundle, caps, spec.instances)
-    } else if js_path.is_file() {
-        let bundle =
-            std::fs::read(&js_path).with_context(|| format!("reading {}", js_path.display()))?;
-        wasm.resident_http_server_js(bundle, caps, spec.instances)
-    } else {
-        let prepared = prepare_resident_component(wasm, &wasm_dir, name)?;
-        wasm.resident_http_server(&prepared, caps, spec.instances)
-    };
-    let server = server.shard_by(spec.shard_by.as_deref());
-    Ok(match spec.max_inflight {
-        Some(limit) => server.max_inflight(limit),
-        None => server,
-    })
-}
-
-/// Builds a **resident** WebSocket server for `spec`: a supervised pool serving all
-/// connections from shared state (`.js` worker / `.wasm` actor driving
-/// `rusm_rs::ws::serve`), with optional shard affinity.
-fn build_resident_ws_server(
-    dir: &Path,
-    wasm: &WasmRuntime,
-    spec: &ServeSpec,
-    caps: Capabilities,
-    remote: Option<Vec<u8>>,
-) -> Result<ResidentWsServer> {
-    let wasm_dir = dir.join("wasm");
-    let name = &spec.name;
-    let js_path = wasm_dir.join(format!("{name}.js"));
-    let server = if let Some(bundle) = remote {
-        wasm.resident_ws_server_js(bundle, caps, spec.instances)
-    } else if js_path.is_file() {
-        let bundle =
-            std::fs::read(&js_path).with_context(|| format!("reading {}", js_path.display()))?;
-        wasm.resident_ws_server_js(bundle, caps, spec.instances)
-    } else {
-        let prepared = prepare_resident_component(wasm, &wasm_dir, name)?;
-        wasm.resident_ws_server(&prepared, caps, spec.instances)
-    };
-    let server = server.shard_by(spec.shard_by.as_deref());
-    Ok(match spec.max_inflight {
-        Some(limit) => server.max_inflight(limit),
-        None => server,
-    })
-}
-
-/// Compile + prepare a `.wasm` actor component (the `run` export) for resident
-/// serving — shared by the resident HTTP and WS builders.
-fn prepare_resident_component(
+/// Compile + prepare a `.wasm` **actor** component (the `run` export) — a
+/// `#[rusm_rs::handlers]`/`#[rusm_rs::main]` component, the per-request routed handler.
+fn prepare_actor_component(
     wasm: &WasmRuntime,
     wasm_dir: &Path,
     name: &str,
@@ -611,10 +544,6 @@ mod tests {
             protocol: ServeProtocol::Http,
             listen: "127.0.0.1:0".to_string(), // ephemeral; we read back the real port
             capability: "trusted".to_string(),
-            mode: ServeMode::PerRequest,
-            instances: 1,
-            shard_by: None,
-            max_inflight: None,
             source: None,
         }];
         let endpoints = serve_apps(
@@ -666,10 +595,6 @@ mod tests {
             protocol: ServeProtocol::Ws,
             listen: "127.0.0.1:0".to_string(),
             capability: "trusted".to_string(),
-            mode: ServeMode::PerRequest,
-            instances: 1,
-            shard_by: None,
-            max_inflight: None,
             source: None,
         }];
         let endpoints = serve_apps(
@@ -696,58 +621,6 @@ mod tests {
         );
     }
 
-    // A resident (stateful) actor HTTP handler fixture — counts requests.
-    const RS_RESIDENT_COUNT: &[u8] =
-        include_bytes!("../../crates/rusm-wasm/tests/fixtures/rs_resident_count.wasm");
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn serves_a_resident_stateful_component_on_a_real_port() {
-        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
-
-        // `[[serve]] mode = "resident"` end-to-end: one long-lived instance holds
-        // state, so two GETs over real sockets see the counter advance (hit #1, #2).
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir(dir.path().join("wasm")).unwrap();
-        std::fs::write(dir.path().join("wasm/counter.wasm"), RS_RESIDENT_COUNT).unwrap();
-
-        let rt = Runtime::new();
-        let wasm = WasmRuntime::new(rt).unwrap();
-        let specs = vec![ServeSpec {
-            name: "counter".to_string(),
-            protocol: ServeProtocol::Http,
-            listen: "127.0.0.1:0".to_string(),
-            capability: "sandboxed".to_string(),
-            mode: ServeMode::Resident,
-            instances: 1,
-            shard_by: None,
-            max_inflight: None,
-            source: None,
-        }];
-        let endpoints = serve_apps(
-            dir.path(),
-            &wasm,
-            &specs,
-            &RouteTable::default(),
-            &[],
-            &HashMap::new(),
-        )
-        .await
-        .unwrap();
-        let addr = endpoints[0].addr;
-
-        let get = || async move {
-            let mut conn = TcpStream::connect(addr).await.unwrap();
-            conn.write_all(b"GET / HTTP/1.1\r\nHost: rusm\r\nConnection: close\r\n\r\n")
-                .await
-                .unwrap();
-            let mut buf = Vec::new();
-            conn.read_to_end(&mut buf).await.unwrap();
-            String::from_utf8_lossy(&buf).into_owned()
-        };
-        assert!(get().await.contains("hit #1"), "first request");
-        assert!(get().await.contains("hit #2"), "state persisted (resident)");
-    }
-
     // A `#[rusm_rs::handlers]` component: `fn hello(_, params)` + `fn echo(req, _)`.
     const RS_HANDLERS: &[u8] =
         include_bytes!("../../crates/rusm-wasm/tests/fixtures/rs_handlers_demo.wasm");
@@ -768,10 +641,6 @@ mod tests {
             protocol: ServeProtocol::Http,
             listen: "127.0.0.1:0".to_string(),
             capability: "sandboxed".to_string(),
-            mode: ServeMode::PerRequest,
-            instances: 1,
-            shard_by: None,
-            max_inflight: None,
             source: None,
         }];
         let routes = RouteTable::from_map(&HashMap::from([
@@ -817,10 +686,6 @@ mod tests {
             protocol: ServeProtocol::Http,
             listen: "127.0.0.1:0".to_string(),
             capability: "trusted".to_string(),
-            mode: ServeMode::PerRequest,
-            instances: 1,
-            shard_by: None,
-            max_inflight: None,
             source: None,
         }];
         let err = serve_apps(

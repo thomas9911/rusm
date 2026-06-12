@@ -234,8 +234,8 @@ async fn connect_ws(
 ) -> Option<
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
 > {
-    // A generous budget: hundreds of simultaneous handshakes against a small
-    // resident pool (especially the heavier TS js-runner) serialize, so a short
+    // A generous budget: hundreds of simultaneous handshakes against the per-connection
+    // processes (especially the heavier TS js-runner) serialize, so a short
     // budget would leave many connections unestablished and the held count short.
     for _ in 0..600 {
         if shared.stop.load(Ordering::Relaxed) {
@@ -251,7 +251,7 @@ async fn connect_ws(
 
 /// One SSE slot: keep an `event-stream` draining, counting `\n\n` frame terminators
 /// and sampling the inter-event gap. **Reconnects when a stream ends** — an infinite
-/// firehose never ends (so this never re-loops), but a resident handler may emit a
+/// firehose never ends (so this never re-loops), but a handler may emit a
 /// finite burst per request, and reusing the kept-alive connection keeps the slot
 /// busy without churn. The slot stays "alive" for its whole lifetime.
 async fn sse_connection(shared: Arc<Shared>, url: String, lat_tx: UnboundedSender<u64>) {
@@ -269,7 +269,7 @@ async fn sse_connection(shared: Arc<Shared>, url: String, lat_tx: UnboundedSende
         let mut last_event = Instant::now();
         while !shared.stop.load(Ordering::Relaxed) {
             let Some(Ok(chunk)) = stream.next().await else {
-                break; // stream ended (finite resident burst) → reconnect
+                break; // stream ended (finite burst) → reconnect
             };
             for &b in chunk.iter() {
                 if b == b'\n' {
@@ -321,7 +321,7 @@ mod tests {
 
     /// A minimal `text/event-stream` server. Each GET gets `data:` frames; when
     /// `infinite`, it streams until the client disconnects, otherwise it writes a
-    /// finite burst of `events` and **closes** — modelling a resident handler.
+    /// finite burst of `events` and **closes** — modelling a finite handler.
     async fn sse_server(infinite: bool, events: usize) -> std::net::SocketAddr {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
