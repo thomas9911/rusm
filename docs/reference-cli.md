@@ -40,10 +40,19 @@ rusm new api  --rust                   # a Rust HTTP handler
 rusm new api  --rust --protocol ws     # a Rust WebSocket handler
 ```
 
-A **Rust** component is a `Handler` + `#[rusm_rs::main]` (the macro hides the world,
-`Guest`, and `export!` — no `wit/` dir). A **TypeScript** HTTP/SSE component is a
-zero-dependency web-standard `export default (request) => Response`; **WS** uses the
-`rusm-ts` package's `websocket({ message })` helper.
+What each cell scaffolds:
+
+- **Rust HTTP/SSE** — a `#[rusm_rs::handlers] pub mod api { … }` component (each
+  `pub fn` is a routable action; `fn(Request, Params) -> Response` for HTTP,
+  `fn(Request, Params, Sse)` to stream SSE) **plus a `[routes]` table** in
+  `rusm.toml` mapping `"METHOD /path"` → `"api#action"`. No `main`, no router, no
+  `wit/` dir — routing is declarative config.
+- **Rust WS** — a `ws::serve({ open, message })` handler (one sandboxed process per
+  connection); no `[routes]`.
+- **TypeScript HTTP/SSE** — a zero-dependency web-standard
+  `export default function handle(request): Response` (a `wasi:http` per-request
+  component); it does its own dispatch, so no `[routes]`.
+- **TypeScript WS** — the `rusm-ts` package's `export default websocket({ open, message })` helper.
 
 ## `rusm build`
 
@@ -69,10 +78,12 @@ rusm run
 
 ## `rusm serve`
 
-Host every `[[serve]]` entry on its TCP `listen` address — HTTP/SSE via `http_server`,
-WS via `ws_server`, per-request or resident per the entry's `mode`. Prints each bound
-endpoint; waits for Ctrl-C. This is the **server** side of a fair benchmark — the node
-only serves; drive load out-of-process with `rusm-loadtest`.
+Host every `[[serve]]` entry on its TCP `listen` address. Serving is always
+ephemeral: **HTTP/SSE** run a fresh sandboxed instance per request (`http_server`,
+dispatched through the `[routes]` table), **WS** runs one sandboxed process per
+connection (`ws_server`). Prints each bound endpoint; waits for Ctrl-C. This is the
+**server** side of a fair benchmark — the node only serves; drive load
+out-of-process with `rusm-loadtest`.
 
 ```sh
 rusm serve

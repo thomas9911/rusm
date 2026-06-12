@@ -22,4 +22,19 @@ pub mod demo {
             }
         }
     }
+
+    /// An **endless** SSE feed: it only stops when the client disconnects (the
+    /// back-pressured write returns `false`). The host's bounded byte-stream channel
+    /// parks this fiber when the consumer is slow — it never busy-spins — and the
+    /// process exits promptly on disconnect (no leak). Exercised by the
+    /// disconnect-teardown test.
+    pub fn firehose(_req: Request, _p: Params, sse: Sse) {
+        let mut n = 0u64;
+        loop {
+            if !sse.data(format!("ev {n}").as_bytes()) {
+                break;
+            }
+            n += 1;
+        }
+    }
 }

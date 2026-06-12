@@ -1,41 +1,100 @@
-# Concept — serving HTTP / WS / SSE (per-request vs resident)
+# Concept — the serving model (process-per-unit-of-work)
 
-A RUSM component can be a high-throughput **HTTP / WebSocket / SSE** server. The
-host owns the socket and the protocol; the guest just produces responses — written
-in Rust or [TypeScript](./guests-rust-and-typescript.md). `rusm-otp` stays
-Wasm-free; all the serving machinery (hyper, tungstenite, `wasi:http`) lives only in
-`rusm-wasm`.
+A RUSM component can be a high-throughput **HTTP / WebSocket / SSE** server. The host
+owns the socket and the protocol; the guest just produces responses — in Rust or
+[TypeScript](./guests-rust-and-typescript.md). `rusm-otp` stays Wasm-free; all the
+serving machinery (hyper, tungstenite, `wasi:http`) lives only in `rusm-wasm`.
 
-## Two deployment shapes
+## One shape, by design
 
-- **Per-request / per-connection** — a fresh, sandboxed instance per HTTP request
-  (or per WS connection). Maximum isolation: a trap fails *just that* request or
-  socket, never the listener or the other connections. Cheap on the pooled spawn
-  path.
-- **Resident (singleton / pool)** — a warm, supervised pool of long-lived instances
-  that **hold state across requests** (a counter, a cache, a session map) and skip
-  per-request instantiation — the "real server" deployment. Per-instance restart
-  isolation: one crash-looping slot never takes its siblings down.
+Serving is **always process-per-unit-of-work** — there is no "resident" mode to choose:
 
-You choose per `rusm.toml [[serve]]`: `mode = "per-request" | "resident"`, plus
-`instances`, `shard-by` (header affinity) and `max-inflight` (shed to `503`).
+- **HTTP / SSE** — a fresh, sandboxed WASM instance **per request**.
+- **WS** — one sandboxed component process **per connection**.
+
+This single choice buys properties you'd otherwise have to engineer around:
+
+- **No head-of-line blocking, ever.** Each request gets its own instance, so a slow or
+  blocking handler can't stall the next request.
+- **Crash containment.** A trap fails *just that* request or socket — never the listener
+  or the other clients. There is no shared instance to corrupt.
+- **Total isolation.** Each instance has its own linear memory and its own default-deny
+  [capability profile](./permissions-and-sandboxing.md).
+- **Cheap.** Per-request instances ride the pooled spawn path (pooling allocator + CoW
+  linear memory + precomputed export index), ~440k component spawns/sec; RSS tracks only
+  live instances.
+
+## Where state goes
+
+The serving instance is stateless and disposable. Anything that must outlive a request
+lives elsewhere — **never** in the serving instance:
+
+- a **`[[components]]` service** — a long-lived, supervised, stateful process reached
+  over the actor API (`whereis` / `call` / `send`): a counter, cache, session map,
+  pub/sub hub, chat-room registry; or
+- durable **`kv`** for state that must survive restarts.
+
+This is where the old "resident vs per-call" decision now lives: a `[[components]]`
+**service** holds state; a **worker** spawns per call. Serving components are always
+per-request. A handler that needs state simply `call`s a service and shapes the reply.
+
+## Declarative routing
+
+Routing lives in a `rusm.toml` **`[routes]`** table — never in handler code. A key is
+`"METHOD /path/pattern"`, a value is `"component#action"`:
+
+- `:name` captures a path parameter (read via `Params::get("name")`);
+- a trailing `*` captures the remaining segments;
+- the separator is `#` (`:` and `.` are reserved by RUSM's scheme/file conventions).
+
+Matching is by specificity (literal > `:param` > `*`). A path that matches but not for
+the method → **405**; no match → **404**.
+
+## Handlers are named actions
+
+A Rust serving component is a module of `pub fn`s under `#[rusm_rs::handlers]` — no
+`main`, no router, no wire plumbing. The macro generates the whole component shell and
+the action dispatch; the developer writes only handler functions:
+
+- a 2-arg action `fn(Request, Params) -> Response` is **buffered**;
+- a 3-arg action `fn(Request, Params, Sse)` **streams SSE** — and since each request is
+  its own process, it may block for the whole connection.
+
+TypeScript serving uses web standards instead (the macro is Rust): HTTP/SSE
+`export default` a `fetch`-shaped handler (SSE returns a `ReadableStream` body); WS uses
+`export default websocket({ open, message })`, one worker per connection.
 
 ## How it works
 
-- **HTTP / SSE** ride `wasi:http`. SSE streams `data:` frames incrementally as the
-  guest yields them, back-pressured by the body — see [byte streams](./byte-streams.md).
-- **WebSocket** upgrades host-side; each inbound frame becomes a mailbox message,
-  and replies go out through a Wasm-free **writer process** that owns the socket
-  sink (one isolated process per connection, or a routed resident pool).
+- **HTTP / SSE** ride `wasi:http`. The host gateway resolves the route, spawns the
+  matched handler fresh, dispatches the action over the actor wire, and turns the reply
+  into the response — buffered, or for SSE a chunked streamed body draining the guest's
+  back-pressured byte stream (see [byte streams](./byte-streams.md)).
+- **WebSocket** upgrades host-side; each inbound frame becomes a mailbox message, and
+  replies go out through a Wasm-free **writer process** that owns the socket sink — one
+  isolated process per connection.
+- An ephemeral Wasm-free **responder** process owns the reply hand-off so the sandboxed
+  guest never touches a socket.
 - **Standards-first:** a stock `wasi:http` component serves unchanged; the
   `rusm:runtime` actor world is opt-in.
 
+## Serving and RPC unify
+
+A serving handler and an actor-world service are the same thing — a component exporting
+named functions. A handler **action** is reachable via an HTTP route; a service
+**function** via an actor `call`. Same wire, same spawn model. So "shared state" is just
+"a component you `call`."
+
 ## How it's benchmarked (honestly)
 
-Serving throughput is measured **out-of-process** by the `rusm-loadtest` binary
-against a real `rusm serve` port, so the load generator never steals the server's
-CPU and the number is the server's — see the
-[benchmark reference](../03-benchmark-dashboard.md).
+Serving throughput is measured **out-of-process** by the `rusm-loadtest` binary against
+a real `rusm serve` port, so the load generator never steals the server's CPU and the
+number is the server's — see the [benchmark reference](../03-benchmark-dashboard.md).
 
-> Phase 11. `rusm serve` hosts `rusm.toml [[serve]]` entries on real ports; serving
-> TLS is planned for Phase 12.
+See the full [serving guide](../serving-http-ws-sse.md) for routing syntax, the
+`#[rusm_rs::handlers]` macro, the `Sse` API, the TypeScript path, and a worked example;
+the `[[serve]]` and `[routes]` schema is in the
+[configuration reference](../reference-configuration.md).
+
+> Phase 11. `rusm serve` hosts `rusm.toml [[serve]]` entries on real ports; serving TLS
+> is planned for Phase 12.

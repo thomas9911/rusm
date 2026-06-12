@@ -335,6 +335,7 @@ mod tests {
     use std::collections::HashMap;
     use std::net::SocketAddr;
     use std::sync::Arc;
+    use std::time::Duration;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     // A `#[rusm_rs::handlers] pub mod demo` with `fn hello(_, params)` (→ "hi <name>")
@@ -445,6 +446,72 @@ mod tests {
                 .await
                 .starts_with("HTTP/1.1 405"),
             "matched path + wrong method is 405"
+        );
+    }
+
+    /// Robustness guard: an **endless** SSE handler must be torn down the moment the
+    /// client disconnects — never leaked, never left spinning. The byte stream is a
+    /// bounded channel, so the producer parks under back-pressure (no busy loop) and
+    /// the write returns `false` once the reader is gone, ending the handler. We prove
+    /// it observably: the per-request process count returns to baseline after a drop.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_endless_sse_handler_is_torn_down_when_the_client_disconnects() {
+        let rt = Runtime::new();
+        let wr = WasmRuntime::new(rt.clone()).unwrap();
+        let prepared = wr
+            .prepare_component(&wr.compile_component(HANDLERS).unwrap(), "run")
+            .unwrap();
+        wr.register_component("demo", prepared);
+        let table = RouteTable::from_map(&HashMap::from([(
+            "GET /firehose".to_string(),
+            "demo#firehose".to_string(),
+        )]))
+        .unwrap();
+        let caps = HashMap::from([(
+            "demo".to_string(),
+            CapabilityProfile::Sandboxed.capabilities(),
+        )]);
+        let addr = serve_on(wr.routed_http_server(resolver(table), caps)).await;
+
+        let baseline = rt.process_count();
+
+        // Open the endless stream and read until the first event lands (handler live).
+        let mut conn = tokio::net::TcpStream::connect(addr).await.unwrap();
+        conn.write_all(b"GET /firehose HTTP/1.1\r\nHost: rusm\r\nConnection: close\r\n\r\n")
+            .await
+            .unwrap();
+        let mut seen = Vec::new();
+        let mut buf = [0u8; 512];
+        loop {
+            let n = tokio::time::timeout(Duration::from_secs(5), conn.read(&mut buf))
+                .await
+                .expect("first SSE event arrives in time")
+                .expect("socket read ok");
+            assert!(n > 0, "the endless feed produced data");
+            seen.extend_from_slice(&buf[..n]);
+            if String::from_utf8_lossy(&seen).contains("ev 0") {
+                break;
+            }
+        }
+        assert!(
+            rt.process_count() > baseline,
+            "the endless handler process is live while streaming"
+        );
+
+        // Disconnect: dropping the socket must end the handler — back-pressured write
+        // returns false, the loop breaks, the process exits. No leak, no spin.
+        drop(conn);
+        let mut reclaimed = false;
+        for _ in 0..100 {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            if rt.process_count() <= baseline {
+                reclaimed = true;
+                break;
+            }
+        }
+        assert!(
+            reclaimed,
+            "the endless SSE handler must exit on client disconnect (it did not — leaked or spinning)"
         );
     }
 }

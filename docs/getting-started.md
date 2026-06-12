@@ -393,75 +393,74 @@ Same JSON wire as rusm-ts, so a Rust client and a TS service interoperate. See t
 ## 6. Serve a component over HTTP (TypeScript or Rust)
 
 Any component can be a high-throughput **HTTP / WS / SSE** server — declare a
-`[[serve]]` entry and run `rusm serve`. The fastest start is `rusm new <name>`; here
-is the whole shape so you can copy and adapt it. We'll build a tiny **stateful
-counter** to show the resident model.
+`[[serve]]` entry and run `rusm serve`. Serving is always **ephemeral**: HTTP/SSE run
+a fresh sandboxed instance per request, WS one sandboxed process per connection. A
+serving instance never holds state across requests — for that, run a long-lived
+`[[components]]` service and reach it over the actor API (`whereis` / `call`), or
+persist to the node `store` (`kv`). The fastest start is `rusm new <name>`; here is
+the whole shape so you can copy and adapt it.
 
-The layout (a TS component shown; a Rust one swaps `index.ts` for `Cargo.toml` +
-`src/lib.rs`):
+The layout (a Rust component shown; a TS one swaps `Cargo.toml` + `src/lib.rs` for a
+single `index.ts`):
 
 ```text
 my-api/
 ├── rusm.toml
 ├── .env                      # optional — env vars (the real process env always wins)
-├── package.json              # TS only — pulls in the `rusm` types
 ├── components/
 │   └── api/
-│       └── index.ts          # the handler (TS)  ·  or src/{lib.rs} + Cargo.toml (Rust)
-└── wasm/                     # rusm build writes api.{qjsbc,js,wasm} here
+│       ├── Cargo.toml        # Rust  ·  or a single index.ts (TS)
+│       └── src/lib.rs
+└── wasm/                     # rusm build writes api.{wasm,qjsbc,js} here
 ```
 
-`rusm.toml` — one entry hosts the component on a real port:
+`rusm.toml` — one `[[serve]]` entry hosts the component on a real port; a `[routes]`
+table maps requests to handler actions (Rust only — TS handlers dispatch themselves):
 
 ```toml
 [[serve]]
-name = "api"                 # → ./wasm/api.{qjsbc,js,wasm}
+name = "api"                 # → ./wasm/api.{wasm,qjsbc,js}
 protocol = "http"            # http | sse | ws
 listen = "127.0.0.1:8080"
 capability = "sandboxed"
-mode = "resident"            # a warm pool that holds state — or "per-request" (isolated)
-instances = 4                # resident pool size
+
+[routes]
+"GET /" = "api#home"               # → the `home` action in the `api` component
+"GET /users/:id" = "api#show"      # :id is a path param, read from `Params`
 ```
 
-The handler — same job, your language. Module/`&mut self` state persists because a
-**resident** instance is long-lived (a per-request instance would always say `hit #1`):
+The handler — same job, your language.
 
 ::: code-group
 
-```ts [components/api/index.ts]
-// A resident HTTP handler. `hits` lives in module scope, so it persists across
-// requests on the warm instance.
-let hits = 0;
+```rust [components/api/src/lib.rs]
+// A routed Rust HTTP component: each `pub fn` is an action named in `[routes]`.
+// No `main`, no router — routing is declarative config. The macro hides the
+// world, `Guest`, and `export!`.
+use rusm_rs::http::{Params, Request, Response};
 
-export default function handle(_request: Request): Response {
-  hits++;
-  return new Response(`hit #${hits}\n`, {
-    headers: { "content-type": "text/plain" },
-  });
+#[rusm_rs::handlers]
+pub mod api {
+    use super::*;
+
+    pub fn home(_req: Request, _p: Params) -> Response {
+        Response::text("Hello from RUSM 👋\n")
+    }
+
+    pub fn show(_req: Request, p: Params) -> Response {
+        Response::text(format!("user {}\n", p.get("id").unwrap_or("?")))
+    }
 }
 ```
 
-```rust [components/api/src/lib.rs]
-wit_bindgen::generate!({
-    world: "process", path: "wit",
-    with: { "rusm:runtime/actor@0.1.0": rusm_rs::rusm::runtime::actor },
-});
-use rusm_rs::http::{Handler, Request, Response};
-
-struct Counter { hits: u64 }                 // &mut self state, persists across requests
-
-impl Handler for Counter {
-    fn handle(&mut self, _req: Request) -> Response {
-        self.hits += 1;
-        Response::text(format!("hit #{}\n", self.hits))
-    }
+```ts [components/api/index.ts]
+// A web-standard TS HTTP handler — a `wasi:http` per-request component. It does
+// its own dispatch, so no `[routes]` table is needed.
+export default function handle(request: Request): Response {
+  const { pathname } = new URL(request.url);
+  if (pathname === "/") return new Response("Hello from RUSM 👋\n");
+  return new Response("not found\n", { status: 404 });
 }
-
-struct Component;
-impl Guest for Component {
-    fn run() { rusm_rs::http::serve(Counter { hits: 0 }); }
-}
-export!(Component);
 ```
 
 :::
@@ -473,13 +472,15 @@ rusm build
 rusm serve
 # serving 1 endpoint(s):
 #   api              http://127.0.0.1:8080
-curl http://127.0.0.1:8080/      # hit #1, then hit #2, hit #3 …
+curl http://127.0.0.1:8080/            # Hello from RUSM 👋
+curl http://127.0.0.1:8080/users/42    # user 42   (Rust, via the :id route)
 ```
 
-To adapt: set `mode = "per-request"` for a fresh, isolated instance per request (a
-trap fails just that request); or set `protocol = "ws"` / `"sse"` and implement the
-WebSocket / SSE handler (`rusm_rs::ws::Handler` / `rusm_rs::http::serve_sse`, or the
-matching TS `export default { websocket }` / streaming `Response`). See
+To adapt: add more `[routes]` entries and matching `pub fn`s; stream **SSE** with a
+3-arg action `fn(Request, Params, Sse)` (set `protocol = "sse"`); or serve
+**WebSocket** with `protocol = "ws"` and a `rusm_rs::ws::serve({ open, message })`
+handler — one sandboxed process per connection (the TS twin is
+`export default websocket({ open, message })` from `rusm-ts`). See
 [the serving model](./concepts/serving-model.md).
 
 ## Process management from inside a component (Rust)

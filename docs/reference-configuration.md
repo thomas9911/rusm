@@ -37,10 +37,11 @@ name = "api"                  # loads ./wasm/api.{qjsbc,js,wasm}
 protocol = "http"             # http | sse | ws
 listen = "127.0.0.1:8080"
 capability = "trusted"
-mode = "resident"             # per-request (default) | resident
-instances = 4                 # resident pool size
-shard-by = "header:x-tenant"  # resident routing affinity (optional)
-max-inflight = 256            # per-instance overload cap → 503 (optional)
+
+# HTTP/SSE routes → handler actions (Rust handler components)
+[routes]
+"GET /" = "api#home"
+"GET /users/:id" = "api#show"
 ```
 
 ## Node settings
@@ -77,8 +78,11 @@ component, in that preference) and spawns it under its capability profile. Used 
 
 ## `[[serve]]` — host as a network server
 
-Each entry hosts a component on its own TCP port. Used by `rusm serve`. HTTP/SSE ride
-`http_server`, WS rides `ws_server`. See [the serving model](./concepts/serving-model).
+Each entry hosts a component on its own TCP port. Used by `rusm serve`. Serving is
+**always ephemeral**: HTTP and SSE run **a fresh sandboxed instance per request**
+(via `http_server`), WS runs **one sandboxed process per connection** (via
+`ws_server`). A serving instance never holds state across requests — a trap fails
+only that one request/connection. See [the serving model](./concepts/serving-model).
 
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
@@ -86,11 +90,54 @@ Each entry hosts a component on its own TCP port. Used by `rusm serve`. HTTP/SSE
 | `protocol` | enum | — (required) | `http` · `sse` · `ws`. |
 | `listen` | string | — (required) | TCP address to bind, e.g. `"127.0.0.1:8080"`. |
 | `capability` | string | `"sandboxed"` | Capability profile. |
-| `mode` | enum | `per-request` | `per-request` (fresh sandboxed instance per request/connection — max isolation) or `resident` (a warm, supervised pool that holds state). |
-| `instances` | int (≥1) | `1` | Resident pool size (only meaningful for `resident`). |
-| `shard-by` | string? | none | Resident affinity: `"header:<name>"` pins same-value requests to one instance; omitted → round-robin. |
-| `max-inflight` | int? | none (unbounded) | Resident per-instance cap on concurrent in-flight requests/connections; excess sheds to `503`. |
 | `source` | string? | none | Load the (JS) handler from a URL or `kv:` instead of `./wasm/<name>` — see [dynamic bundle sourcing](#dynamic-bundle-sourcing). |
+
+> **Migration.** Resident serving has been removed — the `mode`, `instances`,
+> `shard-by`, and `max-inflight` fields no longer exist. Serving is uniformly
+> process-per-request (HTTP/SSE) / process-per-connection (WS). A **stateful**
+> handler now lives as a long-lived `[[components]]` service (reached over the actor
+> API — `whereis` / `call`) that keeps its state in [`kv`](#dynamic-bundle-sourcing)
+> or in process memory; serving instances stay stateless and ephemeral.
+
+## `[routes]` — HTTP/SSE route table
+
+A top-level **`[routes]`** table maps each HTTP route to a handler **action** in a
+serving component. Routing is **declarative config**: you never write a router in
+handler code. Required for Rust HTTP/SSE serving components (the `#[rusm_rs::handlers]`
+shape); TypeScript HTTP/SSE components handle their own dispatch via
+`export default` and need no `[routes]`. WebSocket protocols ignore the table.
+
+```toml
+[routes]
+"GET /" = "api#home"
+"GET /users/:id" = "api#show"            # :id captures a path parameter
+"POST /plans/:plan/events" = "api#events"
+"GET /assets/*" = "api#assets"           # trailing * matches the rest of the path
+```
+
+**Key — `"METHOD /path"`:** an uppercase HTTP method, a space, then the path.
+Path segments may be:
+
+- **literal** — `users` matches only `users`;
+- **a parameter** — `:name` matches one segment and binds it as `name` (read from
+  `Params` in the handler);
+- **a wildcard** — a trailing `*` matches the remainder of the path (zero or more
+  segments).
+
+**Value — `"component#action"`:** the serving component's `name` (its `[[serve]]`
+entry), then `#`, then the exported action to invoke. The separator is **`#`**, not
+`:`, because `:` is reserved for RUSM scheme syntax (`kv:`, `url:`) elsewhere in the
+manifest.
+
+**Matching is most-specific-wins:** a literal segment beats a `:param`, which beats a
+`*` wildcard, so overlapping routes resolve deterministically regardless of
+declaration order. Resolution semantics:
+
+| Outcome | Result |
+| --- | --- |
+| A route matches both path and method | dispatch to its `component#action` |
+| A path matches but the method does not | **HTTP 405** (Method Not Allowed) |
+| No route matches the path | **HTTP 404** (Not Found) |
 
 ## `[capabilities.<name>]` — custom capability profiles
 
@@ -114,13 +161,55 @@ The three built-in profiles (usable directly as `capability = "..."`): **`sandbo
 (CPU + bounded heap only), **`network-client`** (+ outbound network), **`trusted`**
 (+ stdio, spawn, process-control, storage, large heap).
 
+## A complete manifest
+
+Every table together — a Rust HTTP API with a routed handler, a long-lived stateful
+service, and a custom capability profile:
+
+```toml
+# Node
+listen = "127.0.0.1:4000"
+profile = "balanced"
+store = "data/app.redb"            # durable KV — backs `storage` grants and `kv:` sources
+
+# Host the API on a real port (ephemeral instance per request)
+[[serve]]
+name = "api"                       # → ./wasm/api.wasm
+protocol = "http"
+listen = "127.0.0.1:8080"
+capability = "api-caps"
+
+# Routes → actions in the `api` handler component
+[routes]
+"GET /" = "api#home"
+"GET /users/:id" = "api#show"
+"POST /users" = "api#create"
+"GET /events" = "api#events"       # an SSE action (3-arg handler) if `api` serves sse
+"GET /assets/*" = "api#assets"
+
+# A long-lived, stateful service — reached over the actor API (whereis / call),
+# *not* over a port. State that used to live in a "resident" server lives here.
+[[components]]
+name = "sessions"                  # → ./wasm/sessions.wasm
+capability = "trusted"
+restart = true
+
+# A custom capability profile for the API handler
+[capabilities.api-caps]
+inherits = "network-client"
+storage = true                     # may read/write the node `store`
+max-memory-mb = 128
+env = ["API_BASE_URL"]
+```
+
 ## Dynamic bundle sourcing
 
 A `[[components]]` or `[[serve]]` entry can set **`source`** to load its JS bundle
 from somewhere other than the local `./wasm/<name>` artifact — so you deploy new JS
-by updating the source, with **no node rebuild**. The bundle is fetched **once** at
-spawn (and again on each `rusm dev` reload), then the resident/process serves many
-requests from it — not re-fetched per request.
+by updating the source, with **no node rebuild**. A `[[components]]` process fetches
+its bundle **once** at spawn (and again on each `rusm dev` reload); a `[[serve]]`
+endpoint fetches at bind time, then each ephemeral serving instance runs from that
+cached bundle.
 
 | `source` | Resolves to |
 | --- | --- |
