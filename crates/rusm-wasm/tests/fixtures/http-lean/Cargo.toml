@@ -1,6 +1,6 @@
-# A LEAN wasi:http component: the raw wasi:http bindings (wasip2), no wstd reactor.
-# The counterpart to http-hello (wstd) — shows the host's serving ceiling when the
-# guest carries no async-runtime overhead. Built for wasm32-wasip2, checked in:
+# A LEAN wasi:http component: the raw wasi:http bindings (wasip2), no actor world.
+# Like http-hello but with no `rusm:runtime` import at all — shows the host's serving
+# ceiling for a bare wasi:http guest. Built for wasm32-wasip2, checked in:
 #   cargo build --target wasm32-wasip2 --release
 #   cp target/wasm32-wasip2/release/http_lean.wasm ../http_lean.wasm
 [package]

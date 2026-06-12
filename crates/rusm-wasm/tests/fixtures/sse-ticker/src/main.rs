@@ -1,30 +1,41 @@
-//! A `wasi:http` **SSE** component: streams `text/event-stream` events over time,
-//! produced **by the guest**. The host (`wasmtime-wasi-http` + hyper) flushes each
-//! chunk the instant the guest yields it — true server-sent events from a sandboxed
-//! actor, no host-side templating. Each `wstd::task::sleep` parks the fiber (the
-//! RUSM scheduler reuses the worker), so a long-lived SSE stream costs ~nothing idle.
+//! A `wasi:http` **SSE** component (raw `wasi:http`, no wstd): streams
+//! `text/event-stream` events over time, produced **by the guest**. The host
+//! (`wasmtime-wasi-http` + hyper) flushes each chunk the instant the guest writes it.
+//! The 50 ms gap is `monotonic-clock.subscribe-duration(...).block()` — a *blocking*
+//! pollable that parks the fiber (the RUSM scheduler reuses the worker), so a
+//! long-lived SSE stream costs ~nothing while idle. No reactor, no busy-poll.
 
-use std::convert::Infallible;
+use wasip2::clocks::monotonic_clock;
+use wasip2::exports::wasi::http::incoming_handler::Guest;
+use wasip2::http::types::{
+    Fields, IncomingRequest, OutgoingBody, OutgoingResponse, ResponseOutparam,
+};
 
-use futures_lite::stream::unfold;
-use wstd::http::body::{Body, Bytes};
-use wstd::http::{Error, Request, Response};
-use wstd::time::Duration;
+struct Component;
 
-#[wstd::http_server]
-async fn main(_request: Request<Body>) -> Result<Response<Body>, Error> {
-    // Emit five `data:` events, 50ms apart — the canonical SSE frame is `data: …\n\n`.
-    let events = unfold(0u32, |n| async move {
-        if n >= 5 {
-            return None;
+impl Guest for Component {
+    fn handle(_request: IncomingRequest, response_out: ResponseOutparam) {
+        let headers = Fields::new();
+        let _ = headers.append(&"content-type".to_string(), b"text/event-stream");
+        let response = OutgoingResponse::new(headers);
+        let _ = response.set_status_code(200);
+        let body = response.body().expect("a fresh response has a body");
+        ResponseOutparam::set(response_out, Ok(response));
+        let Ok(stream) = body.write() else { return };
+
+        // Five `data:` events, 50 ms apart — the canonical SSE frame is `data: …\n\n`.
+        for n in 0..5u32 {
+            // Park the fiber for 50 ms (block on a monotonic-clock pollable — not a spin).
+            monotonic_clock::subscribe_duration(50_000_000).block();
+            let frame = format!("data: tick {n}\n\n");
+            // A failed write means the client hung up — stop streaming.
+            if stream.blocking_write_and_flush(frame.as_bytes()).is_err() {
+                break;
+            }
         }
-        wstd::task::sleep(Duration::from_millis(50)).await;
-        let frame = Bytes::from(format!("data: tick {n}\n\n"));
-        Some((Ok::<_, Infallible>(frame), n + 1))
-    });
-
-    let response = Response::builder()
-        .header("content-type", "text/event-stream")
-        .body(Body::from_try_stream(events))?;
-    Ok(response)
+        drop(stream); // release the borrow before finishing the body
+        let _ = OutgoingBody::finish(body, None);
+    }
 }
+
+wasip2::http::proxy::export!(Component with_types_in wasip2);
