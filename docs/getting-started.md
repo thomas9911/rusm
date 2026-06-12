@@ -414,8 +414,9 @@ my-api/
 └── wasm/                     # rusm build writes api.{wasm,qjsbc,js} here
 ```
 
-`rusm.toml` — one `[[serve]]` entry hosts the component on a real port; a `[routes]`
-table maps requests to handler actions (Rust only — TS handlers dispatch themselves):
+`rusm.toml` — one `[[serve]]` entry hosts the component on a real port; its own
+`[serve.routes]` subtable maps requests to handler actions (Rust only — TS handlers
+dispatch themselves):
 
 ```toml
 [[serve]]
@@ -424,7 +425,7 @@ protocol = "http"            # http | sse | ws
 listen = "127.0.0.1:8080"
 capability = "sandboxed"
 
-[routes]
+[serve.routes]               # this listener's own routes
 "GET /" = "api#home"               # → the `home` action in the `api` component
 "GET /users/:id" = "api#show"      # :id is a path param, read from `Params`
 ```
@@ -434,7 +435,7 @@ The handler — same job, your language.
 ::: code-group
 
 ```rust [components/api/src/lib.rs]
-// A routed Rust HTTP component: each `pub fn` is an action named in `[routes]`.
+// A routed Rust HTTP component: each `pub fn` is an action named in `[serve.routes]`.
 // No `main`, no router — routing is declarative config. The macro hides the
 // world, `Guest`, and `export!`.
 use rusm_rs::http::{Params, Request, Response};
@@ -455,7 +456,7 @@ pub mod api {
 
 ```ts [components/api/index.ts]
 // A web-standard TS HTTP handler — a `wasi:http` per-request component. It does
-// its own dispatch, so no `[routes]` table is needed.
+// its own dispatch, so no `[serve.routes]` table is needed.
 export default function handle(request: Request): Response {
   const { pathname } = new URL(request.url);
   if (pathname === "/") return new Response("Hello from RUSM 👋\n");
@@ -476,7 +477,7 @@ curl http://127.0.0.1:8080/            # Hello from RUSM 👋
 curl http://127.0.0.1:8080/users/42    # user 42   (Rust, via the :id route)
 ```
 
-To adapt: add more `[routes]` entries and matching `pub fn`s; stream **SSE** with a
+To adapt: add more `[serve.routes]` entries and matching `pub fn`s; stream **SSE** with a
 3-arg action `fn(Request, Params, Sse)` (set `protocol = "sse"`); or serve
 **WebSocket** with `protocol = "ws"` and a `rusm_rs::ws::serve({ open, message })`
 handler — one sandboxed process per connection (the TS twin is

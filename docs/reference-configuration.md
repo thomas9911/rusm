@@ -38,8 +38,8 @@ protocol = "http"             # http | sse | ws
 listen = "127.0.0.1:8080"
 capability = "trusted"
 
-# HTTP/SSE routes → handler actions (Rust handler components)
-[routes]
+# This listener's HTTP/SSE routes → handler actions (Rust handler components)
+[serve.routes]
 "GET /" = "api#home"
 "GET /users/:id" = "api#show"
 ```
@@ -99,16 +99,27 @@ only that one request/connection. See [the serving model](./concepts/serving-mod
 > API — `whereis` / `call`) that keeps its state in [`kv`](#dynamic-bundle-sourcing)
 > or in process memory; serving instances stay stateless and ephemeral.
 
-## `[routes]` — HTTP/SSE route table
+## `[serve.routes]` — per-listener HTTP/SSE route table
 
-A top-level **`[routes]`** table maps each HTTP route to a handler **action** in a
-serving component. Routing is **declarative config**: you never write a router in
-handler code. Required for Rust HTTP/SSE serving components (the `#[rusm_rs::handlers]`
-shape); TypeScript HTTP/SSE components handle their own dispatch via
-`export default` and need no `[routes]`. WebSocket protocols ignore the table.
+Each `[[serve]]` HTTP/SSE listener carries its **own** `[serve.routes]` subtable
+mapping each HTTP route to a handler **action** in that listener's serving component.
+Routing is **declarative config**: you never write a router in handler code. Because
+routes belong to a specific listener/port, multiple HTTP listeners (say a public API
+on `:8080` and an admin port on `:9090`) each route independently. In TOML,
+`[serve.routes]` attaches to the most recent `[[serve]]` entry, so it must sit
+immediately after that entry's fields. Required for Rust HTTP/SSE serving components
+(the `#[rusm_rs::handlers]` shape); TypeScript HTTP/SSE components handle their own
+dispatch via `export default` and need no `[serve.routes]`. WebSocket protocols ignore
+the table.
 
 ```toml
-[routes]
+[[serve]]
+name = "api"
+protocol = "http"
+listen = "127.0.0.1:8080"
+capability = "sandboxed"
+
+[serve.routes]                           # this listener's own routes
 "GET /" = "api#home"
 "GET /users/:id" = "api#show"            # :id captures a path parameter
 "POST /plans/:plan/events" = "api#events"
@@ -179,8 +190,8 @@ protocol = "http"
 listen = "127.0.0.1:8080"
 capability = "api-caps"
 
-# Routes → actions in the `api` handler component
-[routes]
+# This listener's routes → actions in the `api` handler component
+[serve.routes]
 "GET /" = "api#home"
 "GET /users/:id" = "api#show"
 "POST /users" = "api#create"

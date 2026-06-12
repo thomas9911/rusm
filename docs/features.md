@@ -57,7 +57,8 @@ that teaches it.
   sandboxed process per WS connection. No head-of-line blocking, crash containment, and
   full isolation by construction; cheap on the pooled spawn path (~440k spawns/sec). →
   [the serving model](./concepts/serving-model)
-- **Declarative routing** — a `rusm.toml` `[routes]` table maps
+- **Declarative routing** — a per-listener `rusm.toml` `[serve.routes]` subtable (one
+  per `[[serve]]` HTTP/SSE listener, so multiple ports route independently) maps
   `"METHOD /path/:param" = "component#action"` (`:name` path param, trailing `*`
   wildcard); the host gateway resolves it (most-specific wins; 405 on method mismatch,
   404 on no match). Rust handlers are `pub fn`s under `#[rusm_rs::handlers]` — no `main`,

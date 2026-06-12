@@ -76,13 +76,21 @@ service or `kv` is the durable back. Clean separation, no compromise on isolatio
 > or `kv` for durable state. The `[[serve]]` fields `mode`, `instances`, `shard_by`,
 > and `max_inflight` are removed (unknown keys are now a hard config error).
 
-## Declarative routing — `[routes]`
+## Declarative routing — `[serve.routes]`
 
-Routing lives in a TOML **`[routes]`** table, never in handler code. A key is
-`"METHOD /path/pattern"`; a value is `"component#action"`:
+Routing lives in a per-listener TOML **`[serve.routes]`** subtable — never in handler
+code. Each `[[serve]]` HTTP/SSE listener has its own `[serve.routes]`, so multiple
+listeners (e.g. a public API on `:8080` and an admin port on `:9090`) route
+independently. A key is `"METHOD /path/pattern"`; a value is `"component#action"`:
 
 ```toml
-[routes]
+[[serve]]
+name = "api"
+protocol = "http"
+listen = "127.0.0.1:8080"
+capability = "sandboxed"
+
+[serve.routes]                                   # this listener's own routes
 "GET  /"                       = "web#home"
 "GET  /users/:id"              = "api#show"      # :id captures a path param
 "POST /users"                  = "api#create"
@@ -203,9 +211,10 @@ A `[[serve]]` entry declares one network listener. Its fields are exactly:
 | `listen` | TCP address to bind, e.g. `"127.0.0.1:8080"`. |
 | `capability` | Capability profile id (defaults to `sandboxed`). |
 
-For **HTTP/SSE** with a `[routes]` table, each request is resolved → the matched handler
-component is spawned fresh → the matched action is dispatched → its reply becomes the
-HTTP response. A **WS** `[[serve]]` runs the named component once per connection.
+For **HTTP/SSE** with a `[serve.routes]` subtable, each request is resolved against that
+listener's routes → the matched handler component is spawned fresh → the matched action
+is dispatched → its reply becomes the HTTP response. A **WS** `[[serve]]` runs the named
+component once per connection (and ignores `[serve.routes]`).
 
 ## A full worked example
 
@@ -218,7 +227,7 @@ protocol  = "http"                # http | sse | ws
 listen    = "127.0.0.1:8080"
 capability = "sandboxed"          # default-deny profile
 
-[routes]
+[serve.routes]                          # this listener's own routes
 "GET  /"               = "api#home"
 "GET  /users/:id"      = "api#show"
 "POST /users"          = "api#create"
@@ -289,7 +298,7 @@ curl http://127.0.0.1:8080/
 
 TypeScript serving uses **web standards** (the `#[handlers]` macro is Rust-only). TS
 HTTP/SSE components run on the embedded rquickjs **js-http-runner** — a raw-`wasi:http`
-component instantiated per request — and need **no `[routes]` table**; the component
+component instantiated per request — and need **no `[serve.routes]` table**; the component
 *is* the handler.
 
 **HTTP** — `export default` a request → response function:
@@ -351,7 +360,7 @@ None of this is visible to the app author — it all lives in `rusm-wasm`:
 
 1. The listener accepts a connection (process-per-connection TCP; **HTTPS/WSS**
    terminate with the same rustls stack as the cluster, once wired).
-2. **HTTP/SSE:** the gateway resolves the request against the compiled `[routes]` table
+2. **HTTP/SSE:** the gateway resolves the request against that listener's compiled `[serve.routes]` table
    (`RouteTable::resolve` → matched `component#action` + captured params, or 405/404),
    spawns the matched handler component fresh on the optimized spawn path, and
    dispatches the action over the JSON actor wire (request body base64-encoded).

@@ -40,7 +40,9 @@ per-request. A handler that needs state simply `call`s a service and shapes the 
 
 ## Declarative routing
 
-Routing lives in a `rusm.toml` **`[routes]`** table — never in handler code. A key is
+Routing lives in a per-listener `rusm.toml` **`[serve.routes]`** subtable — never in
+handler code. Each `[[serve]]` HTTP/SSE listener has its own `[serve.routes]`, so
+multiple listeners (e.g. a public API and an admin port) route independently. A key is
 `"METHOD /path/pattern"`, a value is `"component#action"`:
 
 - `:name` captures a path parameter (read via `Params::get("name")`);
@@ -93,7 +95,7 @@ number is the server's — see the [benchmark reference](../03-benchmark-dashboa
 
 See the full [serving guide](../serving-http-ws-sse.md) for routing syntax, the
 `#[rusm_rs::handlers]` macro, the `Sse` API, the TypeScript path, and a worked example;
-the `[[serve]]` and `[routes]` schema is in the
+the `[[serve]]` and `[serve.routes]` schema is in the
 [configuration reference](../reference-configuration.md).
 
 > Phase 11. `rusm serve` hosts `rusm.toml [[serve]]` entries on real ports; serving TLS

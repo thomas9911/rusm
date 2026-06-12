@@ -44,14 +44,14 @@ What each cell scaffolds:
 
 - **Rust HTTP/SSE** — a `#[rusm_rs::handlers] pub mod api { … }` component (each
   `pub fn` is a routable action; `fn(Request, Params) -> Response` for HTTP,
-  `fn(Request, Params, Sse)` to stream SSE) **plus a `[routes]` table** in
-  `rusm.toml` mapping `"METHOD /path"` → `"api#action"`. No `main`, no router, no
-  `wit/` dir — routing is declarative config.
+  `fn(Request, Params, Sse)` to stream SSE) **plus a `[serve.routes]` subtable** on
+  that listener's `[[serve]]` entry in `rusm.toml`, mapping `"METHOD /path"` →
+  `"api#action"`. No `main`, no router, no `wit/` dir — routing is declarative config.
 - **Rust WS** — a `ws::serve({ open, message })` handler (one sandboxed process per
-  connection); no `[routes]`.
+  connection); no `[serve.routes]`.
 - **TypeScript HTTP/SSE** — a zero-dependency web-standard
   `export default function handle(request): Response` (a `wasi:http` per-request
-  component); it does its own dispatch, so no `[routes]`.
+  component); it does its own dispatch, so no `[serve.routes]`.
 - **TypeScript WS** — the `rusm-ts` package's `export default websocket({ open, message })` helper.
 
 ## `rusm build`
@@ -80,7 +80,7 @@ rusm run
 
 Host every `[[serve]]` entry on its TCP `listen` address. Serving is always
 ephemeral: **HTTP/SSE** run a fresh sandboxed instance per request (`http_server`,
-dispatched through the `[routes]` table), **WS** runs one sandboxed process per
+dispatched through that listener's `[serve.routes]` table), **WS** runs one sandboxed process per
 connection (`ws_server`). Prints each bound endpoint; waits for Ctrl-C. This is the
 **server** side of a fair benchmark — the node only serves; drive load
 out-of-process with `rusm-loadtest`.

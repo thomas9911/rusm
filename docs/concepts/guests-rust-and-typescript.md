@@ -17,8 +17,8 @@ cargo-component, no jco.
 
 A Rust serving component is a module of `pub fn`s under `#[rusm_rs::handlers]` — **no
 `main`, no router, no wire plumbing.** The macro generates the component shell and the
-action dispatch; the route is named in `rusm.toml`'s
-[`[routes]`](../serving-http-ws-sse.md) table as `"component#action"`. A 2-arg action
+action dispatch; the route is named in that listener's
+[`[serve.routes]`](../serving-http-ws-sse.md) subtable as `"component#action"`. A 2-arg action
 is buffered; a 3-arg action streams SSE (each request is its own process, so it may
 block for the whole connection):
 
@@ -79,7 +79,7 @@ Bun into a small `.js`.
 ### Serving — web standards
 
 TS serving uses **web standards** (the `#[handlers]` macro is Rust-only) and needs **no
-`[routes]` table** — the component *is* the handler. HTTP/SSE is `export default` a
+`[serve.routes]` table** — the component *is* the handler. HTTP/SSE is `export default` a
 `fetch`-shaped function returning a `Response`; SSE returns a streaming `ReadableStream`
 body. WS is `export default websocket({ open, message })` from the `rusm-ts` package —
 one worker process per connection:

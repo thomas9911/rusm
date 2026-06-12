@@ -43,8 +43,9 @@ fn main() {
 
 Serving is **process-per-unit-of-work**: a fresh sandboxed instance per HTTP/SSE
 request, one process per WS connection — no head-of-line blocking, crash containment per
-unit, full isolation. Routing is declarative in `rusm.toml`'s `[routes]` table
-(`"METHOD /path/:param" = "component#action"`), so handlers carry no router code.
+unit, full isolation. Routing is declarative in each listener's `rusm.toml`
+`[serve.routes]` subtable (`"METHOD /path/:param" = "component#action"`), so handlers
+carry no router code.
 
 **HTTP / SSE** — a module of `pub fn`s under `#[rusm_rs::handlers]` (no `main`, no
 router; the macro generates the shell + dispatch). A 2-arg `fn(Request, Params) ->

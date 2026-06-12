@@ -160,7 +160,9 @@ sandboxed TypeScript guest).
 ## Configuration
 
 Your app's `rusm.toml` declares what to run: `[[serve]]` (HTTP/WS/SSE listeners),
-`[routes]` (declarative `"METHOD /path/:param" = "component#action"` routing),
+each with its own `[serve.routes]` subtable (declarative
+`"METHOD /path/:param" = "component#action"` routing, so multiple listeners route
+independently),
 `[[components]]` (supervised, optionally stateful processes), and custom
 `[capabilities.<name>]` profiles (default-deny). Serving is always
 process-per-request (HTTP/SSE) / process-per-connection (WS) — a fresh sandboxed
