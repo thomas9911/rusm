@@ -86,7 +86,17 @@ const sections = [
           { text: 'Fibers & blocking→async', link: '/concepts/fibers-and-blocking-to-async' },
           { text: 'Epoch preemption', link: '/concepts/epoch-preemption' },
           { text: 'Process management', link: '/concepts/process-management' },
-          { text: 'Component lifecycle', link: '/concepts/component-lifecycle' },
+        ],
+      },
+      {
+        text: 'Component lifecycles',
+        items: [
+          { text: 'Overview', link: '/concepts/component-lifecycle' },
+          { text: 'HTTP component', link: '/concepts/lifecycle-http' },
+          { text: 'SSE component', link: '/concepts/lifecycle-sse' },
+          { text: 'WebSocket component', link: '/concepts/lifecycle-websocket' },
+          { text: 'Worker component (per-call)', link: '/concepts/lifecycle-worker' },
+          { text: 'Service component (resident)', link: '/concepts/lifecycle-service' },
         ],
       },
       {

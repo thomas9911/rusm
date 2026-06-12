@@ -1,0 +1,64 @@
+# Lifecycle — SSE component
+
+A per-request **Server-Sent Events** handler: a 3-arg action `fn(Request, Params, Sse)`
+that streams a `text/event-stream` body for the life of one connection. Because each
+request is its own process, the action may block for the whole connection. See the
+[overview](./component-lifecycle.md) for the shared two-domain model and failure
+vocabulary.
+
+## Shape (what you write)
+
+```rust
+use rusm_rs::http::{Params, Request, Sse};
+
+#[rusm_rs::handlers]
+pub mod api {
+    use super::*;
+    // routed from `[serve.routes]`:  "GET /feed" = "api#feed"
+    pub fn feed(_req: Request, _p: Params, sse: Sse) {
+        for n in 0.. {
+            if !sse.data(format!("tick {n}").as_bytes()) {
+                break; // the client disconnected — stop cleanly
+            }
+        }
+    }
+}
+```
+
+`sse.data(bytes)` writes one `data:` event; `sse.run(heartbeat_ms, map)` live-tails a
+source (e.g. a pub/sub topic) with idle heartbeats. The loop ends when a write returns
+`false`.
+
+## Platform owns / you write
+
+- **Platform owns:** the streaming `text/event-stream` head, the **bounded,
+  back-pressured** byte stream from the guest into the chunked HTTP body, disconnect
+  detection (a failed write returns `false`), and reclaim on exit.
+- **You write:** the event loop — produce events, react to a `false` write by stopping.
+
+## Lifecycle events
+
+| Event | Platform domain | Application domain | Result |
+| --- | --- | --- | --- |
+| **Normal** (finite feed) | drains each event into the body; closes the body when you return | writes events, then returns | clean end-of-stream |
+| **Back-pressure** (consumer slow) | the bounded channel fills; the next write **parks the fiber** until drained | blocked inside `sse.data(…)`; resumes later | paced to the consumer — **never a busy-spin** |
+| **Client disconnect** | the stream reader drops, so the next write returns `false` | the loop `break`s; the process exits | prompt teardown; a broker that `monitor`ed it prunes on the `Down` |
+| **Connection error** (socket write fails mid-stream) | same as a disconnect — the write returns `false` | loop breaks | clean exit |
+| **Crash (trap)** mid-stream | the stream writer drops → the chunked body simply ends → the process is Crashed | the `panic!` / `.unwrap()` | a truncated stream; **only this connection** |
+| **Memory crash (OOM)** | the `StoreLimiter` cap trips a trap → body ends → Crashed | exceeded `max-memory-mb` | truncated stream; the instance is discarded |
+
+## Notes
+
+- **No spins, ever.** The byte stream is a bounded channel, so an *endless* feed is
+  paced by the consumer (the write parks the fiber) — it cannot peg a core. And a
+  disconnect always tears the process down. Both are **regression-guarded by a test**
+  (an endless feed + a forced disconnect, asserting the process count returns to
+  baseline).
+- **Live fan-out pattern.** Subscribe to a [service component](./lifecycle-service.md)
+  (a broker) and `sse.run(...)` to forward each published message. The service
+  `monitor`s subscribers, so this process's exit (on disconnect) prunes the
+  subscription automatically — crash-safe cleanup with no unsubscribe call.
+- **TypeScript** streams via a `ReadableStream` body from `export default { fetch }`;
+  same per-request streaming lifecycle.
+
+Prev: [HTTP component](./lifecycle-http.md) · Next: [WebSocket component](./lifecycle-websocket.md)
