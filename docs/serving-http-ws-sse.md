@@ -124,6 +124,11 @@ developer writes **only** the handler functions. There is no router, no `main`, 
 wire/JSON plumbing — the macro generates the entire component shell (the `process`
 world, the `Guest` impl, `export!`) and the action dispatch.
 
+> **The TypeScript equivalent is web standards**, not this macro — a TS handler is an
+> `export default` `fetch`/`websocket`/`ReadableStream` function and does its own
+> dispatch (no `[serve.routes]`). See [TypeScript serving](#typescript-serving-web-standards)
+> below for the matching HTTP, SSE, and WS forms.
+
 ```rust
 use rusm_rs::http::{Params, Request, Response, Sse};
 

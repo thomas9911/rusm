@@ -484,12 +484,14 @@ handler — one sandboxed process per connection (the TS twin is
 `export default websocket({ open, message })` from `rusm-ts`). See
 [the serving model](./concepts/serving-model.md).
 
-## Process management from inside a component (Rust)
+## Process management from inside a component
 
 A component imports the `rusm:runtime/actor` interface and calls the Erlang
 `Process` API directly — the same operations the host has:
 
-```rust
+::: code-group
+
+```rust [Rust]
 use rusm::runtime::actor;
 
 let me = actor::own_pid();                 // self()
@@ -504,6 +506,24 @@ actor::kill(some_pid);                     // terminate another process
 actor::unregister("worker");
 actor::set_label("worker#1");              // a human label for the observer
 ```
+
+```ts [TypeScript]
+import { Process } from "rusm-ts";
+
+const me = Process.self;                    // self()
+Process.register("worker");                 // name yourself in the registry
+const who = Process.whereis("worker");      // look a name up → bigint | null
+const all = Process.list();                 // every live pid (find all)
+const info = Process.info(me);              // links, label, mailbox depth… | null
+const alive = Process.isAlive(somePid);
+Process.send(somePid, bytes);               // message-pass (bytes or text)
+const incoming = await Process.receive();   // await the next message
+Process.kill(somePid);                      // terminate another process
+Process.unregister("worker");
+Process.setLabel("worker#1");               // a human label for the observer
+```
+
+:::
 
 The runnable proof is the `actor-echo` test fixture, which drives **every** op
 from inside a real component.
@@ -530,7 +550,9 @@ opens a stream to another process, writes chunks (the write parks under
 back-pressure when the reader is slow), and closes it; the other side accepts and
 reads to end-of-stream:
 
-```rust
+::: code-group
+
+```rust [Rust]
 use rusm::runtime::actor;
 
 // Producer: open a stream to `peer`, write chunks, then close.
@@ -545,6 +567,24 @@ while let Some(chunk) = actor::stream_read(id) {
     // …handle chunk (Vec<u8>)…           // None == end-of-stream
 }
 ```
+
+```ts [TypeScript]
+import { Process } from "rusm-ts";
+
+// Producer: open a stream to `peer`, write chunks, then close.
+const out = Process.openStream(peer);                // null if `peer` is gone
+out.write(new TextEncoder().encode("hello!"));       // false once the reader is gone
+out.close();                                         // signals end-of-stream
+
+// Consumer: accept the next incoming stream, read to EOF.
+const inc = Process.acceptStream();
+let chunk;
+while ((chunk = await inc.read()) !== null) {         // read() is async; null == EOF
+  // …handle chunk (Uint8Array)…
+}
+```
+
+:::
 
 The same ops are available to **wasip1 core modules** through the raw `rusm::*`
 ABI, and the **stream-pipe** benchmark drives the underlying `StreamHandle` at

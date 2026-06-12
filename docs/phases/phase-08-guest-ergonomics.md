@@ -81,7 +81,9 @@ rusm run        # → 2 + 3 = 5 / hi RUSM / counted: 1,2,3 / work done after 25/
 rusm dev        # same, then watch & reload on edit
 ```
 
-```rust
+::: code-group
+
+```rust [Rust]
 // A Rust service — functions become a dispatch loop + a typed Client:
 #[rusm_rs::service]
 pub mod calc {
@@ -91,6 +93,20 @@ pub mod calc {
 }
 // caller:  let calc = calc::Client::spawn("calc")?;  calc.add(2, 3)?;
 ```
+
+```ts [TypeScript]
+// A TS service — exported functions become a dispatch loop; the contract is derived:
+export function add(a: number, b: number): number { return a + b; }
+export function* countTo(n: number) { for (let i = 1; i <= n; i++) yield i; } // streaming
+export function work(progress: (pct: number) => void): string {              // callback
+  for (const pct of [25, 50, 100]) progress(pct);
+  return "done";
+}
+export type Calc = typeof import(".");
+// caller:  const calc = spawn<Calc>("calc");  await calc.add(2, 3);
+```
+
+:::
 
 ## Verification
 
