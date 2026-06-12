@@ -15,7 +15,7 @@ where any goroutine/process can touch the whole machine.
   processes via the actor ABI — default-deny, so a sandboxed process manages only
   itself.
 - **Spawn**: whether the process may **spawn other components by name** via the
-  actor ABI — default-deny. The `spawn` capability gates *who* may spawn; a
+  actor ABI — default-deny. The `allow-spawn` capability gates *who* may spawn; a
   **node-registered** component (a `[components.<name>]` / serve entry) then runs under
   **its own manifest-declared profile** — the operator's explicit per-component
   policy, so what the manifest declares is what runs, whoever spawns it. An *ad-hoc*
@@ -51,7 +51,7 @@ back to the default-deny `sandboxed`.
 ```toml
 [capabilities.agent]
 inherits = "network-client"
-spawn = true
+allow-spawn = true
 max-memory-mb = 256
 env = ["OPENAI_API_KEY"]
 preopen = [{ host = "./data", guest = "/data", read-only = false }]

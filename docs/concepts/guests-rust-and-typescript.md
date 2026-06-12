@@ -126,14 +126,14 @@ Both guests get more than `send`/`receive`, all over the same capability-gated A
 ## Logging from a component
 
 There's nothing new to learn — **use each language's standard output**, and the host
-shows it. A component logs only when its profile grants the **`stdio`** capability
-(`[capabilities.<name>] stdio = true`, included in `trusted`); a sandboxed guest's
+shows it. A component logs only when its profile grants the **`allow-stdio`** capability
+(`[capabilities.<name>] allow-stdio = true`, included in `trusted`); a sandboxed guest's
 output is simply discarded.
 
 ::: code-group
 
 ```rust [Rust]
-// Plain std macros → the node's stdout / stderr (when `stdio` is granted).
+// Plain std macros → the node's stdout / stderr (when `allow-stdio` is granted).
 println!("handled {} in {}ms", id, elapsed);
 eprintln!("warning: retrying ({attempt})");
 // For levelled/tagged app logs, write a thin helper over eprintln! (no framework

@@ -43,7 +43,7 @@ that teaches it.
 - **Trap isolation** — a guest trap becomes that one process `Crashed`; the runtime
   and its neighbours are untouched.
 - **Durable key-value storage** — an embedded, transactional store (`rusm-kv`/redb,
-  no daemon) behind the default-deny `storage` capability; the `kv` API is the same
+  no daemon) behind the default-deny `allow-storage` capability; the `kv` API is the same
   in Rust and TS. → [permissions & sandboxing](./concepts/permissions-and-sandboxing)
 - **Guests in Rust *or* TypeScript** — the `#[service]` macro, the concealed typed
   client, the **shared rquickjs runner** (tiny TS components vs jco baking an engine

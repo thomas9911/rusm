@@ -60,8 +60,8 @@ wired via `wasmtime_wasi::p1`, capability-gated.
 Every grant maps onto standard WASI plus a `StoreLimiter` memory cap. Named
 profiles — `Sandboxed` (CPU + bounded heap only), `NetworkClient` (+ outbound
 network), `Trusted` (+ stdio, large heap, durable **storage**) — set defaults; a
-per-spawn `Capabilities` builder overrides them (`spawn`, `process-control`,
-`storage`, …). The **storage** grant opens the node's embedded durable key-value
+per-spawn `Capabilities` builder overrides them (`allow-spawn`, `allow-process-control`,
+`allow-storage`, …). The **storage** grant opens the node's embedded durable key-value
 store (the `kv-*` ABI, backed by the Wasm-free `rusm-kv` crate over redb) — a
 sandboxed process has none. See
 [permissions & sandboxing](./concepts/permissions-and-sandboxing.md).

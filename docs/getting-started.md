@@ -215,13 +215,13 @@ curl http://127.0.0.1:8080/
 `[profile.<name>]`. A profile `inherits` a built-in base (default `sandboxed`,
 default-deny) and overrides only the grants it sets; a component references it by
 name — and a node-registered component runs under **its own** declared profile,
-whoever spawns it (the `spawn` capability gates who may spawn; a guest can't fabricate
+whoever spawns it (the `allow-spawn` capability gates who may spawn; a guest can't fabricate
 grants the operator never declared).
 
 ```toml
 [capabilities.agent]
 inherits = "network-client"   # base; omit for sandboxed (default-deny)
-spawn = true                  # may spawn other components by name
+allow-spawn = true            # may spawn other components by name
 max-memory-mb = 256
 env = ["OPENAI_API_KEY"]      # grant these keys (values from process env / .env)
 preopen = [{ host = "./data", guest = "/data", read-only = false }]
@@ -327,7 +327,7 @@ export default async function () {
 ```
 
 Declare both in `rusm.toml`, with capability profiles (the commander needs the
-`spawn` capability — here a custom profile inheriting `trusted`):
+`allow-spawn` capability — here a custom profile inheriting `trusted`):
 
 ```toml
 [capabilities.orchestrator]
@@ -538,7 +538,7 @@ from inside a real component.
 > **Spawn-from-guest is supported — capability-gated.** A component declared in
 > `rusm.toml` can be `spawn`ed **by name** from inside another component (`spawn`
 > in the actor ABI), so you get per-request workers and concealed typed clients —
-> the Erlang model. It's default-deny (the `spawn` capability gates *who* may spawn);
+> the Erlang model. It's default-deny (the `allow-spawn` capability gates *who* may spawn);
 > a **node-registered** component runs under **its own manifest-declared profile**
 > (what the manifest declares is what runs, whoever spawns it), so secrets stay scoped
 > to the component that needs them — never the spawner. Components still find

@@ -41,19 +41,19 @@ fn to_capabilities(spec: &CapabilitySpec) -> Capabilities {
         .and_then(CapabilityProfile::from_id)
         .unwrap_or(CapabilityProfile::Sandboxed)
         .capabilities();
-    if let Some(v) = spec.network {
+    if let Some(v) = spec.allow_network {
         caps = caps.allow_network(v);
     }
-    if let Some(v) = spec.spawn {
+    if let Some(v) = spec.allow_spawn {
         caps = caps.allow_spawn(v);
     }
-    if let Some(v) = spec.process_control {
+    if let Some(v) = spec.allow_process_control {
         caps = caps.allow_process_control(v);
     }
-    if let Some(v) = spec.stdio {
+    if let Some(v) = spec.allow_stdio {
         caps = caps.inherit_stdio(v);
     }
-    if let Some(v) = spec.storage {
+    if let Some(v) = spec.allow_storage {
         caps = caps.allow_storage(v);
     }
     if let Some(mb) = spec.max_memory_mb {
@@ -482,7 +482,7 @@ mod tests {
         // Starts from network-client (network on, spawn off), then turns spawn on
         // and tightens memory — only the set fields override the inherited base.
         let cfg = rusm_node::NodeConfig::from_toml(
-            "[capabilities.worker]\ninherits = \"network-client\"\nspawn = true\nmax-memory-mb = 32\n",
+            "[capabilities.worker]\ninherits = \"network-client\"\nallow-spawn = true\nmax-memory-mb = 32\n",
         )
         .unwrap();
         let caps = to_capabilities(&cfg.capabilities["worker"]);
@@ -491,11 +491,11 @@ mod tests {
         // An omitted base → the most restrictive default (sandboxed): no spawn.
         let bare = CapabilitySpec {
             inherits: None,
-            network: None,
-            spawn: None,
-            process_control: None,
-            stdio: None,
-            storage: None,
+            allow_network: None,
+            allow_spawn: None,
+            allow_process_control: None,
+            allow_stdio: None,
+            allow_storage: None,
             max_memory_mb: None,
             env: Vec::new(),
             preopen: Vec::new(),
@@ -508,9 +508,9 @@ mod tests {
 
     #[test]
     fn storage_grant_maps_through() {
-        // `storage = true` on a profile turns the durable-KV grant on…
+        // `allow-storage = true` on a profile turns the durable-KV grant on…
         let cfg = rusm_node::NodeConfig::from_toml(
-            "[capabilities.stateful]\ninherits = \"trusted\"\nstorage = true\n",
+            "[capabilities.stateful]\ninherits = \"trusted\"\nallow-storage = true\n",
         )
         .unwrap();
         assert!(to_capabilities(&cfg.capabilities["stateful"]).storage_allowed());
@@ -534,11 +534,11 @@ mod tests {
             "agent".to_string(),
             CapabilitySpec {
                 inherits: Some("network-client".to_string()),
-                network: None,
-                spawn: Some(true),
-                process_control: None,
-                stdio: None,
-                storage: None,
+                allow_network: None,
+                allow_spawn: Some(true),
+                allow_process_control: None,
+                allow_stdio: None,
+                allow_storage: None,
                 max_memory_mb: Some(16),
                 env: Vec::new(),
                 preopen: Vec::new(),

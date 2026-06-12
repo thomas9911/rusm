@@ -42,7 +42,7 @@ the same story for Rust and TS, interoperable because they share one JSON wire.
 4. **Spawn-from-guest + monitor** (actor ABI) — `spawn` instantiates a registered
    component by name → a new pid; `monitor` makes a dead process arrive as a
    `__down` message (`receive` translates the runtime `Down` — no watcher process,
-   no polling). Both are **capability-gated**; the `spawn` capability gates who may
+   no polling). Both are **capability-gated**; the `allow-spawn` capability gates who may
    spawn, and a node-registered component runs under its own manifest-declared profile
    (a guest can't fabricate capabilities the operator never granted).
 5. **In-guest `Supervisor`** — in both rusm-rs and rusm-ts: spawn + monitor named
@@ -56,7 +56,7 @@ the same story for Rust and TS, interoperable because they share one JSON wire.
    top-level `var` can never clobber the runtime globals — correct CJS isolation.)
 7. **Custom capability profiles** — `rusm.toml` accepts `[capabilities.<name>]`
    profiles, Cargo-style: each `inherits` a built-in base and overrides specific
-   grants (`network` / `spawn` / `process-control` / `stdio` / `max-memory-mb` /
+   grants (`allow-network` / `allow-spawn` / `allow-process-control` / `allow-stdio` / `max-memory-mb` /
    `env` / `preopen`). A component selects one by name.
 8. **`rusm dev` watch + reload** — `rusm dev` builds, runs, and **watches**
    `./components`; on a source edit it rebuilds and reloads the components. A

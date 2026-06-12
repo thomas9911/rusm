@@ -39,7 +39,7 @@ a [byte stream](./byte-streams.md) or messages — and returns. The dispatch-fro
 
 ## Platform owns / you write
 
-- **Platform owns:** the **capability-gated** spawn — the `spawn` capability gates who
+- **Platform owns:** the **capability-gated** spawn — the `allow-spawn` capability gates who
   may spawn, and a node-registered worker runs under **its own manifest-declared
   profile** (an ad-hoc registration inherits the spawner's caps) — delivering the work
   message, scheduling/parking the fiber on blocking calls, and notifying monitors/links
@@ -51,7 +51,7 @@ a [byte stream](./byte-streams.md) or messages — and returns. The dispatch-fro
 | Event | Platform domain | Application domain | Result |
 | --- | --- | --- | --- |
 | **Normal** | spawn → deliver the job → reclaim on return | does the work, returns | result delivered; the process is gone |
-| **Spawn denied** | a parent without the `spawn` capability gets an error (not a new process) | the `spawn(...)` call returns `Err` | no worker — the parent decides what to do |
+| **Spawn denied** | a parent without the `allow-spawn` capability gets an error (not a new process) | the `spawn(...)` call returns `Err` | no worker — the parent decides what to do |
 | **Crash (trap)** | the process is Crashed; a spawner that `monitor`ed it gets a `Down(reason)`; a **linked** spawner gets an exit signal (or an exit cascade) | the `panic!` / `.unwrap()` | surfaced to the spawner: retry / give up / escalate |
 | **Memory crash (OOM)** | the `StoreLimiter` cap trips a trap → Crashed → `Down` | exceeded `max-memory-mb` | same — surfaced to the spawner |
 | **Kill** (parent died, via a link) | the exit cascade fires this process's abort handle | — | reclaimed; no orphan |
@@ -66,7 +66,7 @@ a [byte stream](./byte-streams.md) or messages — and returns. The dispatch-fro
 - **Secrets stay scoped.** A node-registered worker runs under its **declared**
   profile, so a worker that needs (say) an API key gets it from its own
   `[capabilities.<name>]` — the spawner needn't hold that key. A guest still can't
-  fabricate capabilities the operator never declared, and the `spawn` capability gates
+  fabricate capabilities the operator never declared, and the `allow-spawn` capability gates
   who may spawn at all.
 - **Concurrency = many workers.** A guest is single-threaded; you get parallelism by
   spawning *more* workers (each its own process/instance), not by threading inside one.

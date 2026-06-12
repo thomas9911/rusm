@@ -20,7 +20,7 @@ ticks_per_second = 20         # snapshot rate, 10–60 Hz
 # A custom capability profile (default-deny; inherits a built-in, overrides grants)
 [capabilities.agent]
 inherits = "network-client"
-spawn = true
+allow-spawn = true
 max-memory-mb = 256
 env = ["OPENAI_API_KEY"]
 preopen = [{ host = "./data", guest = "/data", read-only = false }]
@@ -49,7 +49,7 @@ resident = true               # long-lived service: boot-spawned + supervised
 | `listen` | string | `"127.0.0.1:4000"` | The WebSocket address a node's attach endpoint binds (`rusm node start` / `rusm-bench start`). |
 | `profile` | enum | `balanced` | The benchmark node's throughput dial — see below. |
 | `ticks_per_second` | int (10–60) | `20` | How often the node samples + broadcasts a snapshot. |
-| `store` | string? | none | Path (relative to the app dir) to the node's embedded durable key-value store — one file the node owns, no daemon. Required for components granted `storage` (the `kv` ABI) or a `kv:` bundle `source`. Omitted → no store. |
+| `store` | string? | none | Path (relative to the app dir) to the node's embedded durable key-value store — one file the node owns, no daemon. Required for components granted `allow-storage` (the `kv` ABI) or a `kv:` bundle `source`. Omitted → no store. |
 
 **`profile`** is the spawn-throughput dial, relative to your CPU count:
 
@@ -207,17 +207,17 @@ declaration order. Resolution semantics:
 Like Cargo's `[profile.<name>]`: a profile **inherits** a built-in base and overrides
 only the grants it sets. Default-deny — anything not granted is denied. A
 node-registered component runs under **its own** declared profile, whoever spawns it
-(the `spawn` capability gates who may spawn; a guest can't fabricate grants the
+(the `allow-spawn` capability gates who may spawn; a guest can't fabricate grants the
 operator never declared). See [permissions & sandboxing](./concepts/permissions-and-sandboxing).
 
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `inherits` | string | `sandboxed` | Built-in base: `sandboxed` (deny-all) · `network-client` (+ outbound net) · `trusted` (+ stdio, spawn, process-control, storage, 1 GiB heap). |
-| `network` | bool? | from base | Allow outbound network. |
-| `spawn` | bool? | from base | May spawn other components by name. |
-| `process-control` | bool? | from base | May `kill`/`list`/`info` over foreign pids. |
-| `stdio` | bool? | from base | Inherit the host's stdio. |
-| `storage` | bool? | from base | May use durable key-value storage (the `kv-*` ABI); needs a node `store`. Granted by `trusted`. |
+| `allow-network` | bool? | from base | Allow outbound network. |
+| `allow-spawn` | bool? | from base | May spawn other components by name. |
+| `allow-process-control` | bool? | from base | May `kill`/`list`/`info` over foreign pids. |
+| `allow-stdio` | bool? | from base | Inherit the host's stdio. |
+| `allow-storage` | bool? | from base | May use durable key-value storage (the `kv-*` ABI); needs a node `store`. Granted by `trusted`. |
 | `max-memory-mb` | int? | from base | Per-process heap ceiling (MiB). |
 | `env` | string[] | `[]` | Env-var **keys** to grant; values resolved from the process env / `.env`. |
 | `preopen` | table[] | `[]` | Host dirs mounted in the sandbox: `{ host, guest, read-only }`. |
@@ -235,7 +235,7 @@ service, and a custom capability profile:
 # Node
 listen = "127.0.0.1:4000"
 profile = "balanced"
-store = "data/app.redb"            # durable KV — backs `storage` grants and `kv:` sources
+store = "data/app.redb"            # durable KV — backs `allow-storage` grants and `kv:` sources
 
 # Host the API on a real port — a pure listener (ephemeral instance per request)
 [[serve]]
@@ -253,7 +253,7 @@ listen = "127.0.0.1:8080"
 # A custom capability profile for the API handler
 [capabilities.api-caps]
 inherits = "network-client"
-storage = true                     # may read/write the node `store`
+allow-storage = true               # may read/write the node `store`
 max-memory-mb = 128
 env = ["API_BASE_URL"]
 

@@ -73,17 +73,19 @@ pub struct CapabilitySpec {
     /// Built-in profile to start from (`sandboxed` / `network-client` / `trusted`);
     /// omitted (or unrecognised) → `sandboxed`, the most restrictive base.
     pub inherits: Option<String>,
-    /// Allow outbound network access.
-    pub network: Option<bool>,
-    /// Allow spawning other components by name (capability-gated `spawn`).
-    pub spawn: Option<bool>,
-    /// Allow controlling other processes (kill/list/info over foreign pids).
-    pub process_control: Option<bool>,
-    /// Inherit the host's stdio.
-    pub stdio: Option<bool>,
-    /// Allow durable key-value storage (the `kv-*` actor ABI), if the node has a
-    /// `store` configured. Default-deny.
-    pub storage: Option<bool>,
+    /// `allow-network`: outbound network access (e.g. `fetch`).
+    pub allow_network: Option<bool>,
+    /// `allow-spawn`: may spawn **other** components by name (the `spawn` ABI).
+    pub allow_spawn: Option<bool>,
+    /// `allow-process-control`: may observe + control **other** processes —
+    /// `monitor`, `kill`, `list`, `info` over foreign pids.
+    pub allow_process_control: Option<bool>,
+    /// `allow-stdio`: inherit the host's stdio (so `print`/`console.log` reach the
+    /// terminal).
+    pub allow_stdio: Option<bool>,
+    /// `allow-storage`: durable key-value storage (the `kv-*` actor ABI), if the node
+    /// has a `store` configured. Default-deny.
+    pub allow_storage: Option<bool>,
     /// Per-process memory ceiling in MiB.
     pub max_memory_mb: Option<usize>,
     /// Environment-variable keys to grant; values are resolved from the process
@@ -377,7 +379,7 @@ mod tests {
             r#"
             [capabilities.agent]
             inherits = "network-client"
-            spawn = true
+            allow-spawn = true
             max-memory-mb = 256
             preopen = [{ host = "./data", guest = "/data", read-only = false }]
 
@@ -388,11 +390,11 @@ mod tests {
         .unwrap();
         let spec = &cfg.capabilities["agent"];
         assert_eq!(spec.inherits.as_deref(), Some("network-client"));
-        assert_eq!(spec.spawn, Some(true));
+        assert_eq!(spec.allow_spawn, Some(true));
         assert_eq!(spec.max_memory_mb, Some(256));
         assert_eq!(spec.preopen.len(), 1);
         assert!(!spec.preopen[0].read_only);
-        assert_eq!(spec.storage, None, "storage defaults to unset (deny)");
+        assert_eq!(spec.allow_storage, None, "storage defaults to unset (deny)");
     }
 
     #[test]
@@ -475,12 +477,12 @@ mod tests {
 
             [capabilities.stateful]
             inherits = "trusted"
-            storage = true
+            allow-storage = true
             "#,
         )
         .unwrap();
         assert_eq!(cfg.store.as_deref(), Some("data/app.redb"));
-        assert_eq!(cfg.capabilities["stateful"].storage, Some(true));
+        assert_eq!(cfg.capabilities["stateful"].allow_storage, Some(true));
         // Default: no store configured.
         assert!(NodeConfig::from_toml("").unwrap().store.is_none());
     }
