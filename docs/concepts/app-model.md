@@ -8,7 +8,7 @@ build, load, supervise, and run them — so you write *source*, not glue.
 ```
 my-app/
 ├── rusm.toml          # node config + [[components]] (name, capability, restart)
-│                       #   and/or [[serve]] (name, protocol, listen, capability)
+│                       #   and/or [[serve]] listeners (protocol, listen; routes name handlers)
 ├── components/        # SOURCE — a cargo workspace, one crate per component
 │   └── <name>/        # Rust (and TS via Bun + rquickjs, embedded — no jco)
 └── wasm/              # BUILT, ready-to-run .wasm (also drop 3rd-party .wasm here)
@@ -32,10 +32,12 @@ load directory.
   dynamically — both work together.
 - **`rusm dev`** — build, then run, then watch `./components` and rebuild + reload
   on edit.
-- **`rusm serve`** — hosts the `rusm.toml` **`[[serve]]`** entries (`name`,
-  `protocol` = `http` | `sse` | `ws`, `listen`, `capability` — defaults to
-  `sandboxed`) on real TCP ports, loading each component from
-  `wasm/<name>.{wasm,js}` (HTTP and SSE via the `http_server` path, WS via
+- **`rusm serve`** — hosts the `rusm.toml` **`[[serve]]`** listeners (`protocol` =
+  `http` | `sse` | `ws`, `listen`, and — for HTTP/SSE — a `[serve.routes]` table) on
+  real TCP ports. Each listener is pure: a routed HTTP/SSE listener names its handlers
+  in `[serve.routes]` (each a `[[components]]` entry with its own capability); a WS or
+  routes-less HTTP listener names its single handler with an optional `name`. Handlers
+  load from `wasm/<name>.{wasm,js}` (HTTP and SSE via the `http_server` path, WS via
   `ws_server`). The node only serves; it never generates load.
 
 ## Environment — KISS, the Rust way

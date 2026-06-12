@@ -61,8 +61,9 @@ data to real measurements.
   `WasmRuntime::http_server` (instance-per-request `wasi:http`), `ws_server` (one
   sandboxed component process per WebSocket connection, replies via a Wasm-free writer
   process), and SSE (a `wasi:http` streaming body). **`rusm serve`** now hosts
-  `rusm.toml [[serve]]` entries (`name`, `protocol` = `http`|`sse`|`ws`, `listen`,
-  `capability`) on real TCP ports, loading `wasm/<name>.{wasm,js}` (HTTP/SSE via the
+  `rusm.toml [[serve]]` listeners (`protocol` = `http`|`sse`|`ws`, `listen`, and — for
+  HTTP/SSE — a `[serve.routes]` table naming `[[components]]` handlers) on real TCP
+  ports, loading `wasm/<name>.{wasm,js}` (HTTP/SSE via the
   `http_server` path, WS via `ws_server`); **`rusm new <name>`** scaffolds a
   ready-to-serve TS HTTP app. Serving is benchmarked two ways: the **fair, credible
   headline numbers** come **out-of-process** from the `rusm-loadtest` binary against a

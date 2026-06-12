@@ -85,10 +85,8 @@ independently. A key is `"METHOD /path/pattern"`; a value is `"component#action"
 
 ```toml
 [[serve]]
-name = "api"
 protocol = "http"
 listen = "127.0.0.1:8080"
-capability = "sandboxed"
 
 [serve.routes]                                   # this listener's own routes
 "GET  /"                       = "web#home"
@@ -207,30 +205,35 @@ no busy-looping, no unbounded buffering. (See [byte streams](./concepts/byte-str
 
 ## `[[serve]]` — declaring a listener
 
-A `[[serve]]` entry declares one network listener. Its fields are exactly:
+A `[[serve]]` entry is a **pure listener**. It carries no handler and no capability of
+its own — the handler components live in `[[components]]` (with their own capability),
+and `[serve.routes]` names them. Its fields:
 
 | Key | Meaning |
 |---|---|
-| `name` | Component name → `./wasm/<name>.{wasm,js}`. The default handler component for an HTTP/SSE listener. |
 | `protocol` | `http` · `sse` · `ws`. |
 | `listen` | TCP address to bind, e.g. `"127.0.0.1:8080"`. |
-| `capability` | Capability profile id (defaults to `sandboxed`). |
+| `name` *(optional)* | The single handler component for a listener that has **no routes**: a **WS** listener, or a routes-less `wasi:http` **HTTP** listener (e.g. a TS `export default` fetch). A routed HTTP/SSE listener has **no `name`** — its `[serve.routes]` name the handlers instead. |
 
 For **HTTP/SSE** with a `[serve.routes]` subtable, each request is resolved against that
-listener's routes → the matched handler component is spawned fresh → the matched action
-is dispatched → its reply becomes the HTTP response. A **WS** `[[serve]]` runs the named
-component once per connection (and ignores `[serve.routes]`).
+listener's routes → the matched handler component (a `[[components]]` entry) is spawned
+fresh under **its own** capability → the matched action is dispatched → its reply becomes
+the HTTP response. A **WS** `[[serve]]` (or a routes-less HTTP one) runs the `name`d
+component once per connection / request; that component's capability comes from a matching
+`[[components]]` entry, else default-deny `sandboxed`.
+
+So the model is a clean split: **`[[serve]]` = the listener; `[[components]]` = the
+handler/service components (each with its capability); `[serve.routes]` ties them
+together.**
 
 ## A full worked example
 
 `rusm.toml`:
 
 ```toml
-[[serve]]
-name      = "api"                 # the default handler component (wasm/api.wasm)
-protocol  = "http"                # http | sse | ws
+[[serve]]                               # a pure listener — no name, no capability
+protocol  = "http"                      # http | sse | ws
 listen    = "127.0.0.1:8080"
-capability = "sandboxed"          # default-deny profile
 
 [serve.routes]                          # this listener's own routes
 "GET  /"               = "api#home"
@@ -238,6 +241,11 @@ capability = "sandboxed"          # default-deny profile
 "POST /users"          = "api#create"
 "GET  /events/:room"   = "api#events"   # 3-arg action → SSE
 "GET  /static/*"       = "api#static"   # wildcard tail
+
+# The handler the routes name — declared in [[components]], carries its own capability:
+[[components]]
+name = "api"                      # wasm/api.wasm
+capability = "sandboxed"          # default-deny profile
 
 # Shared state is NOT in the handler — it's a long-lived service:
 [[components]]

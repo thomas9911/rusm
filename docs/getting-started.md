@@ -183,18 +183,18 @@ rusm run          # load every [[components]] from ./wasm/, spawn under its prof
 ```
 
 **Serving on a real port.** To run a component as an HTTP / WS / SSE server, declare
-a `[[serve]]` entry and run `rusm serve` — it binds each on its TCP `listen` address,
-loading the component from `wasm/<name>.{wasm,js}` (HTTP and SSE via the `http_server`
-path, WS via `ws_server`). The fastest way in is **`rusm new <name>`**, which
-scaffolds a ready-to-serve app (a zero-dependency TS HTTP component, a `rusm.toml`
-with a `[[serve]]` entry, `.gitignore`, README):
+a `[[serve]]` listener and run `rusm serve` — it binds each on its TCP `listen` address.
+A `[[serve]]` entry is a **pure listener**: a routed HTTP/SSE listener names its handlers
+in `[serve.routes]` (each a `[[components]]` entry that carries its own capability); a WS
+or routes-less HTTP listener names its single handler component with `name`. The fastest
+way in is **`rusm new <name>`**, which scaffolds a ready-to-serve app (a zero-dependency
+TS HTTP component, a `rusm.toml` with a `[[serve]]` entry, `.gitignore`, README):
 
 ```toml
 [[serve]]
-name = "api"              # loaded from ./wasm/api.{wasm,js}
-protocol = "http"         # "http" | "sse" | "ws"
+protocol = "ws"           # "http" | "sse" | "ws"
 listen = "127.0.0.1:8080"
-capability = "sandboxed"  # defaults to sandboxed
+name = "api"              # the per-connection handler → ./wasm/api.{wasm,js}
 ```
 
 ```sh
@@ -416,20 +416,23 @@ my-api/
 └── wasm/                     # rusm build writes api.{wasm,qjsbc,js} here
 ```
 
-`rusm.toml` — one `[[serve]]` entry hosts the component on a real port; its own
+`rusm.toml` — one `[[serve]]` listener hosts the component on a real port; its own
 `[serve.routes]` subtable maps requests to handler actions (Rust only — TS handlers
-dispatch themselves):
+dispatch themselves). The `[[serve]]` entry is a pure listener; the handler it routes to
+is a `[[components]]` entry that carries its own capability:
 
 ```toml
-[[serve]]
-name = "api"                 # → ./wasm/api.{wasm,qjsbc,js}
+[[serve]]                    # a pure listener — no name, no capability
 protocol = "http"            # http | sse | ws
 listen = "127.0.0.1:8080"
-capability = "sandboxed"
 
 [serve.routes]               # this listener's own routes
 "GET /" = "api#home"               # → the `home` action in the `api` component
 "GET /users/:id" = "api#show"      # :id is a path param, read from `Params`
+
+[[components]]
+name = "api"                 # the handler the routes name → ./wasm/api.{wasm,qjsbc,js}
+capability = "sandboxed"     # carries its own capability
 ```
 
 The handler — same job, your language.

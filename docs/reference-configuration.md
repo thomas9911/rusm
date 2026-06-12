@@ -31,14 +31,12 @@ name = "calc"                 # loads ./wasm/calc.{qjsbc,js,wasm}
 capability = "sandboxed"
 restart = true
 
-# Components to host as network servers (`rusm serve`)
+# A network listener (`rusm serve`) — just a port + its routes
 [[serve]]
-name = "api"                  # loads ./wasm/api.{qjsbc,js,wasm}
 protocol = "http"             # http | sse | ws
 listen = "127.0.0.1:8080"
-capability = "trusted"
 
-# This listener's HTTP/SSE routes → handler actions (Rust handler components)
+# This listener's HTTP/SSE routes → actions on a [[components]] handler
 [serve.routes]
 "GET /" = "api#home"
 "GET /users/:id" = "api#show"
@@ -107,21 +105,29 @@ component, in that preference) and spawns it under its capability profile. Used 
 | `restart` | bool | `false` | Restart the component if it exits (supervision). |
 | `source` | string? | none | Load the (JS) bundle from a `url:`/`http(s)://` URL or `kv:<bucket>/<key>` instead of the local `./wasm/<name>` artifact — deploy JS live, no node rebuild (re-fetched on each spawn / `rusm dev` reload). See [dynamic bundle sourcing](#dynamic-bundle-sourcing). |
 
-## `[[serve]]` — host as a network server
+## `[[serve]]` — a network listener
 
-Each entry hosts a component on its own TCP port. Used by `rusm serve`. Serving is
-**always ephemeral**: HTTP and SSE run **a fresh sandboxed instance per request**
-(via `http_server`), WS runs **one sandboxed process per connection** (via
-`ws_server`). A serving instance never holds state across requests — a trap fails
-only that one request/connection. See [the serving model](./concepts/serving-model).
+Each entry is a **pure listener** on its own TCP port. Used by `rusm serve`. Serving is
+**always ephemeral**: HTTP and SSE run **a fresh sandboxed instance per request**, WS
+**one sandboxed process per connection** — a trap fails only that one
+request/connection, never the listener. See [the serving model](./concepts/serving-model).
+
+A listener carries no handler details of its own: the **handler components live in
+`[[components]]`** (with their own capability), and `[serve.routes]` names them. So a
+routed HTTP/SSE listener is just a port + a routes table.
 
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `name` | string | — (required) | Component name → `./wasm/<name>.*`. |
 | `protocol` | enum | — (required) | `http` · `sse` · `ws`. |
 | `listen` | string | — (required) | TCP address to bind, e.g. `"127.0.0.1:8080"`. |
-| `capability` | string | `"sandboxed"` | Capability profile. |
-| `source` | string? | none | Load the (JS) handler from a URL or `kv:` instead of `./wasm/<name>` — see [dynamic bundle sourcing](#dynamic-bundle-sourcing). |
+| `name` | string? | none | The single handler **component** for a listener with **no** `[serve.routes]` — a WebSocket listener, or a routes-less `wasi:http` HTTP component (e.g. a TS `export default fetch`). Resolves to `./wasm/<name>.*`; its capability comes from a matching `[[components]]` entry, else `sandboxed`. **Omitted** for a routed HTTP/SSE listener — its routes name the handlers. |
+| `source` | string? | none | Load the named handler's (JS) bundle from a URL or `kv:` instead of `./wasm/<name>` — see [dynamic bundle sourcing](#dynamic-bundle-sourcing). |
+
+> **Migration.** `[[serve]]` lost `name`-as-required and `capability` (and earlier the
+> resident `mode` / `instances` / `shard-by` / `max-inflight`). A serving handler is now
+> a `[[components]]` entry the routes name; a **stateful** handler is a long-lived
+> `[[components]]` service reached over the actor API (`whereis` / `call`) holding its
+> state in [`kv`](#dynamic-bundle-sourcing) or process memory.
 
 > **Migration.** Resident serving has been removed — the `mode`, `instances`,
 > `shard-by`, and `max-inflight` fields no longer exist. Serving is uniformly
@@ -145,16 +151,18 @@ the table.
 
 ```toml
 [[serve]]
-name = "api"
 protocol = "http"
 listen = "127.0.0.1:8080"
-capability = "sandboxed"
 
 [serve.routes]                           # this listener's own routes
 "GET /" = "api#home"
 "GET /users/:id" = "api#show"            # :id captures a path parameter
 "POST /plans/:plan/events" = "api#events"
 "GET /assets/*" = "api#assets"           # trailing * matches the rest of the path
+
+[[components]]
+name = "api"                             # the handler the routes name (its own caps)
+capability = "sandboxed"
 ```
 
 **Key — `"METHOD /path"`:** an uppercase HTTP method, a space, then the path.
@@ -166,7 +174,7 @@ Path segments may be:
 - **a wildcard** — a trailing `*` matches the remainder of the path (zero or more
   segments).
 
-**Value — `"component#action"`:** the serving component's `name` (its `[[serve]]`
+**Value — `"component#action"`:** the handler **component's name** (a `[[components]]`
 entry), then `#`, then the exported action to invoke. The separator is **`#`**, not
 `:`, because `:` is reserved for RUSM scheme syntax (`kv:`, `url:`) elsewhere in the
 manifest.
@@ -216,20 +224,23 @@ listen = "127.0.0.1:4000"
 profile = "balanced"
 store = "data/app.redb"            # durable KV — backs `storage` grants and `kv:` sources
 
-# Host the API on a real port (ephemeral instance per request)
+# Host the API on a real port — a pure listener (ephemeral instance per request)
 [[serve]]
-name = "api"                       # → ./wasm/api.wasm
 protocol = "http"
 listen = "127.0.0.1:8080"
-capability = "api-caps"
 
-# This listener's routes → actions in the `api` handler component
+# This listener's routes → actions on the `api` handler component (below)
 [serve.routes]
 "GET /" = "api#home"
 "GET /users/:id" = "api#show"
 "POST /users" = "api#create"
 "GET /events" = "api#events"       # an SSE action (3-arg handler) if `api` serves sse
 "GET /assets/*" = "api#assets"
+
+# The HTTP handler the routes name — a component with its own capability.
+[[components]]
+name = "api"                       # → ./wasm/api.wasm
+capability = "api-caps"
 
 # A long-lived, stateful service — reached over the actor API (whereis / call),
 # *not* over a port. State that used to live in a "resident" server lives here.
