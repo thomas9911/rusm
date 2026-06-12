@@ -973,6 +973,38 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_javascript_bundle_reads_granted_env_via_process_env() {
+        // `process.env.<KEY>` reads a capability-granted env var; an ungranted key is
+        // `undefined` and `in` reflects presence — the config path TS guests (e.g. an
+        // LLM agent reading ANTHROPIC_API_KEY) rely on.
+        const BUNDLE: &str = r#"
+            module.exports.default = async function () {
+                const replyTo = await Process.receiveText();
+                const present = process.env.AGENT_KEY;
+                const missing = process.env.NOT_GRANTED;
+                Process.send(replyTo, `${present}|${missing}|${"AGENT_KEY" in process.env}`);
+            };
+        "#;
+        let rt = Runtime::new();
+        let wr = WasmRuntime::new(rt.clone()).unwrap();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let collector = rt.spawn(move |mut ctx| async move {
+            let _ = tx.send(ctx.recv().await.message().unwrap());
+        });
+        // Grant exactly one key, with a value; the other is never granted.
+        let caps = CapabilityProfile::Sandboxed
+            .capabilities()
+            .env("AGENT_KEY", "sk-test");
+        let guest = wr.spawn_js_with(BUNDLE.as_bytes(), caps);
+        rt.send(guest.pid(), collector.pid().raw().to_string().into_bytes());
+        assert_eq!(
+            String::from_utf8(rx.await.unwrap()).unwrap(),
+            "sk-test|undefined|true",
+            "granted env is read; ungranted is undefined; `in` reflects presence"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_javascript_bundle_handles_binary_messages() {
         // JS receives a reply-to (text) and a binary message (Uint8Array), then
         // echoes the bytes back — proving binary marshalling both ways.

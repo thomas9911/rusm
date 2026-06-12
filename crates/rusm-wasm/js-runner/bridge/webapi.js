@@ -510,4 +510,25 @@
       return new ResponsePF(body, { status, headers: respHeaders });
     };
   }
+
+  // process.env — capability-granted environment variables, read lazily from the host
+  // (`__getenv` → wasi:cli/environment, scoped to this process's `env = [...]` grants).
+  // An ungranted/absent key reads as `undefined`, matching Node's `process.env`. Enough
+  // for the common config read (`process.env.ANTHROPIC_API_KEY`) the JS ecosystem expects.
+  if (!G.process) G.process = {};
+  if (!G.process.env) {
+    G.process.env = new Proxy(
+      {},
+      {
+        get(_t, key) {
+          if (typeof key !== "string") return undefined;
+          const value = __getenv(key);
+          return value == null ? undefined : value;
+        },
+        has(_t, key) {
+          return typeof key === "string" && __getenv(key) != null;
+        },
+      },
+    );
+  }
 })();

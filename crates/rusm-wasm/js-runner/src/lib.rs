@@ -443,6 +443,12 @@ impl Guest for Component {
             def!("__crypto_aes_gcm_encrypt", js_crypto_aes_gcm_encrypt);
             def!("__crypto_aes_gcm_decrypt", js_crypto_aes_gcm_decrypt);
 
+            // Capability-granted environment variables: `std::env::var` reads
+            // `wasi:cli/environment`, which the host populates from this process's
+            // capability `env = [...]` grants — so a guest sees only its granted keys
+            // (an ungranted/absent key is `null`). Surfaced to JS as `process.env`.
+            def!("__getenv", |key: String| std::env::var(key).ok());
+
             // Web API polyfills, the raw actor API, durable storage, then the
             // RPC/service layer.
             let _: () = ctx.eval(WEBAPI_JS).unwrap();
