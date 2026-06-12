@@ -186,10 +186,24 @@ async fn serve_app(args: &[String]) -> anyhow::Result<()> {
     let cfg = load_node_config(args);
     let rt = Runtime::new();
     let wasm = wasm_runtime(rt.clone(), &cfg)?;
+    // Bring up the supporting `[[components]]` (e.g. a `meta-json` sink) on the **same**
+    // node first, so a `[[serve]]` entry can reach them via `whereis` / `spawn` — an app
+    // that serves HTTP *and* runs sibling services comes up with one `rusm serve`. Held
+    // to keep them alive.
+    let components =
+        spawn_components(Path::new("."), &wasm, &cfg.components, &cfg.capabilities).await?;
     let endpoints = serve_apps(Path::new("."), &wasm, &cfg.serve, &cfg.capabilities).await?;
-    if endpoints.is_empty() {
-        println!("no [[serve]] entries in rusm.toml — nothing to serve");
+    if endpoints.is_empty() && components.is_empty() {
+        println!("no [[serve]] entries or [[components]] in rusm.toml — nothing to do");
         return Ok(());
+    }
+    if !components.is_empty() {
+        let names: Vec<&str> = components.iter().map(|(n, _)| n.as_str()).collect();
+        println!(
+            "running {} component(s): {}",
+            components.len(),
+            names.join(", ")
+        );
     }
     println!("serving {} endpoint(s):", endpoints.len());
     for ep in &endpoints {
