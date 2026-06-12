@@ -153,8 +153,10 @@ declaration order. Resolution semantics:
 ## `[capabilities.<name>]` — custom capability profiles
 
 Like Cargo's `[profile.<name>]`: a profile **inherits** a built-in base and overrides
-only the grants it sets. Default-deny — anything not granted is denied, and a spawned
-child never exceeds its spawner. See [permissions & sandboxing](./concepts/permissions-and-sandboxing).
+only the grants it sets. Default-deny — anything not granted is denied. A
+node-registered component runs under **its own** declared profile, whoever spawns it
+(the `spawn` capability gates who may spawn; a guest can't fabricate grants the
+operator never declared). See [permissions & sandboxing](./concepts/permissions-and-sandboxing).
 
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |

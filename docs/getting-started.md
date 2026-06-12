@@ -208,7 +208,9 @@ curl http://127.0.0.1:8080/
 `network-client` / `trusted`), you can define your own — like Cargo's
 `[profile.<name>]`. A profile `inherits` a built-in base (default `sandboxed`,
 default-deny) and overrides only the grants it sets; a component references it by
-name. A spawned child never exceeds its spawner's capabilities (no escalation).
+name — and a node-registered component runs under **its own** declared profile,
+whoever spawns it (the `spawn` capability gates who may spawn; a guest can't fabricate
+grants the operator never declared).
 
 ```toml
 [capabilities.agent]
@@ -531,8 +533,10 @@ from inside a real component.
 > **Spawn-from-guest is supported — capability-gated.** A component declared in
 > `rusm.toml` can be `spawn`ed **by name** from inside another component (`spawn`
 > in the actor ABI), so you get per-request workers and concealed typed clients —
-> the Erlang model. It's default-deny (the `spawn` capability) and **non-escalating**:
-> a child inherits the spawner's capabilities, never more. Components still find
+> the Erlang model. It's default-deny (the `spawn` capability gates *who* may spawn);
+> a **node-registered** component runs under **its own manifest-declared profile**
+> (what the manifest declares is what runs, whoever spawns it), so secrets stay scoped
+> to the component that needs them — never the spawner. Components still find
 > long-lived peers with `register`/`whereis` and talk with `send`/`receive`; a
 > request/reply "callback" is just a message and a reply. See
 > [components & the actor world](./concepts/components-and-the-actor-world.md).

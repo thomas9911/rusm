@@ -42,8 +42,9 @@ the same story for Rust and TS, interoperable because they share one JSON wire.
 4. **Spawn-from-guest + monitor** (actor ABI) — `spawn` instantiates a registered
    component by name → a new pid; `monitor` makes a dead process arrive as a
    `__down` message (`receive` translates the runtime `Down` — no watcher process,
-   no polling). Both are **capability-gated** and `spawn` is **non-escalating**:
-   a child's capabilities never exceed its parent's.
+   no polling). Both are **capability-gated**; the `spawn` capability gates who may
+   spawn, and a node-registered component runs under its own manifest-declared profile
+   (a guest can't fabricate capabilities the operator never granted).
 5. **In-guest `Supervisor`** — in both rusm-rs and rusm-ts: spawn + monitor named
    children and restart per strategy — `one_for_one` / `one_for_all` /
    `rest_for_one`, with `max_restarts` (overload protection). The OTP supervision
@@ -110,7 +111,7 @@ export type Calc = typeof import(".");
 
 ## Verification
 
-`cargo test` green — host-level spawn gating + non-escalation, the JS service
+`cargo test` green — host-level spawn gating + per-component declared profiles, the JS service
 dispatch (sync + async handlers), a TS commander calling a service via the typed
 client (call + streaming + callback), the Rust `#[service]` macro driven end to end
 (call + streaming + callback), and a `Supervisor` (Rust **and** TS) restarting a

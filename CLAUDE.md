@@ -164,9 +164,14 @@ call/cast/streaming/callbacks, same JSON wire — Rust and TS guests interoperat
 Both guests get an in-guest **`Supervisor`** (one-for-one / one-for-all /
 rest-for-one over a `monitor` ABI; a dead child arrives as a `__down` message — no
 polling), and **`rusm dev`** watches `./components` and rebuilds + reloads on edit.
-Spawn-from-guest is a capability-gated, non-escalating actor-ABI op (the runner
-wraps each bundle in a CommonJS scope so its top-level vars can't clobber the
-runtime globals). **Phase 11 also closed the standard-WASI surface**: stock
+Spawn-from-guest is a capability-gated actor-ABI op: the `spawn` capability gates
+*who* may spawn, and a **node-registered** component runs under **its own
+manifest-declared profile** (`register_component_with`/`register_js_component_with`
+store the declared caps; `actor::spawn` uses them) — what the manifest declares is
+what runs, whoever spawns it, so secrets stay scoped to the component that needs them
+(an ad-hoc registration with no declared profile inherits the spawner's caps). A guest
+still can't fabricate capabilities the operator never granted. (The runner wraps each
+bundle in a CommonJS scope so its top-level vars can't clobber the runtime globals.) **Phase 11 also closed the standard-WASI surface**: stock
 **`wasi:cli/run`** command components run unchanged (`WasmRuntime::spawn_command` —
 DRY-shared `build_store` with the actor path), and the TS runner gained a
 capability-gated streaming **outbound `fetch`** (over `wasi:http`, gated by

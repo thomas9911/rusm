@@ -39,9 +39,11 @@ a [byte stream](./byte-streams.md) or messages — and returns. The dispatch-fro
 
 ## Platform owns / you write
 
-- **Platform owns:** the **capability-gated, non-escalating** spawn (a child inherits
-  *exactly* its parent's capabilities — never more), delivering the work message,
-  scheduling/parking the fiber on blocking calls, and notifying monitors/links on exit.
+- **Platform owns:** the **capability-gated** spawn — the `spawn` capability gates who
+  may spawn, and a node-registered worker runs under **its own manifest-declared
+  profile** (an ad-hoc registration inherits the spawner's caps) — delivering the work
+  message, scheduling/parking the fiber on blocking calls, and notifying monitors/links
+  on exit.
 - **You write:** receive the job, do it, (optionally) reply, return.
 
 ## Lifecycle events
@@ -61,9 +63,11 @@ a [byte stream](./byte-streams.md) or messages — and returns. The dispatch-fro
   message) or by putting it under an in-guest
   [`Supervisor`](./links-and-supervision.md) with a one-for-one / rest-for-one
   strategy.
-- **No escalation of privilege.** Because the spawn is non-escalating, a worker can
-  never reach beyond what its spawner was granted — capability scope only narrows down
-  the spawn tree.
+- **Secrets stay scoped.** A node-registered worker runs under its **declared**
+  profile, so a worker that needs (say) an API key gets it from its own
+  `[capabilities.<name>]` — the spawner needn't hold that key. A guest still can't
+  fabricate capabilities the operator never declared, and the `spawn` capability gates
+  who may spawn at all.
 - **Concurrency = many workers.** A guest is single-threaded; you get parallelism by
   spawning *more* workers (each its own process/instance), not by threading inside one.
 

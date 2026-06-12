@@ -15,8 +15,12 @@ where any goroutine/process can touch the whole machine.
   processes via the actor ABI — default-deny, so a sandboxed process manages only
   itself.
 - **Spawn**: whether the process may **spawn other components by name** via the
-  actor ABI — default-deny. A spawned child's capabilities never exceed its
-  spawner's (no escalation).
+  actor ABI — default-deny. The `spawn` capability gates *who* may spawn; a
+  **node-registered** component (a `[[components]]` / serve entry) then runs under
+  **its own manifest-declared profile** — the operator's explicit per-component
+  policy, so what the manifest declares is what runs, whoever spawns it. An *ad-hoc*
+  registration with no declared profile inherits the spawner's caps. Either way a
+  guest can never fabricate capabilities the operator didn't grant.
 - **Storage**: whether the process may use the node's **durable key-value store**
   (the `kv-*` ABI, backed by `rusm-kv`/redb) — default-deny. A sandboxed process
   has no persistence; the node must also have a `store` configured.
