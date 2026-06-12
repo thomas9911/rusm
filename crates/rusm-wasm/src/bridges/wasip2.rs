@@ -1005,6 +1005,34 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_javascript_bundle_has_base64_btoa_atob() {
+        // The standard Web base64 codecs: `btoa`/`atob` over Latin-1 binary strings,
+        // round-tripping (the JWT / data-URL / hashing path the ecosystem expects).
+        const BUNDLE: &str = r#"
+            module.exports.default = async function () {
+                const replyTo = await Process.receiveText();
+                const enc = btoa("hi");                 // "aGk="
+                const dec = atob("aGk=");               // "hi"
+                const roundtrip = atob(btoa("RUSMÿ")) === "RUSMÿ";
+                Process.send(replyTo, `${enc}|${dec}|${roundtrip}`);
+            };
+        "#;
+        let rt = Runtime::new();
+        let wr = WasmRuntime::new(rt.clone()).unwrap();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let collector = rt.spawn(move |mut ctx| async move {
+            let _ = tx.send(ctx.recv().await.message().unwrap());
+        });
+        let guest = wr.spawn_js(BUNDLE.as_bytes());
+        rt.send(guest.pid(), collector.pid().raw().to_string().into_bytes());
+        assert_eq!(
+            String::from_utf8(rx.await.unwrap()).unwrap(),
+            "aGk=|hi|true",
+            "btoa/atob encode, decode, and round-trip binary"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_javascript_bundle_handles_binary_messages() {
         // JS receives a reply-to (text) and a binary message (Uint8Array), then
         // echoes the bytes back — proving binary marshalling both ways.

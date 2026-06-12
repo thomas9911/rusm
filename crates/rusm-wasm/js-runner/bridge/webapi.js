@@ -33,6 +33,50 @@
     };
   }
 
+  // base64 (btoa/atob) — the standard Web APIs, operating on binary (Latin-1) strings.
+  // Self-contained; the ecosystem (JWTs, data URLs, hashing) expects them present.
+  const B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  def("btoa", (input) => {
+    const s = String(input);
+    for (let i = 0; i < s.length; i++) {
+      if (s.charCodeAt(i) > 0xff) {
+        throw new Error("btoa: a character is outside the Latin1 range");
+      }
+    }
+    let out = "";
+    for (let i = 0; i < s.length; i += 3) {
+      const c0 = s.charCodeAt(i);
+      const has1 = i + 1 < s.length;
+      const has2 = i + 2 < s.length;
+      const c1 = has1 ? s.charCodeAt(i + 1) : 0;
+      const c2 = has2 ? s.charCodeAt(i + 2) : 0;
+      out += B64[c0 >> 2];
+      out += B64[((c0 & 0b11) << 4) | (c1 >> 4)];
+      out += has1 ? B64[((c1 & 0b1111) << 2) | (c2 >> 6)] : "=";
+      out += has2 ? B64[c2 & 0b111111] : "=";
+    }
+    return out;
+  });
+  def("atob", (input) => {
+    const s = String(input).replace(/[\t\n\f\r ]/g, "");
+    if (s.length % 4 === 1) throw new Error("atob: invalid base64 length");
+    let out = "";
+    let acc = 0;
+    let bits = 0;
+    for (const ch of s) {
+      if (ch === "=") break;
+      const v = B64.indexOf(ch);
+      if (v === -1) throw new Error("atob: invalid base64 character");
+      acc = (acc << 6) | v;
+      bits += 6;
+      if (bits >= 8) {
+        bits -= 8;
+        out += String.fromCharCode((acc >> bits) & 0xff);
+      }
+    }
+    return out;
+  });
+
   class TextEncoderPF {
     encode(str) {
       const out = [];
