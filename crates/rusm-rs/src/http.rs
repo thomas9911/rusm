@@ -146,7 +146,10 @@ impl SseConnection {
     /// first, in the pump component's `run` (before subscribing / sending a snapshot).
     pub fn accept() -> Self {
         let msg = crate::receive_bytes();
-        let raw = msg.get(..8).and_then(|b| b.try_into().ok()).unwrap_or([0; 8]);
+        let raw = msg
+            .get(..8)
+            .and_then(|b| b.try_into().ok())
+            .unwrap_or([0; 8]);
         let responder = crate::Pid(u64::from_le_bytes(raw));
         let stream = crate::Stream::open(responder).expect("responder stream is open");
         Self { stream }
@@ -194,4 +197,57 @@ pub fn data_frame(payload: &[u8]) -> Vec<u8> {
     frame.extend_from_slice(payload);
     frame.extend_from_slice(b"\n\n");
     frame
+}
+
+// ── Per-request handlers: the unified serving model ──────────────────────────
+//
+// The host resolves the `[routes]` table, spawns this component fresh **per request**, and
+// sends one `"fetch"` carrying the matched action, the captured path params, and the
+// request. `#[rusm_rs::handlers]` dispatches it to the named handler function and replies;
+// then the instance exits. All of this is *platform* code — an app author writes only
+// `fn action(Request, Params) -> Response`, never the routing or the wire.
+
+/// Path parameters captured from the route pattern (`/users/:id` → `params.get("id")`).
+pub struct Params(Vec<(String, String)>);
+
+impl Params {
+    /// The value captured for `name`, or `None` if the route had no such parameter.
+    pub fn get(&self, name: &str) -> Option<&str> {
+        self.0
+            .iter()
+            .find(|(k, _)| k == name)
+            .map(|(_, v)| v.as_str())
+    }
+}
+
+/// The wire the host sends a per-request handler: the matched `action`, captured path
+/// `params`, the `request`, and the reply target (`from`/`ref`).
+#[derive(serde::Deserialize)]
+struct Incoming {
+    action: String,
+    #[serde(default)]
+    params: Vec<(String, String)>,
+    from: Option<String>,
+    #[serde(rename = "ref")]
+    reference: Option<u64>,
+    request: Request,
+}
+
+/// Receive the one request the host dispatched, route it to a handler via `dispatch`, and
+/// reply. Handles exactly one request — process-per-request — then returns so the instance
+/// exits. Called by the `#[rusm_rs::handlers]`-generated entrypoint; `dispatch` returns
+/// `None` for an unknown action (→ 404, though the host's router makes that unreachable).
+pub fn serve_request(dispatch: impl FnOnce(&str, Request, Params) -> Option<Response>) {
+    let Ok(inc) = serde_json::from_slice::<Incoming>(&crate::receive_bytes()) else {
+        return;
+    };
+    let response = dispatch(&inc.action, inc.request, Params(inc.params))
+        .unwrap_or_else(|| Response::new(404, b"no such action".to_vec()));
+    if let (Some(to), Some(reference)) = (inc.from.and_then(|f| f.parse().ok()), inc.reference) {
+        let reply = serde_json::json!({ "ref": reference, "ok": response });
+        crate::send_bytes(
+            crate::Pid(to),
+            &serde_json::to_vec(&reply).expect("reply serializes"),
+        );
+    }
 }

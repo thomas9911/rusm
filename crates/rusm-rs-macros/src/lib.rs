@@ -66,6 +66,61 @@ pub fn main(attr: TokenStream, item: TokenStream) -> TokenStream {
     .into()
 }
 
+/// `#[rusm_rs::handlers]` on an inline `mod` of `pub fn action(Request, Params) -> Response`.
+/// Turns the module into a **per-request HTTP handler component**: the host resolves the
+/// `[routes]` table, spawns this component per request, and dispatches the matched action
+/// here. Generates the whole component shell (`process` world, `Guest`, `export!`) and the
+/// action dispatch — the developer writes only handler functions: no `main`, no router, no
+/// request/reply plumbing.
+#[proc_macro_attribute]
+pub fn handlers(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    let module = syn::parse_macro_input!(item as ItemMod);
+    let Some((_, items)) = &module.content else {
+        return syn::Error::new_spanned(&module, "#[handlers] needs an inline module body")
+            .into_compile_error()
+            .into();
+    };
+    let module_ident = &module.ident;
+    // Each `pub fn` in the module is an action, dispatched by its name (the `#action` half
+    // of a `component#action` route).
+    let arms = items.iter().filter_map(|item| match item {
+        syn::Item::Fn(f) if matches!(f.vis, syn::Visibility::Public(_)) => {
+            let name = &f.sig.ident;
+            let action = name.to_string();
+            Some(quote! {
+                #action => ::core::option::Option::Some(
+                    super::#module_ident::#name(__request, __params)
+                ),
+            })
+        }
+        _ => None,
+    });
+    quote! {
+        #module
+
+        #[doc(hidden)]
+        mod __rusm_component {
+            ::wit_bindgen::generate!({
+                inline: #RUNTIME_WIT,
+                world: "process",
+                with: { "rusm:runtime/actor@0.1.0": ::rusm_rs::rusm::runtime::actor },
+            });
+
+            struct Component;
+            impl Guest for Component {
+                fn run() {
+                    ::rusm_rs::http::serve_request(|__action, __request, __params| match __action {
+                        #(#arms)*
+                        _ => ::core::option::Option::None,
+                    });
+                }
+            }
+            export!(Component);
+        }
+    }
+    .into()
+}
+
 /// One parameter: a plain data value, or a callback carrying its item type.
 struct Param {
     name: Ident,
