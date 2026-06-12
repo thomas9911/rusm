@@ -37,6 +37,18 @@ pub struct NodeConfig {
     /// state somewhere to survive a restart.
     #[serde(default)]
     pub store: Option<String>,
+    /// Declarative HTTP routing, the `[routes]` table: `"METHOD /path/:param" =
+    /// "component#action"`. The serving gateway resolves each request to a component +
+    /// action (with path params) and dispatches it per-request. Empty → no HTTP routing.
+    #[serde(default)]
+    pub routes: HashMap<String, String>,
+}
+
+impl NodeConfig {
+    /// The compiled [`RouteTable`] for the `[routes]` map (errors on a malformed entry).
+    pub fn route_table(&self) -> Result<crate::routes::RouteTable, String> {
+        crate::routes::RouteTable::from_map(&self.routes)
+    }
 }
 
 /// A custom capability profile (`[capabilities.<name>]`) — mirrors Cargo's
@@ -241,6 +253,7 @@ impl Default for NodeConfig {
             serve: Vec::new(),
             capabilities: HashMap::new(),
             store: None,
+            routes: HashMap::new(),
         }
     }
 }

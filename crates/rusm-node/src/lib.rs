@@ -12,6 +12,7 @@ pub mod config;
 pub mod node;
 pub mod profile;
 pub mod protocol;
+pub mod routes;
 
 pub use config::{
     BundleSource, CapabilitySpec, ComponentSpec, NodeConfig, PreopenSpec, ServeMode, ServeProtocol,
@@ -20,3 +21,4 @@ pub use config::{
 pub use node::{serve, serve_on, Node};
 pub use profile::{ResourceProfile, ResourceProfileMeta};
 pub use protocol::{ClientCommand, NodeSnapshot, ProcessInfo, ServerMessage};
+pub use routes::{Resolution, RouteTable};
