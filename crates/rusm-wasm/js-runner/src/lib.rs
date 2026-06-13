@@ -21,6 +21,7 @@ wit_bindgen::generate!({
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
+use std::io::IsTerminal;
 
 use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes128Gcm, Aes256Gcm, Nonce};
@@ -547,6 +548,9 @@ impl Guest for Component {
             // console output → WASI stderr (shown only if the `inherit_stdio`
             // capability is granted; discarded for a sandboxed guest).
             def!("__print", |s: String| eprintln!("{s}"));
+            // Whether stderr is a terminal — lets a TS logger colour only when piping
+            // wouldn't litter escape codes, matching the host's platform-log gating.
+            def!("__isatty", || std::io::stderr().is_terminal());
             // Secure randomness for the `crypto` polyfill (webapi.js).
             def!("__random_bytes", js_random_bytes);
             // Outbound HTTP for the `fetch` polyfill (capability-gated at the host).
