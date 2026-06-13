@@ -42,6 +42,20 @@ pub struct ConnectionStormEngine {
     scheduler_count: usize,
 }
 
+#[cfg(not(windows))]
+fn soft_limit() -> usize {
+    rlimit::Resource::NOFILE
+        .get()
+        .map(|(soft, _hard)| soft as usize)
+        .unwrap_or(256);
+}
+
+#[cfg(windows)]
+fn soft_limit() -> usize {
+    256
+}
+
+
 impl ConnectionStormEngine {
     pub fn new(workers: usize, scheduler_count: usize) -> Self {
         let workers = workers.max(1);
@@ -49,10 +63,7 @@ impl ConnectionStormEngine {
         // sockets; the target is then a fraction of that budget (each in-process
         // connection costs ~2 fds: client + accepted server side).
         let _ = rlimit::increase_nofile_limit(u64::MAX);
-        let soft = rlimit::Resource::NOFILE
-            .get()
-            .map(|(soft, _hard)| soft as usize)
-            .unwrap_or(256);
+        let soft = soft_limit();
         let budget = (soft / 2).saturating_sub(64);
         let target = budget.min(workers * PER_WORKER_TARGET).max(workers);
         let share = (target / workers).max(1);

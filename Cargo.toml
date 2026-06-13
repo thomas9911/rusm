@@ -4,6 +4,7 @@
 # responsibility (see `docs/01-architecture.md`). Phase 0 ships the
 # observability + benchmark foundation; the runtime crates (engine, processes,
 # host ABI) arrive in later phases — see `docs/02-roadmap.md`.
+
 [workspace]
 resolver = "2"
 members = [
@@ -21,6 +22,7 @@ members = [
     "rusm-cli",
     "xtask",
 ]
+default-members = ["rusm-cli"]
 # Guest test fixtures are wasm-only crates built separately for wasm32-wasip2 and
 # checked in as prebuilt .wasm; they must not build for the host target. `rusm-rs`
 # is the wasm-only Rust *guest* crate (depended on by guests, not the host).
