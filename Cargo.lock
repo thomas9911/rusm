@@ -2546,6 +2546,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "rusm-logfmt"
+version = "0.1.0"
+
+[[package]]
 name = "rusm-metrics"
 version = "0.1.0"
 dependencies = [
@@ -2583,6 +2587,7 @@ version = "0.1.0"
 dependencies = [
  "dashmap 6.2.1",
  "futures-util",
+ "rusm-logfmt",
  "tokio",
 ]
 
