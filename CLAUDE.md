@@ -233,6 +233,7 @@ cd bench/dashboard && bun test --coverage             # dashboard tests
 
 `crates/rusm-otp`, `crates/rusm-wasm`, `crates/rusm-cluster`,
 `crates/rusm-kv` (Wasm-free durable redb-backed KV store),
+`crates/rusm-logfmt` (Wasm-free shared log palette/format, host + wasm32-wasip2),
 `crates/rusm-metrics`, `crates/rusm-observer`, `crates/rusm-node` (manifest +
 profiles + the attach protocol/node), `bench/rusm-bench` (lib+bin),
 `bench/rusm-loadtest` (out-of-process serving load test),
