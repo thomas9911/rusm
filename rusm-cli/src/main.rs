@@ -3,6 +3,7 @@ use std::process::Command;
 
 use anyhow::{anyhow, Context};
 use futures_util::{SinkExt, StreamExt};
+use pico_args::Arguments;
 use rusm_cli::{
     normalize_target, parse, parse_new_args, render_message, scaffold, serve_apps,
     spawn_components, Hosted, Protocol, ReplInput, DEFAULT_HOST, HELP,
@@ -19,13 +20,55 @@ async fn main() {
     let command = args.get(1).map(String::as_str);
     let subcommand = args.get(2).map(String::as_str);
 
+    // Check for global help
+    if let Some(cmd) = command {
+        if cmd == "--help" || cmd == "-h" || cmd == "help" {
+            eprintln!("usage:");
+            print_usage();
+            std::process::exit(0);
+        }
+    }
+
     if command == Some("node") && subcommand == Some("start") {
         // Host the app's components and expose a live attach/observe endpoint.
-        if let Err(error) = start_node(&args).await {
+        // Parse node start specific flags using picoargs
+        let node_args: Vec<String> = args.iter().skip(3).cloned().collect();
+        let mut parser = Arguments::from_vec(
+            node_args
+                .iter()
+                .map(|s| std::ffi::OsString::from(s))
+                .collect(),
+        );
+
+        // Check for help flag
+        if parser.contains("--help") || parser.contains("-h") {
+            eprintln!("usage: rusm node start [--config <file>] [--listen <addr>]");
+            std::process::exit(0);
+        }
+
+        let config: Option<String> = parser.opt_value_from_str("--config").ok().flatten();
+        let listen: Option<String> = parser.opt_value_from_str("--listen").ok().flatten();
+
+        if let Err(error) = start_node(&args, config.as_deref(), listen.as_deref()).await {
             eprintln!("node start failed: {error}");
             std::process::exit(1);
         }
     } else if command == Some("attach") {
+        // Check for help flag
+        let attach_args: Vec<String> = args.iter().skip(2).cloned().collect();
+        let mut parser = Arguments::from_vec(
+            attach_args
+                .iter()
+                .map(|s| std::ffi::OsString::from(s))
+                .collect(),
+        );
+        if parser.contains("--help") || parser.contains("-h") {
+            eprintln!(
+                "usage: rusm attach [<host | host:port | ws-url>]   (defaults to 127.0.0.1:4000)"
+            );
+            std::process::exit(0);
+        }
+
         // Target defaults to the local node and accepts host / host:port / ws-url.
         let target = normalize_target(args.get(2).map(String::as_str).unwrap_or(DEFAULT_HOST));
         if let Err(error) = attach(&target).await {
@@ -34,7 +77,22 @@ async fn main() {
         }
     } else if command == Some("new") {
         // Scaffold a new RUSM app in ./<name> (language/protocol via flags).
-        match parse_new_args(&args[2..]) {
+        // Parse new arguments - use parse_new_args directly
+        let new_args: Vec<String> = args.iter().skip(2).cloned().collect();
+
+        // Check for help flag first
+        let mut temp_parser = Arguments::from_vec(
+            new_args
+                .iter()
+                .map(|s| std::ffi::OsString::from(s))
+                .collect(),
+        );
+        if temp_parser.contains("--help") || temp_parser.contains("-h") {
+            eprintln!("usage: rusm new <name> [--rust] [--lang ts|rust] [--protocol http|sse|ws]");
+            std::process::exit(0);
+        }
+
+        match parse_new_args(&new_args) {
             Ok(app) => match scaffold(Path::new("."), &app) {
                 Ok(_) => {
                     let probe = match app.protocol {
@@ -61,6 +119,19 @@ async fn main() {
         }
     } else if command == Some("build") {
         // Compile components/<name>/ -> wasm/<name>.wasm (one toolchain, no jco).
+        // Check for help flag
+        let build_args: Vec<String> = args.iter().skip(2).cloned().collect();
+        let mut temp_parser = Arguments::from_vec(
+            build_args
+                .iter()
+                .map(|s| std::ffi::OsString::from(s))
+                .collect(),
+        );
+        if temp_parser.contains("--help") || temp_parser.contains("-h") {
+            eprintln!("usage: rusm build                 compile ./components/* -> ./wasm/*.wasm");
+            std::process::exit(0);
+        }
+
         match build_components(Path::new(".")) {
             Ok(built) if built.is_empty() => {
                 println!("no component crates found under ./components");
@@ -77,6 +148,19 @@ async fn main() {
         }
     } else if command == Some("run") {
         // Run the app's components from ./wasm per the rusm.toml manifest.
+        // Check for help flag
+        let run_args: Vec<String> = args.iter().skip(2).cloned().collect();
+        let mut temp_parser = Arguments::from_vec(
+            run_args
+                .iter()
+                .map(|s| std::ffi::OsString::from(s))
+                .collect(),
+        );
+        if temp_parser.contains("--help") || temp_parser.contains("-h") {
+            eprintln!("usage: rusm run                   run ./wasm components per rusm.toml [components.<name>]");
+            std::process::exit(0);
+        }
+
         if let Err(error) = run_app(&args).await {
             eprintln!("run failed: {error}");
             std::process::exit(1);
@@ -84,42 +168,78 @@ async fn main() {
     } else if command == Some("serve") {
         // Host the app's [[serve]] components as real HTTP/WS/SSE servers on their
         // own ports — what an out-of-process load driver (rusm-loadtest) hits.
+        // Check for help flag
+        let serve_args: Vec<String> = args.iter().skip(2).cloned().collect();
+        let mut temp_parser = Arguments::from_vec(
+            serve_args
+                .iter()
+                .map(|s| std::ffi::OsString::from(s))
+                .collect(),
+        );
+        if temp_parser.contains("--help") || temp_parser.contains("-h") {
+            eprintln!("usage: rusm serve                 host ./wasm components as HTTP/WS/SSE servers per rusm.toml [[serve]]");
+            std::process::exit(0);
+        }
+
         if let Err(error) = serve_app(&args).await {
             eprintln!("serve failed: {error}");
             std::process::exit(1);
         }
     } else if command == Some("dev") {
         // Build, run, and watch: edit a component and RUSM rebuilds + reloads it.
+        // Check for help flag
+        let dev_args: Vec<String> = args.iter().skip(2).cloned().collect();
+        let mut temp_parser = Arguments::from_vec(
+            dev_args
+                .iter()
+                .map(|s| std::ffi::OsString::from(s))
+                .collect(),
+        );
+        if temp_parser.contains("--help") || temp_parser.contains("-h") {
+            eprintln!(
+                "usage: rusm dev                   build + run, then watch & reload on edits"
+            );
+            std::process::exit(0);
+        }
+
         if let Err(error) = dev(&args).await {
             eprintln!("dev failed: {error}");
             std::process::exit(1);
         }
     } else {
         eprintln!("usage:");
-        eprintln!("  rusm new <name>            scaffold a new RUSM app in ./<name>");
-        eprintln!(
-            "  rusm node start [--config <file>] [--listen <addr>]   host the app + a live attach endpoint"
-        );
-        eprintln!("  rusm build                 compile ./components/* -> ./wasm/*.wasm");
-        eprintln!(
-            "  rusm run                   run ./wasm components per rusm.toml [components.<name>]"
-        );
-        eprintln!("  rusm dev                   build + run, then watch & reload on edits");
-        eprintln!(
-            "  rusm serve                 host ./wasm components as HTTP/WS/SSE servers per rusm.toml [[serve]]"
-        );
-        eprintln!("  rusm attach [<host | host:port | ws-url>]   (defaults to 127.0.0.1:4000)");
+        print_usage();
         std::process::exit(2);
     }
+}
+
+fn print_usage() {
+    eprintln!("  rusm new <name>            scaffold a new RUSM app in ./<name>");
+    eprintln!(
+        "  rusm node start [--config <file>] [--listen <addr>]   host the app + a live attach endpoint"
+    );
+    eprintln!("  rusm build                 compile ./components/* -> ./wasm/*.wasm");
+    eprintln!(
+        "  rusm run                   run ./wasm components per rusm.toml [components.<name>]"
+    );
+    eprintln!("  rusm dev                   build + run, then watch & reload on edits");
+    eprintln!(
+        "  rusm serve                 host ./wasm components as HTTP/WS/SSE servers per rusm.toml [[serve]]"
+    );
+    eprintln!("  rusm attach [<host | host:port | ws-url>]   (defaults to 127.0.0.1:4000)");
 }
 
 /// `rusm node start`: host the app's `[components.<name>]` (like `rusm run`) and expose
 /// a live **attach** endpoint on `cfg.listen`, so `rusm attach` can observe the
 /// node's processes. The served runtime + held handles keep everything alive for
 /// the lifetime of the server (which runs until Ctrl-C or a bind error).
-async fn start_node(args: &[String]) -> anyhow::Result<()> {
+async fn start_node(
+    args: &[String],
+    config: Option<&str>,
+    listen: Option<&str>,
+) -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
-    let cfg = load_node_config(args);
+    let cfg = load_node_config(args, config, listen);
     let rt = Runtime::new();
     // `wasm` + `hosted` stay bound for the whole function: they own the hosted
     // components' runtime + resident supervisor, so they must outlive the server below.
@@ -155,7 +275,7 @@ async fn run_app(args: &[String]) -> anyhow::Result<()> {
     // Environment variables the Rust way: process env first, then ./.env.
     dotenvy::dotenv().ok();
 
-    let cfg = load_node_config(args);
+    let cfg = load_node_config(args, None, None);
     let rt = Runtime::new();
     let wasm = wasm_runtime(rt.clone(), &cfg)?;
     let hosted =
@@ -196,7 +316,7 @@ async fn serve_app(args: &[String]) -> anyhow::Result<()> {
     // Env the Rust way: process env first, then ./.env.
     dotenvy::dotenv().ok();
 
-    let cfg = load_node_config(args);
+    let cfg = load_node_config(args, None, None);
     let rt = Runtime::new();
     let wasm = wasm_runtime(rt.clone(), &cfg)?;
     // Register the app's `[components.<name>]` on the **same** node first, so a
@@ -236,7 +356,7 @@ async fn serve_app(args: &[String]) -> anyhow::Result<()> {
 /// dependency-free mtime poll (a ~400 ms scan, skipping build output).
 async fn dev(args: &[String]) -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
-    let cfg = load_node_config(args);
+    let cfg = load_node_config(args, None, None);
     let rt = Runtime::new();
     let wasm = wasm_runtime(rt.clone(), &cfg)?;
     let root = Path::new(".");
@@ -436,15 +556,17 @@ fn flag(args: &[String], name: &str) -> Option<String> {
 }
 
 /// Loads node config: defaults → `rusm.toml` (or `--config <file>`) → CLI flags.
-fn load_node_config(args: &[String]) -> NodeConfig {
-    let explicit = flag(args, "--config");
+fn load_node_config(args: &[String], config: Option<&str>, listen: Option<&str>) -> NodeConfig {
+    let explicit = config.map(String::from).or_else(|| flag(args, "--config"));
     let path = explicit.clone().unwrap_or_else(|| "rusm.toml".to_string());
     let mut cfg = NodeConfig::load(Path::new(&path), explicit.is_some()).unwrap_or_else(|error| {
         eprintln!("{error}");
         std::process::exit(2);
     });
-    if let Some(listen) = flag(args, "--listen") {
-        cfg.listen = listen;
+    if let Some(listen_addr) = listen {
+        cfg.listen = listen_addr.to_string();
+    } else if let Some(listen_value) = flag(args, "--listen") {
+        cfg.listen = listen_value;
     }
     cfg
 }

@@ -54,42 +54,66 @@ pub struct NewApp {
 /// (`-p`, `--protocol=…` also accepted). Unknown flags, bad values, and a missing or
 /// duplicate name are hard errors — a typo never silently scaffolds the wrong thing.
 pub fn parse_new_args(rest: &[String]) -> Result<NewApp> {
-    let mut name: Option<String> = None;
-    let mut lang = Lang::TypeScript;
-    let mut protocol = Protocol::Http;
+    use pico_args::Arguments;
 
-    let mut it = rest.iter();
-    while let Some(arg) = it.next() {
-        match arg.as_str() {
-            "--rust" => lang = Lang::Rust,
-            "--lang" => lang = parse_lang(next_value(&mut it, "--lang")?)?,
-            l if l.starts_with("--lang=") => lang = parse_lang(&l["--lang=".len()..])?,
-            "--protocol" | "-p" => protocol = parse_protocol(next_value(&mut it, "--protocol")?)?,
-            p if p.starts_with("--protocol=") => {
-                protocol = parse_protocol(&p["--protocol=".len()..])?
-            }
-            flag if flag.starts_with('-') => bail!("unknown option `{flag}`"),
-            positional if name.is_none() => name = Some(positional.to_string()),
-            extra => bail!(
-                "unexpected argument `{extra}` (the app name is already `{}`)",
-                { name.as_deref().unwrap_or_default() }
-            ),
-        }
+    let os_args: Vec<std::ffi::OsString> =
+        rest.iter().map(|s| std::ffi::OsString::from(s)).collect();
+    let mut parser = Arguments::from_vec(os_args.clone());
+
+    // Parse flags and options first
+    let rust_flag = parser.contains("--rust");
+    let lang: Result<Option<String>, _> = parser.opt_value_from_str("--lang");
+    // Try to parse --protocol or -p
+    let protocol1: Result<Option<String>, _> = parser.opt_value_from_str("--protocol");
+    let protocol: Result<Option<String>, _> = match protocol1 {
+        Ok(Some(val)) => Ok(Some(val)),
+        Ok(None) => parser.opt_value_from_str("-p"),
+        Err(e) => Err(e),
+    };
+
+    // Then parse the free argument (name)
+    let name: Result<String, _> = parser.free_from_str();
+
+    // Check for remaining arguments which would indicate duplicate names
+    // Note: picoargs consumes arguments as it parses them, so remaining should only
+    // contain unexpected free arguments
+    let remaining = parser.finish();
+    if !remaining.is_empty() {
+        // The first remaining argument is the duplicate name
+        anyhow::bail!(
+            "unexpected argument `{}`, the app name is already `{}`",
+            remaining[0].to_string_lossy(),
+            rest[0]
+        );
     }
 
-    let name = name.context("usage: rusm new <name> [--rust] [--protocol http|sse|ws]")?;
-    validate_name(&name)?;
+    let name_str = name.map_err(|e| anyhow::anyhow!(e))?;
+    let lang_opt = lang.map_err(|e| anyhow::anyhow!(e))?;
+    let protocol_opt = protocol.map_err(|e| anyhow::anyhow!(e))?;
+
+    // Apply the parsed values to create the NewApp
+    let mut lang = if rust_flag {
+        Lang::Rust
+    } else {
+        Lang::TypeScript
+    };
+
+    let mut protocol = Protocol::Http;
+
+    if let Some(lang_str) = lang_opt {
+        lang = parse_lang(&lang_str)?;
+    }
+
+    if let Some(proto_str) = protocol_opt {
+        protocol = parse_protocol(&proto_str)?;
+    }
+
+    validate_name(&name_str)?;
     Ok(NewApp {
-        name,
+        name: name_str,
         lang,
         protocol,
     })
-}
-
-fn next_value<'a>(it: &mut std::slice::Iter<'a, String>, flag: &str) -> Result<&'a str> {
-    it.next()
-        .map(String::as_str)
-        .with_context(|| format!("`{flag}` needs a value"))
 }
 
 fn parse_lang(value: &str) -> Result<Lang> {
