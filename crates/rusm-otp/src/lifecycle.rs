@@ -83,15 +83,27 @@ fn paint(code: &str, text: &str) -> String {
     }
 }
 
-/// The dim `rusm` tag that marks a line as a **platform** event (vs an app's logs).
-fn tag() -> String {
-    paint("2;35", "rusm") // dim magenta
+/// Shared log-line columns, matched by the app loggers (genius's `domain::log` /
+/// `shared/log`) so platform and app lines align when interleaved: the `who` column
+/// (here the `rusm` tag; there `component#pid`) and the action/verb column.
+const WHO_WIDTH: usize = 14;
+const ACTION_WIDTH: usize = 6;
+
+/// The lead every platform line shares: the **timestamp first** (`HH:MM:SS` UTC, gray),
+/// then the `rusm` tag padded to the shared `who` column — so spawn / exit / census read
+/// `<time> rusm           <verb> …` and line up with the app logs' `component#pid`.
+fn lead() -> String {
+    format!(
+        "{} {}",
+        paint("90", &now_hms()),                                  // gray
+        paint("2;35", &format!("{:<w$}", "rusm", w = WHO_WIDTH)), // dim magenta, padded
+    )
 }
 
-/// The lead every platform line shares: the **timestamp first** (`HH:MM:SS` UTC, dim),
-/// then the `rusm` tag — so spawn / exit / census all read `<time> rusm <verb> …`.
-fn stamp() -> String {
-    format!("{} {}", paint("2", &now_hms()), tag())
+/// An action word (`spawn`/`exit`/`census`) coloured by `code`, padded to the action
+/// column so the subject/message that follows aligns across every line.
+fn action(code: &str, verb: &str) -> String {
+    paint(code, &format!("{:<w$}", verb, w = ACTION_WIDTH))
 }
 
 /// `<id>` rendered as a bold name + dim `#pid` — the identifier shared by spawn/exit.
@@ -108,8 +120,8 @@ fn ident(label: &str, pid: Pid) -> String {
 pub fn log_spawn(pid: Pid, label: &str, detail: &str) {
     eprintln!(
         "{} {} {}  {}",
-        stamp(),
-        paint("36", "spawn"), // cyan
+        lead(),
+        action("36", "spawn"), // cyan
         ident(label, pid),
         paint("2", detail), // dim
     );
@@ -120,9 +132,9 @@ pub fn log_spawn(pid: Pid, label: &str, detail: &str) {
 pub fn log_exit(pid: Pid, label: &str, reason: ExitReason) {
     let code = LogLevel::for_exit(reason).colour();
     eprintln!(
-        "{} {}  {}  {}",
-        stamp(),
-        paint(code, "exit"),
+        "{} {} {}  {}",
+        lead(),
+        action(code, "exit"),
         ident(label, pid),
         paint(code, &format!("{reason:?}").to_lowercase()),
     );
@@ -148,7 +160,7 @@ pub fn log_census(counts: &BTreeMap<String, u64>) {
             .collect::<Vec<_>>()
             .join("  ")
     };
-    eprintln!("{} {}  {}", stamp(), paint("36", "census"), body);
+    eprintln!("{} {} {}", lead(), action("36", "census"), body);
 }
 
 /// `HH:MM:SS` (UTC) for a UNIX-epoch seconds value — pure (no clock read) so the
