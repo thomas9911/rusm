@@ -21,7 +21,7 @@ wit_bindgen::generate!({
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
-use std::io::IsTerminal;
+use std::io::{IsTerminal, Write};
 
 use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes128Gcm, Aes256Gcm, Nonce};
@@ -546,8 +546,12 @@ impl Guest for Component {
             def!("__stream_accept", || actor::stream_accept() as f64);
             def!("__stream_read", js_stream_read);
             // console output → WASI stderr (shown only if the `inherit_stdio`
-            // capability is granted; discarded for a sandboxed guest).
-            def!("__print", |s: String| eprintln!("{s}"));
+            // capability is granted; discarded for a sandboxed guest). One `write_all` of
+            // the whole line (not `eprintln!`'s piece-by-piece writes) so concurrent guest
+            // processes sharing the host stderr can't interleave mid-line.
+            def!("__print", |s: String| {
+                let _ = std::io::stderr().write_all(format!("{s}\n").as_bytes());
+            });
             // Whether stderr is a terminal — lets a TS logger colour only when piping
             // wouldn't litter escape codes, matching the host's platform-log gating.
             def!("__isatty", || std::io::stderr().is_terminal());
