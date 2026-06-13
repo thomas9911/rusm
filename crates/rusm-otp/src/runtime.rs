@@ -1,7 +1,7 @@
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::fmt;
 use std::future::Future;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -9,6 +9,7 @@ use dashmap::mapref::entry::Entry;
 use dashmap::DashMap;
 use futures_util::future::{AbortHandle, Abortable};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
+use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 
 use crate::exit::{ExitReason, MonitorRef};
@@ -231,9 +232,26 @@ struct Inner {
     // name -> pid. Sharded too, so name lookups never take a global lock the way
     // Lunatic's single `RwLock<HashMap>` registry does.
     registry: DashMap<String, u64>,
+    /// Woken on each labeled-process state change (a spawn gets named, or a labeled
+    /// process exits) **only when logging is at `Info`+**. The census task debounces
+    /// these into one per-component summary line; a `Notify` holds at most one permit,
+    /// so a burst of changes coalesces to a single recount.
+    census_dirty: Notify,
+    /// Guards the single census task — spawned once, on the first `Info`+ enable.
+    census_started: AtomicBool,
 }
 
+/// How long the census task lets process-state changes settle before emitting one
+/// summary — a burst (e.g. a fan-out of workers) coalesces into a single line.
+const CENSUS_DEBOUNCE: Duration = Duration::from_secs(2);
+
 impl Inner {
+    /// Whether the configured platform-log level is at least `level` — the single
+    /// place the level rank is compared (the gate behind every lifecycle line).
+    fn wants(&self, level: crate::LogLevel) -> bool {
+        self.log_level.load(Ordering::Relaxed) >= level as u8
+    }
+
     /// Enqueues `item` into `to`'s mailbox if it is still alive, keeping the
     /// mailbox-depth counter in step. The single place a mailbox grows — used by
     /// user sends, stream sends, and system deliveries alike. Returns whether it
@@ -283,9 +301,12 @@ impl Inner {
         // named — so the stream is signal, not internal plumbing. `for_exit` is the one
         // place that maps a reason to its level (crash → Error, kill → Warn, clean → Info).
         if let Some(label) = &entry.label {
-            let want = crate::LogLevel::for_exit(reason);
-            if self.log_level.load(Ordering::Relaxed) >= want as u8 {
+            if self.wants(crate::LogLevel::for_exit(reason)) {
                 crate::lifecycle::log_exit(pid, label, reason);
+            }
+            // A labeled process ended → the per-component census changed; recount (debounced).
+            if self.wants(crate::LogLevel::Info) {
+                self.census_dirty.notify_one();
             }
         }
 
@@ -527,6 +548,10 @@ impl Runtime {
         match self.inner.table.get_mut(&pid.0) {
             Some(mut entry) => {
                 entry.label = Some(label.into());
+                // A newly-named (or relabeled) process changes the per-component census.
+                if self.inner.wants(crate::LogLevel::Info) {
+                    self.inner.census_dirty.notify_one();
+                }
                 true
             }
             None => false,
@@ -538,12 +563,50 @@ impl Runtime {
     /// explicitly (`rusm.toml [log] level = "debug"`). Set once at startup.
     pub fn set_log_level(&self, level: crate::LogLevel) {
         self.inner.log_level.store(level as u8, Ordering::Relaxed);
+        // Bring up the single census task the first time logging reaches `Info`+ (the
+        // level its per-component summary belongs to). It then parks on `census_dirty`
+        // at no cost, and quiets itself if the level later drops (no more notifies).
+        // Needs a Tokio runtime — skip cleanly if set outside one (e.g. a sync test).
+        if level >= crate::LogLevel::Info
+            && tokio::runtime::Handle::try_current().is_ok()
+            && !self.inner.census_started.swap(true, Ordering::AcqRel)
+        {
+            self.spawn_census_loop();
+        }
+    }
+
+    /// The per-component live-process **census**: every labeled process grouped by its
+    /// label. Unlabeled processes (internal plumbing — responders, writers) are omitted,
+    /// so the summary is about *components*. The single source of the count, shared by
+    /// the census task and tests.
+    pub(crate) fn census_counts(&self) -> BTreeMap<String, u64> {
+        let mut counts = BTreeMap::new();
+        for entry in self.inner.table.iter() {
+            if let Some(label) = &entry.label {
+                *counts.entry(label.clone()).or_insert(0) += 1;
+            }
+        }
+        counts
+    }
+
+    /// The debounced census task — one per runtime, started on the first `Info`+ enable.
+    /// It waits for a state change, lets the burst settle for [`CENSUS_DEBOUNCE`], then
+    /// emits one summary line. Idle ⇒ parked (zero cost); a spawn storm ⇒ one line.
+    fn spawn_census_loop(&self) {
+        let runtime = self.clone();
+        tokio::spawn(async move {
+            loop {
+                runtime.inner.census_dirty.notified().await;
+                tokio::time::sleep(CENSUS_DEBOUNCE).await;
+                crate::lifecycle::log_census(&runtime.census_counts());
+            }
+        });
     }
 
     /// Whether the configured level would log an event at `event` — a spawn site checks
     /// this before building a label/detail it would otherwise not need (off path free).
     pub fn wants_log(&self, event: crate::LogLevel) -> bool {
-        self.inner.log_level.load(Ordering::Relaxed) >= event as u8
+        self.inner.wants(event)
     }
 
     /// Emit a platform `spawn` log line (`detail` = the process's effective
@@ -826,6 +889,39 @@ mod tests {
         // At Debug: everything logs.
         rt.set_log_level(crate::LogLevel::Debug);
         assert!(rt.wants_log(crate::LogLevel::Debug));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn census_counts_live_processes_by_label() {
+        let rt = Runtime::new();
+        // Four parked processes; label two "alpha", one "beta", leave one unlabeled.
+        let mut procs: Vec<_> = (0..4)
+            .map(|_| {
+                rt.spawn(|mut ctx| async move {
+                    loop {
+                        ctx.recv().await;
+                    }
+                })
+            })
+            .collect();
+        assert!(rt.set_label(procs[0].pid(), "alpha"));
+        assert!(rt.set_label(procs[1].pid(), "alpha"));
+        assert!(rt.set_label(procs[2].pid(), "beta"));
+
+        let counts = rt.census_counts();
+        assert_eq!(counts.get("alpha"), Some(&2));
+        assert_eq!(counts.get("beta"), Some(&1));
+        assert_eq!(counts.len(), 2, "the unlabeled process is excluded");
+
+        // When a labeled process exits, the census reflects it.
+        let victim = procs.remove(1); // an "alpha"
+        victim.kill();
+        victim.join().await;
+        assert_eq!(
+            rt.census_counts().get("alpha"),
+            Some(&1),
+            "a drained process drops out of the census"
+        );
     }
 
     #[tokio::test]

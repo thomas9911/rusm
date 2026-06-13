@@ -12,6 +12,7 @@
 //! Every line is tagged **`rusm`** so these *platform* events (the runtime spawning and
 //! ending processes) are visually distinct from an app's own domain logs.
 
+use std::collections::BTreeMap;
 use std::io::IsTerminal;
 
 use crate::exit::ExitReason;
@@ -119,6 +120,29 @@ pub fn log_exit(pid: Pid, label: &str, reason: ExitReason) {
         ident(label, pid),
         paint(code, &format!("{reason:?}").to_lowercase()),
     );
+}
+
+/// Log a process **census**: `rusm census  <comp>=<n>  …` — the count of live
+/// processes per component (by label), emitted debounced after process state settles.
+/// Bold names, cyan counts; an idle node with no labeled processes reads `(none)`.
+pub fn log_census(counts: &BTreeMap<String, u64>) {
+    let body = if counts.is_empty() {
+        paint("2", "(none)")
+    } else {
+        counts
+            .iter()
+            .map(|(name, n)| {
+                format!(
+                    "{}{}{}",
+                    paint("1", name),
+                    paint("2", "="),
+                    paint("36", &n.to_string())
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("  ")
+    };
+    eprintln!("{} {}  {}", tag(), paint("36", "census"), body);
 }
 
 // A supervisor **restart** intentionally has no dedicated event: it reads as the
