@@ -53,13 +53,7 @@ pub struct NewApp {
 /// name plus optional `--rust`/`--lang <ts|rust>` and `--protocol <http|sse|ws>`
 /// (`-p`, `--protocol=…` also accepted). Unknown flags, bad values, and a missing or
 /// duplicate name are hard errors — a typo never silently scaffolds the wrong thing.
-pub fn parse_new_args(rest: &[String]) -> Result<NewApp> {
-    use pico_args::Arguments;
-
-    let os_args: Vec<std::ffi::OsString> =
-        rest.iter().map(|s| std::ffi::OsString::from(s)).collect();
-    let mut parser = Arguments::from_vec(os_args.clone());
-
+pub fn parse_new_args(mut parser: pico_args::Arguments) -> Result<NewApp> {
     // Parse flags and options first
     let rust_flag = parser.contains("--rust");
     let lang: Result<Option<String>, _> = parser.opt_value_from_str("--lang");
@@ -83,7 +77,7 @@ pub fn parse_new_args(rest: &[String]) -> Result<NewApp> {
         anyhow::bail!(
             "unexpected argument `{}`, the app name is already `{}`",
             remaining[0].to_string_lossy(),
-            rest[0]
+            name.as_ref().map_or("", |n| n.as_str())
         );
     }
 
@@ -584,8 +578,13 @@ mod tests {
 
     #[test]
     fn parses_flags_with_sensible_defaults() {
-        let p =
-            |args: &[&str]| parse_new_args(&args.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        use pico_args::Arguments;
+
+        let p = |args: &[&str]| {
+            let os_args: Vec<std::ffi::OsString> =
+                args.iter().map(std::ffi::OsString::from).collect();
+            parse_new_args(Arguments::from_vec(os_args))
+        };
         let d = p(&["hello"]).unwrap();
         assert_eq!(d.lang, Lang::TypeScript);
         assert_eq!(d.protocol, Protocol::Http);
@@ -611,8 +610,13 @@ mod tests {
 
     #[test]
     fn rejects_bad_input() {
-        let p =
-            |args: &[&str]| parse_new_args(&args.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        use pico_args::Arguments;
+
+        let p = |args: &[&str]| {
+            let os_args: Vec<std::ffi::OsString> =
+                args.iter().map(std::ffi::OsString::from).collect();
+            parse_new_args(Arguments::from_vec(os_args))
+        };
         assert!(p(&[]).is_err(), "missing name");
         assert!(p(&["a", "b"]).is_err(), "two names");
         assert!(p(&["hello", "--protocol", "grpc"]).is_err(), "bad protocol");

@@ -16,200 +16,193 @@ use tokio_tungstenite::tungstenite::Message;
 
 #[tokio::main]
 async fn main() {
-    let args: Vec<String> = std::env::args().collect();
-    let command = args.get(1).map(String::as_str);
-    let subcommand = args.get(2).map(String::as_str);
+    let mut args = Arguments::from_env();
 
-    // Check for global help
-    if let Some(cmd) = command {
-        if cmd == "--help" || cmd == "-h" || cmd == "help" {
+    // Get the subcommand
+    let command = match args.subcommand() {
+        Ok(cmd) => cmd,
+        Err(e) => {
+            eprintln!("Error: {e}");
+            eprintln!("\nusage:");
+            print_usage();
+            std::process::exit(1);
+        }
+    };
+
+    // If no command provided, check for global help or show usage
+    let Some(command) = command else {
+        if args.contains("--help") || args.contains("-h") || args.contains("help") {
             eprintln!("usage:");
             print_usage();
             std::process::exit(0);
         }
-    }
-
-    if command == Some("node") && subcommand == Some("start") {
-        // Host the app's components and expose a live attach/observe endpoint.
-        // Parse node start specific flags using picoargs
-        let node_args: Vec<String> = args.iter().skip(3).cloned().collect();
-        let mut parser = Arguments::from_vec(
-            node_args
-                .iter()
-                .map(|s| std::ffi::OsString::from(s))
-                .collect(),
-        );
-
-        // Check for help flag
-        if parser.contains("--help") || parser.contains("-h") {
-            eprintln!("usage: rusm node start [--config <file>] [--listen <addr>]");
-            std::process::exit(0);
-        }
-
-        let config: Option<String> = parser.opt_value_from_str("--config").ok().flatten();
-        let listen: Option<String> = parser.opt_value_from_str("--listen").ok().flatten();
-
-        if let Err(error) = start_node(&args, config.as_deref(), listen.as_deref()).await {
-            eprintln!("node start failed: {error}");
-            std::process::exit(1);
-        }
-    } else if command == Some("attach") {
-        // Check for help flag
-        let attach_args: Vec<String> = args.iter().skip(2).cloned().collect();
-        let mut parser = Arguments::from_vec(
-            attach_args
-                .iter()
-                .map(|s| std::ffi::OsString::from(s))
-                .collect(),
-        );
-        if parser.contains("--help") || parser.contains("-h") {
-            eprintln!(
-                "usage: rusm attach [<host | host:port | ws-url>]   (defaults to 127.0.0.1:4000)"
-            );
-            std::process::exit(0);
-        }
-
-        // Target defaults to the local node and accepts host / host:port / ws-url.
-        let target = normalize_target(args.get(2).map(String::as_str).unwrap_or(DEFAULT_HOST));
-        if let Err(error) = attach(&target).await {
-            eprintln!("attach failed: {error}");
-            std::process::exit(1);
-        }
-    } else if command == Some("new") {
-        // Scaffold a new RUSM app in ./<name> (language/protocol via flags).
-        // Parse new arguments - use parse_new_args directly
-        let new_args: Vec<String> = args.iter().skip(2).cloned().collect();
-
-        // Check for help flag first
-        let mut temp_parser = Arguments::from_vec(
-            new_args
-                .iter()
-                .map(|s| std::ffi::OsString::from(s))
-                .collect(),
-        );
-        if temp_parser.contains("--help") || temp_parser.contains("-h") {
-            eprintln!("usage: rusm new <name> [--rust] [--lang ts|rust] [--protocol http|sse|ws]");
-            std::process::exit(0);
-        }
-
-        match parse_new_args(&new_args) {
-            Ok(app) => match scaffold(Path::new("."), &app) {
-                Ok(_) => {
-                    let probe = match app.protocol {
-                        Protocol::Http => "curl http://127.0.0.1:8080/",
-                        Protocol::Sse => "curl -N http://127.0.0.1:8080/",
-                        Protocol::Ws => "websocat ws://127.0.0.1:8080/",
-                    };
-                    println!("created {}/", app.name);
-                    println!("\nnext:");
-                    println!("  cd {}", app.name);
-                    println!("  rusm build      # compile components/ -> wasm/");
-                    println!("  rusm serve      # http://127.0.0.1:8080");
-                    println!("  {probe}");
-                }
-                Err(error) => {
-                    eprintln!("new failed: {error}");
-                    std::process::exit(1);
-                }
-            },
-            Err(error) => {
-                eprintln!("{error}");
-                std::process::exit(2);
-            }
-        }
-    } else if command == Some("build") {
-        // Compile components/<name>/ -> wasm/<name>.wasm (one toolchain, no jco).
-        // Check for help flag
-        let build_args: Vec<String> = args.iter().skip(2).cloned().collect();
-        let mut temp_parser = Arguments::from_vec(
-            build_args
-                .iter()
-                .map(|s| std::ffi::OsString::from(s))
-                .collect(),
-        );
-        if temp_parser.contains("--help") || temp_parser.contains("-h") {
-            eprintln!("usage: rusm build                 compile ./components/* -> ./wasm/*.wasm");
-            std::process::exit(0);
-        }
-
-        match build_components(Path::new(".")) {
-            Ok(built) if built.is_empty() => {
-                println!("no component crates found under ./components");
-            }
-            Ok(built) => println!(
-                "built {} component(s) -> ./wasm: {}",
-                built.len(),
-                built.join(", ")
-            ),
-            Err(error) => {
-                eprintln!("build failed: {error}");
-                std::process::exit(1);
-            }
-        }
-    } else if command == Some("run") {
-        // Run the app's components from ./wasm per the rusm.toml manifest.
-        // Check for help flag
-        let run_args: Vec<String> = args.iter().skip(2).cloned().collect();
-        let mut temp_parser = Arguments::from_vec(
-            run_args
-                .iter()
-                .map(|s| std::ffi::OsString::from(s))
-                .collect(),
-        );
-        if temp_parser.contains("--help") || temp_parser.contains("-h") {
-            eprintln!("usage: rusm run                   run ./wasm components per rusm.toml [components.<name>]");
-            std::process::exit(0);
-        }
-
-        if let Err(error) = run_app(&args).await {
-            eprintln!("run failed: {error}");
-            std::process::exit(1);
-        }
-    } else if command == Some("serve") {
-        // Host the app's [[serve]] components as real HTTP/WS/SSE servers on their
-        // own ports — what an out-of-process load driver (rusm-loadtest) hits.
-        // Check for help flag
-        let serve_args: Vec<String> = args.iter().skip(2).cloned().collect();
-        let mut temp_parser = Arguments::from_vec(
-            serve_args
-                .iter()
-                .map(|s| std::ffi::OsString::from(s))
-                .collect(),
-        );
-        if temp_parser.contains("--help") || temp_parser.contains("-h") {
-            eprintln!("usage: rusm serve                 host ./wasm components as HTTP/WS/SSE servers per rusm.toml [[serve]]");
-            std::process::exit(0);
-        }
-
-        if let Err(error) = serve_app(&args).await {
-            eprintln!("serve failed: {error}");
-            std::process::exit(1);
-        }
-    } else if command == Some("dev") {
-        // Build, run, and watch: edit a component and RUSM rebuilds + reloads it.
-        // Check for help flag
-        let dev_args: Vec<String> = args.iter().skip(2).cloned().collect();
-        let mut temp_parser = Arguments::from_vec(
-            dev_args
-                .iter()
-                .map(|s| std::ffi::OsString::from(s))
-                .collect(),
-        );
-        if temp_parser.contains("--help") || temp_parser.contains("-h") {
-            eprintln!(
-                "usage: rusm dev                   build + run, then watch & reload on edits"
-            );
-            std::process::exit(0);
-        }
-
-        if let Err(error) = dev(&args).await {
-            eprintln!("dev failed: {error}");
-            std::process::exit(1);
-        }
-    } else {
         eprintln!("usage:");
         print_usage();
         std::process::exit(2);
+    };
+
+    // Now match on the command
+    match command.as_str() {
+        "node" => {
+            // For node, we expect a subcommand like "start"
+            let node_subcommand = match args.subcommand() {
+                Ok(cmd) => cmd,
+                Err(_) => {
+                    eprintln!("usage: rusm node start [--config <file>] [--listen <addr>]");
+                    std::process::exit(1);
+                }
+            };
+
+            let Some(node_subcommand) = node_subcommand else {
+                eprintln!("usage: rusm node start [--config <file>] [--listen <addr>]");
+                std::process::exit(1);
+            };
+
+            if node_subcommand != "start" {
+                eprintln!("usage: rusm node start [--config <file>] [--listen <addr>]");
+                std::process::exit(1);
+            }
+
+            // Check for help flag
+            if args.contains("--help") || args.contains("-h") {
+                eprintln!("usage: rusm node start [--config <file>] [--listen <addr>]");
+                std::process::exit(0);
+            }
+
+            let config: Option<String> = args.opt_value_from_str("--config").ok().flatten();
+            let listen: Option<String> = args.opt_value_from_str("--listen").ok().flatten();
+
+            // Collect remaining args for load_node_config compatibility
+            let all_args: Vec<String> = std::env::args().collect();
+            if let Err(error) = start_node(&all_args, config.as_deref(), listen.as_deref()).await {
+                eprintln!("node start failed: {error}");
+                std::process::exit(1);
+            }
+        }
+        "attach" => {
+            // Check for help flag
+            if args.contains("--help") || args.contains("-h") {
+                eprintln!(
+                    "usage: rusm attach [<host | host:port | ws-url>]   (defaults to 127.0.0.1:4000)"
+                );
+                std::process::exit(0);
+            }
+
+            // Get the target if provided, otherwise use default
+            let target_str: Option<String> = args.opt_free_from_str().ok().flatten();
+            let target = normalize_target(target_str.as_deref().unwrap_or(DEFAULT_HOST));
+            if let Err(error) = attach(&target).await {
+                eprintln!("attach failed: {error}");
+                std::process::exit(1);
+            }
+        }
+        "new" => {
+            // Check for help flag
+            if args.contains("--help") || args.contains("-h") {
+                eprintln!(
+                    "usage: rusm new <name> [--rust] [--lang ts|rust] [--protocol http|sse|ws]"
+                );
+                std::process::exit(0);
+            }
+
+            // Pass the arguments directly to parse_new_args
+            match parse_new_args(args) {
+                Ok(app) => match scaffold(Path::new("."), &app) {
+                    Ok(_) => {
+                        let probe = match app.protocol {
+                            Protocol::Http => "curl http://127.0.0.1:8080/",
+                            Protocol::Sse => "curl -N http://127.0.0.1:8080/",
+                            Protocol::Ws => "websocat ws://127.0.0.1:8080/",
+                        };
+                        println!("created {}/", app.name);
+                        println!("\nnext:");
+                        println!("  cd {}", app.name);
+                        println!("  rusm build      # compile components/ -> wasm/");
+                        println!("  rusm serve      # http://127.0.0.1:8080");
+                        println!("  {probe}");
+                    }
+                    Err(error) => {
+                        eprintln!("new failed: {error}");
+                        std::process::exit(1);
+                    }
+                },
+                Err(error) => {
+                    eprintln!("{error}");
+                    std::process::exit(2);
+                }
+            }
+        }
+        "build" => {
+            // Check for help flag
+            if args.contains("--help") || args.contains("-h") {
+                eprintln!(
+                    "usage: rusm build                 compile ./components/* -> ./wasm/*.wasm"
+                );
+                std::process::exit(0);
+            }
+
+            match build_components(Path::new(".")) {
+                Ok(built) if built.is_empty() => {
+                    println!("no component crates found under ./components");
+                }
+                Ok(built) => println!(
+                    "built {} component(s) -> ./wasm: {}",
+                    built.len(),
+                    built.join(", ")
+                ),
+                Err(error) => {
+                    eprintln!("build failed: {error}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        "run" => {
+            // Check for help flag
+            if args.contains("--help") || args.contains("-h") {
+                eprintln!("usage: rusm run                   run ./wasm components per rusm.toml [components.<name>]");
+                std::process::exit(0);
+            }
+
+            let all_args: Vec<String> = std::env::args().collect();
+            if let Err(error) = run_app(&all_args).await {
+                eprintln!("run failed: {error}");
+                std::process::exit(1);
+            }
+        }
+        "serve" => {
+            // Check for help flag
+            if args.contains("--help") || args.contains("-h") {
+                eprintln!("usage: rusm serve                 host ./wasm components as HTTP/WS/SSE servers per rusm.toml [[serve]]");
+                std::process::exit(0);
+            }
+
+            let all_args: Vec<String> = std::env::args().collect();
+            if let Err(error) = serve_app(&all_args).await {
+                eprintln!("serve failed: {error}");
+                std::process::exit(1);
+            }
+        }
+        "dev" => {
+            // Check for help flag
+            if args.contains("--help") || args.contains("-h") {
+                eprintln!(
+                    "usage: rusm dev                   build + run, then watch & reload on edits"
+                );
+                std::process::exit(0);
+            }
+
+            let all_args: Vec<String> = std::env::args().collect();
+            if let Err(error) = dev(&all_args).await {
+                eprintln!("dev failed: {error}");
+                std::process::exit(1);
+            }
+        }
+        _ => {
+            eprintln!("Unknown command: {command}");
+            eprintln!("\nusage:");
+            print_usage();
+            std::process::exit(2);
+        }
     }
 }
 
