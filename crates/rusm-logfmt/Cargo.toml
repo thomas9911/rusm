@@ -1,0 +1,7 @@
+[package]
+name = "rusm-logfmt"
+version = "0.1.0"
+edition = "2021"
+description = "Shared formatting for RUSM's coloured, columnar log lines (palette, widths, timestamp, tty-gating)."
+
+[dependencies]

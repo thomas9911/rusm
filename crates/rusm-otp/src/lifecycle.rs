@@ -1,19 +1,18 @@
 //! Opt-in process **lifecycle logging** — the "see what's happening" switch a node
-//! turns on explicitly (`rusm.toml [log] spawns = true`). Off by default: the spawn
-//! hot path does nothing. When on, the runtime logs each **labeled** process's spawn
-//! and exit to stderr, coloured — so the signal is *components* (which the host
-//! labels), not internal plumbing (responders, writers — left unlabeled).
+//! turns on explicitly (`rusm.toml [log] level`). Off by default: the spawn hot path
+//! does nothing. When on, the runtime logs each **labeled** process's spawn and exit to
+//! stderr — so the signal is *components* (which the host labels), not internal plumbing
+//! (responders, writers — left unlabeled).
 //!
-//! This module owns only the *format*; the runtime owns the *gate* (the flag) and the
-//! *when* (a spawn site, and `deregister` on exit). Lines are `component#pid` so a log
-//! reader can tell instances apart, with the spawn line carrying the process's
-//! effective capabilities — the thing that's otherwise invisible.
-//!
-//! Every line is tagged **`rusm`** so these *platform* events (the runtime spawning and
-//! ending processes) are visually distinct from an app's own domain logs.
+//! This module owns only the platform line's *structure*; the shared look (palette,
+//! column widths, timestamp, tty-gated colour) comes from [`rusm_logfmt`], so platform
+//! and app logs line up when interleaved. The runtime owns the *gate* (the level) and the
+//! *when* (a spawn site, and `deregister` on exit). Lines read `<time> rusm <verb>
+//! <label>#<pid>  <detail>`, the spawn line carrying the process's effective capabilities.
 
 use std::collections::BTreeMap;
-use std::io::IsTerminal;
+
+use rusm_logfmt as fmt;
 
 use crate::exit::ExitReason;
 use crate::pid::Pid;
@@ -62,56 +61,42 @@ impl LogLevel {
         }
     }
 
-    /// The ANSI colour code for this level (red / yellow / green; cyan for the rest).
+    /// The shared-palette colour for this level (red crash / yellow kill / green clean;
+    /// cyan otherwise).
     fn colour(self) -> &'static str {
         match self {
-            Self::Error => "31",
-            Self::Warn => "33",
-            Self::Info => "32",
-            _ => "36",
+            Self::Error => fmt::ERROR,
+            Self::Warn => fmt::WARN,
+            Self::Info => fmt::OK,
+            _ => fmt::LEVEL,
         }
     }
 }
 
-/// Wrap `text` in an ANSI colour `code`, but only when stderr is a terminal — piped or
-/// redirected logs stay plain (no escape soup in a file).
-fn paint(code: &str, text: &str) -> String {
-    if std::io::stderr().is_terminal() {
-        format!("\x1b[{code}m{text}\x1b[0m")
-    } else {
-        text.to_string()
-    }
-}
-
-/// Shared log-line columns, matched by the app loggers (genius's `domain::log` /
-/// `shared/log`) so platform and app lines align when interleaved: the `who` column
-/// (here the `rusm` tag; there `component#pid`) and the action/verb column.
-const WHO_WIDTH: usize = 14;
-const ACTION_WIDTH: usize = 6;
-
-/// The lead every platform line shares: the **timestamp first** (`HH:MM:SS` UTC, gray),
-/// then the `rusm` tag padded to the shared `who` column — so spawn / exit / census read
-/// `<time> rusm           <verb> …` and line up with the app logs' `component#pid`.
+/// The lead every platform line shares: gray timestamp, then the `rusm` tag in the shared
+/// identifier colour, padded to the `who` column — so platform and app lines (which put
+/// `component#pid` here) line up.
 fn lead() -> String {
     format!(
         "{} {}",
-        paint("90", &now_hms()),                                  // gray
-        paint("2;35", &format!("{:<w$}", "rusm", w = WHO_WIDTH)), // dim magenta, padded
+        fmt::paint(fmt::TIME, &fmt::now_hms()),
+        fmt::paint(fmt::WHO, &format!("{:<w$}", "rusm", w = fmt::WHO_WIDTH)),
     )
 }
 
 /// An action word (`spawn`/`exit`/`census`) coloured by `code`, padded to the action
 /// column so the subject/message that follows aligns across every line.
 fn action(code: &str, verb: &str) -> String {
-    paint(code, &format!("{:<w$}", verb, w = ACTION_WIDTH))
+    fmt::paint(code, &format!("{:<w$}", verb, w = fmt::ACTION_WIDTH))
 }
 
-/// `<id>` rendered as a bold name + dim `#pid` — the identifier shared by spawn/exit.
+/// `<id>` rendered as a bold name + dim `#pid` — the spawned-process **subject** of a
+/// spawn/exit line (distinct from the `who` column the lead already holds).
 fn ident(label: &str, pid: Pid) -> String {
     format!(
         "{}{}",
-        paint("1", label),
-        paint("2", &format!("#{}", pid.0))
+        fmt::paint(fmt::BOLD, label),
+        fmt::paint(fmt::DIM, &format!("#{}", pid.0))
     )
 }
 
@@ -121,9 +106,9 @@ pub fn log_spawn(pid: Pid, label: &str, detail: &str) {
     eprintln!(
         "{} {} {}  {}",
         lead(),
-        action("36", "spawn"), // cyan
+        action(fmt::LEVEL, "spawn"), // cyan
         ident(label, pid),
-        paint("2", detail), // dim
+        fmt::paint(fmt::DIM, detail),
     );
 }
 
@@ -136,7 +121,7 @@ pub fn log_exit(pid: Pid, label: &str, reason: ExitReason) {
         lead(),
         action(code, "exit"),
         ident(label, pid),
-        paint(code, &format!("{reason:?}").to_lowercase()),
+        fmt::paint(code, &format!("{reason:?}").to_lowercase()),
     );
 }
 
@@ -145,43 +130,22 @@ pub fn log_exit(pid: Pid, label: &str, reason: ExitReason) {
 /// Bold names, cyan counts; an idle node reads `(none)`.
 pub fn log_census(counts: &BTreeMap<String, u64>) {
     let body = if counts.is_empty() {
-        paint("2", "(none)")
+        fmt::paint(fmt::DIM, "(none)")
     } else {
         counts
             .iter()
             .map(|(name, n)| {
                 format!(
                     "{}{}{}",
-                    paint("1", name),
-                    paint("2", "="),
-                    paint("36", &n.to_string())
+                    fmt::paint(fmt::BOLD, name),
+                    fmt::paint(fmt::DIM, "="),
+                    fmt::paint(fmt::LEVEL, &n.to_string())
                 )
             })
             .collect::<Vec<_>>()
             .join("  ")
     };
-    eprintln!("{} {} {}", lead(), action("36", "census"), body);
-}
-
-/// `HH:MM:SS` (UTC) for a UNIX-epoch seconds value — pure (no clock read) so the
-/// formatting is unit-testable; [`now_hms`] supplies "now".
-fn hms(unix_secs: u64) -> String {
-    format!(
-        "{:02}:{:02}:{:02}",
-        (unix_secs / 3600) % 24,
-        (unix_secs / 60) % 60,
-        unix_secs % 60
-    )
-}
-
-/// `HH:MM:SS` (UTC) for the current wall clock — dependency-free (no chrono in the
-/// Wasm-free core); falls back to `00:00:00` if the clock is before the epoch.
-fn now_hms() -> String {
-    let secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    hms(secs)
+    eprintln!("{} {} {}", lead(), action(fmt::LEVEL, "census"), body);
 }
 
 // A supervisor **restart** intentionally has no dedicated event: it reads as the
@@ -202,14 +166,6 @@ mod tests {
         // Unset or unrecognised quiets to Off — a typo never accidentally goes loud.
         assert_eq!(LogLevel::parse(""), LogLevel::Off);
         assert_eq!(LogLevel::parse("loud"), LogLevel::Off);
-    }
-
-    #[test]
-    fn hms_formats_utc_clock_with_wraparound() {
-        assert_eq!(super::hms(0), "00:00:00");
-        assert_eq!(super::hms(3661), "01:01:01");
-        assert_eq!(super::hms(86_399), "23:59:59");
-        assert_eq!(super::hms(90_061), "01:01:01", "wraps past 24h");
     }
 
     #[test]
