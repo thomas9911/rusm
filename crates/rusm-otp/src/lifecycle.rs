@@ -122,9 +122,9 @@ pub fn log_exit(pid: Pid, label: &str, reason: ExitReason) {
     );
 }
 
-/// Log a process **census**: `rusm census  <comp>=<n>  …` — the count of live
-/// processes per component (by label), emitted debounced after process state settles.
-/// Bold names, cyan counts; an idle node with no labeled processes reads `(none)`.
+/// Log a process **census**: `rusm <hh:mm:ss> census  <comp>=<n>  …` — the count of
+/// live processes per component (by label), timestamped (UTC) and emitted debounced
+/// after process state settles. Bold names, cyan counts; an idle node reads `(none)`.
 pub fn log_census(counts: &BTreeMap<String, u64>) {
     let body = if counts.is_empty() {
         paint("2", "(none)")
@@ -142,7 +142,34 @@ pub fn log_census(counts: &BTreeMap<String, u64>) {
             .collect::<Vec<_>>()
             .join("  ")
     };
-    eprintln!("{} {}  {}", tag(), paint("36", "census"), body);
+    eprintln!(
+        "{} {} {}  {}",
+        tag(),
+        paint("2", &now_hms()),
+        paint("36", "census"),
+        body
+    );
+}
+
+/// `HH:MM:SS` (UTC) for a UNIX-epoch seconds value — pure (no clock read) so the
+/// formatting is unit-testable; [`now_hms`] supplies "now".
+fn hms(unix_secs: u64) -> String {
+    format!(
+        "{:02}:{:02}:{:02}",
+        (unix_secs / 3600) % 24,
+        (unix_secs / 60) % 60,
+        unix_secs % 60
+    )
+}
+
+/// `HH:MM:SS` (UTC) for the current wall clock — dependency-free (no chrono in the
+/// Wasm-free core); falls back to `00:00:00` if the clock is before the epoch.
+fn now_hms() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    hms(secs)
 }
 
 // A supervisor **restart** intentionally has no dedicated event: it reads as the
@@ -163,6 +190,14 @@ mod tests {
         // Unset or unrecognised quiets to Off — a typo never accidentally goes loud.
         assert_eq!(LogLevel::parse(""), LogLevel::Off);
         assert_eq!(LogLevel::parse("loud"), LogLevel::Off);
+    }
+
+    #[test]
+    fn hms_formats_utc_clock_with_wraparound() {
+        assert_eq!(super::hms(0), "00:00:00");
+        assert_eq!(super::hms(3661), "01:01:01");
+        assert_eq!(super::hms(86_399), "23:59:59");
+        assert_eq!(super::hms(90_061), "01:01:01", "wraps past 24h");
     }
 
     #[test]

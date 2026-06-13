@@ -589,16 +589,32 @@ impl Runtime {
         counts
     }
 
+    /// One census step: recount and emit a line **only if it differs** from `last` (the
+    /// caller's running snapshot, updated in place) — so an unchanged picture prints no
+    /// duplicate. Returns whether a line was emitted. Factored out of the task so the
+    /// dedup decision is testable without the debounce timing.
+    fn census_step(&self, last: &mut Option<BTreeMap<String, u64>>) -> bool {
+        let counts = self.census_counts();
+        if last.as_ref() == Some(&counts) {
+            return false;
+        }
+        crate::lifecycle::log_census(&counts);
+        *last = Some(counts);
+        true
+    }
+
     /// The debounced census task — one per runtime, started on the first `Info`+ enable.
     /// It waits for a state change, lets the burst settle for [`CENSUS_DEBOUNCE`], then
-    /// emits one summary line. Idle ⇒ parked (zero cost); a spawn storm ⇒ one line.
+    /// takes one [`census_step`](Self::census_step) (which dedups). Idle ⇒ parked (zero
+    /// cost); a spawn storm ⇒ one line. `last` is task-local — no shared state.
     fn spawn_census_loop(&self) {
         let runtime = self.clone();
         tokio::spawn(async move {
+            let mut last: Option<BTreeMap<String, u64>> = None;
             loop {
                 runtime.inner.census_dirty.notified().await;
                 tokio::time::sleep(CENSUS_DEBOUNCE).await;
-                crate::lifecycle::log_census(&runtime.census_counts());
+                runtime.census_step(&mut last);
             }
         });
     }
@@ -922,6 +938,30 @@ mod tests {
             Some(&1),
             "a drained process drops out of the census"
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn census_step_emits_only_on_change() {
+        let rt = Runtime::new();
+        let park = |mut ctx: Context| async move {
+            loop {
+                ctx.recv().await;
+            }
+        };
+        let mut last = None;
+
+        let a = rt.spawn(park);
+        rt.set_label(a.pid(), "alpha");
+        assert!(rt.census_step(&mut last), "first non-empty census emits");
+        assert!(
+            !rt.census_step(&mut last),
+            "unchanged picture → no duplicate line"
+        );
+
+        let b = rt.spawn(park);
+        rt.set_label(b.pid(), "alpha");
+        assert!(rt.census_step(&mut last), "a count change emits again");
+        assert!(!rt.census_step(&mut last), "and then dedups once more");
     }
 
     #[tokio::test]
