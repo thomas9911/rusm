@@ -1134,6 +1134,95 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn fetch_posts_a_request_body_to_the_server() {
+        // The agent path: a POST whose JSON body must actually reach the server. Raw
+        // wasi:http requires dispatching (`handle`) BEFORE streaming the body — write it
+        // first and the request goes out empty and the server never replies (the hang we
+        // hit with the LLM agents). This server echoes the received body back.
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    // Read until the headers are in, then drain exactly the body bytes.
+                    let mut buf = Vec::new();
+                    let mut tmp = [0u8; 1024];
+                    loop {
+                        let n = stream.read(&mut tmp).await.unwrap_or(0);
+                        if n == 0 {
+                            break;
+                        }
+                        buf.extend_from_slice(&tmp[..n]);
+                        if let Some(i) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                            let head = String::from_utf8_lossy(&buf[..i]).to_lowercase();
+                            let len = head
+                                .split("content-length:")
+                                .nth(1)
+                                .and_then(|s| s.split("\r\n").next())
+                                .and_then(|s| s.trim().parse::<usize>().ok())
+                                .unwrap_or(0);
+                            if buf.len() >= i + 4 + len {
+                                break;
+                            }
+                        }
+                    }
+                    let body = buf
+                        .windows(4)
+                        .position(|w| w == b"\r\n\r\n")
+                        .map(|i| buf[i + 4..].to_vec())
+                        .unwrap_or_default();
+                    let resp = format!(
+                        "HTTP/1.1 200 OK\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    let _ = stream.write_all(resp.as_bytes()).await;
+                    let _ = stream.write_all(&body).await; // echo the received body
+                    let _ = stream.flush().await;
+                });
+            }
+        });
+
+        const BUNDLE: &str = r#"
+            module.exports.default = async function () {
+                const replyTo = await Process.receiveText();
+                try {
+                    const resp = await fetch("__URL__", {
+                        method: "POST",
+                        headers: { "content-type": "application/json" },
+                        body: JSON.stringify({ hello: "from-guest", n: 42 }),
+                    });
+                    Process.send(replyTo, "ok|" + (await resp.text()));
+                } catch (e) {
+                    Process.send(replyTo, "ERR:" + ((e && e.message) || e));
+                }
+            };
+        "#;
+        let bundle = BUNDLE.replace("__URL__", &format!("http://{addr}/"));
+
+        let rt = Runtime::new();
+        let wr = WasmRuntime::new(rt.clone()).unwrap();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let collector = rt.spawn(move |mut ctx| async move {
+            let _ = tx.send(ctx.recv().await.message().unwrap());
+        });
+        let guest = wr.spawn_js_with(
+            bundle.as_bytes(),
+            CapabilityProfile::NetworkClient.capabilities(),
+        );
+        rt.send(guest.pid(), collector.pid().raw().to_string().into_bytes());
+        let got = String::from_utf8(rx.await.unwrap()).unwrap();
+        // The request body is sent chunked (no Content-Length), so the echo may carry
+        // chunk framing — what matters is the JSON body actually reached the server.
+        assert!(
+            got.starts_with("ok|") && got.contains("{\"hello\":\"from-guest\",\"n\":42}"),
+            "the POST body must reach the server (dispatch before write); got: {got:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_javascript_bundle_reads_granted_env_via_process_env() {
         // `process.env.<KEY>` reads a capability-granted env var; an ungranted key is
         // `undefined` and `in` reflects presence — the config path TS guests (e.g. an

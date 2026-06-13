@@ -29,7 +29,9 @@ use rquickjs::{Ctx, Exception, Function, Promise, TypedArray};
 use rusm::runtime::actor;
 use sha1::Sha1;
 use sha2::{Digest, Sha256, Sha384, Sha512};
-use wasip2::http::types::{IncomingBody, IncomingResponse, Method, OutgoingBody, OutgoingRequest, Scheme};
+use wasip2::http::types::{
+    IncomingBody, IncomingResponse, Method, OutgoingBody, OutgoingRequest, Scheme,
+};
 use wasip2::io::streams::InputStream;
 
 struct Component;
@@ -128,28 +130,41 @@ fn js_fetch(
         "OPTIONS" => Method::Options,
         other => Method::Other(other.to_string()),
     };
-    req.set_method(&method).map_err(|_| throw("fetch: bad method".into()))?;
-    req.set_scheme(Some(&scheme)).map_err(|_| throw("fetch: bad scheme".into()))?;
-    req.set_authority(Some(&authority)).map_err(|_| throw("fetch: bad authority".into()))?;
-    req.set_path_with_query(Some(&path)).map_err(|_| throw("fetch: bad path".into()))?;
+    req.set_method(&method)
+        .map_err(|_| throw("fetch: bad method".into()))?;
+    req.set_scheme(Some(&scheme))
+        .map_err(|_| throw("fetch: bad scheme".into()))?;
+    req.set_authority(Some(&authority))
+        .map_err(|_| throw("fetch: bad authority".into()))?;
+    req.set_path_with_query(Some(&path))
+        .map_err(|_| throw("fetch: bad path".into()))?;
 
-    // Write the request body (if any) before dispatching, then finish it.
-    let out_body = req.body().map_err(|_| throw("fetch: no request body".into()))?;
+    // Canonical wasi:http order: take the body handle, **dispatch** the request, then
+    // stream the body into it, then finish. Dispatching first is required — a POST body
+    // written before `handle` never reaches the server (the request goes out empty).
+    // Canonical wasi:http order: take the body handle, **dispatch** the request, then
+    // stream the body into it, then finish. Dispatching first is required — a POST body
+    // written before `handle` never reaches the server (the request goes out empty).
+    let out_body = req
+        .body()
+        .map_err(|_| throw("fetch: no request body".into()))?;
+    let future = wasip2::http::outgoing_handler::handle(req, None)
+        .map_err(|e| throw(format!("fetch: {e:?}")))?;
     let payload = body.as_bytes().unwrap_or(&[]);
     if !payload.is_empty() {
-        let stream = out_body.write().map_err(|_| throw("fetch: no body stream".into()))?;
+        let stream = out_body
+            .write()
+            .map_err(|_| throw("fetch: no body stream".into()))?;
         for chunk in payload.chunks(4096) {
             stream
                 .blocking_write_and_flush(chunk)
                 .map_err(|e| throw(format!("fetch: write body: {e:?}")))?;
         }
-        // Drop the stream before finishing the body (wasi:http requires it).
-        drop(stream);
+        drop(stream); // release the borrow before finishing the body
     }
-    OutgoingBody::finish(out_body, None).map_err(|e| throw(format!("fetch: finish body: {e:?}")))?;
+    OutgoingBody::finish(out_body, None)
+        .map_err(|e| throw(format!("fetch: finish body: {e:?}")))?;
 
-    let future = wasip2::http::outgoing_handler::handle(req, None)
-        .map_err(|e| throw(format!("fetch: {e:?}")))?;
     // Park the fiber until the response head is ready — no busy poll.
     future.subscribe().block();
     let resp = match future.get() {
@@ -168,8 +183,12 @@ fn js_fetch(
         head.push(name);
         head.push(String::from_utf8_lossy(&value).into_owned());
     }
-    let incoming = resp.consume().map_err(|_| throw("fetch: consume body".into()))?;
-    let stream = incoming.stream().map_err(|_| throw("fetch: body stream".into()))?;
+    let incoming = resp
+        .consume()
+        .map_err(|_| throw("fetch: consume body".into()))?;
+    let stream = incoming
+        .stream()
+        .map_err(|_| throw("fetch: body stream".into()))?;
     FETCH_BODIES.with(|m| {
         m.borrow_mut().insert(
             handle,
@@ -214,14 +233,23 @@ fn js_fetch_close(handle: f64) {
 // Durable key-value storage over the `kv-*` actor ABI (gated by `storage`). A
 // denied/failed op throws into JS (the `kv.js` bridge surfaces these as a thrown
 // Error); `get` returns `undefined` (→ null in JS) when the key is absent.
-fn js_kv_get(ctx: Ctx<'_>, bucket: String, key: String) -> rquickjs::Result<Option<TypedArray<'_, u8>>> {
+fn js_kv_get(
+    ctx: Ctx<'_>,
+    bucket: String,
+    key: String,
+) -> rquickjs::Result<Option<TypedArray<'_, u8>>> {
     match actor::kv_get(&bucket, &key) {
         Ok(Some(bytes)) => Ok(Some(TypedArray::new(ctx, bytes)?)),
         Ok(None) => Ok(None),
         Err(e) => Err(Exception::throw_message(&ctx, &e)),
     }
 }
-fn js_kv_set(ctx: Ctx<'_>, bucket: String, key: String, value: TypedArray<u8>) -> rquickjs::Result<()> {
+fn js_kv_set(
+    ctx: Ctx<'_>,
+    bucket: String,
+    key: String,
+    value: TypedArray<u8>,
+) -> rquickjs::Result<()> {
     actor::kv_set(&bucket, &key, value.as_bytes().unwrap_or(&[]))
         .map_err(|e| Exception::throw_message(&ctx, &e))
 }
@@ -333,7 +361,11 @@ fn aes_gcm_decrypt(key: &[u8], iv: &[u8], aad: &[u8], ciphertext: &[u8]) -> Opti
     }
 }
 
-fn js_crypto_digest<'a>(ctx: Ctx<'a>, alg: String, data: TypedArray<'a, u8>) -> rquickjs::Result<TypedArray<'a, u8>> {
+fn js_crypto_digest<'a>(
+    ctx: Ctx<'a>,
+    alg: String,
+    data: TypedArray<'a, u8>,
+) -> rquickjs::Result<TypedArray<'a, u8>> {
     let data = data.as_bytes().unwrap_or(&[]);
     let out = match alg.as_str() {
         "SHA-1" => Sha1::digest(data).to_vec(),
@@ -350,14 +382,32 @@ fn js_crypto_digest<'a>(ctx: Ctx<'a>, alg: String, data: TypedArray<'a, u8>) -> 
     TypedArray::new(ctx, out)
 }
 
-fn js_crypto_hmac_sign<'a>(ctx: Ctx<'a>, hash: String, key: TypedArray<'a, u8>, data: TypedArray<'a, u8>) -> rquickjs::Result<TypedArray<'a, u8>> {
-    match hmac_sign(&hash, key.as_bytes().unwrap_or(&[]), data.as_bytes().unwrap_or(&[])) {
+fn js_crypto_hmac_sign<'a>(
+    ctx: Ctx<'a>,
+    hash: String,
+    key: TypedArray<'a, u8>,
+    data: TypedArray<'a, u8>,
+) -> rquickjs::Result<TypedArray<'a, u8>> {
+    match hmac_sign(
+        &hash,
+        key.as_bytes().unwrap_or(&[]),
+        data.as_bytes().unwrap_or(&[]),
+    ) {
         Some(mac) => TypedArray::new(ctx, mac),
-        None => Err(Exception::throw_message(&ctx, &format!("unsupported HMAC hash: {hash}"))),
+        None => Err(Exception::throw_message(
+            &ctx,
+            &format!("unsupported HMAC hash: {hash}"),
+        )),
     }
 }
 
-fn js_crypto_hmac_verify(ctx: Ctx<'_>, hash: String, key: TypedArray<u8>, sig: TypedArray<u8>, data: TypedArray<u8>) -> rquickjs::Result<bool> {
+fn js_crypto_hmac_verify(
+    ctx: Ctx<'_>,
+    hash: String,
+    key: TypedArray<u8>,
+    sig: TypedArray<u8>,
+    data: TypedArray<u8>,
+) -> rquickjs::Result<bool> {
     hmac_verify(
         &hash,
         key.as_bytes().unwrap_or(&[]),
@@ -367,7 +417,13 @@ fn js_crypto_hmac_verify(ctx: Ctx<'_>, hash: String, key: TypedArray<u8>, sig: T
     .ok_or_else(|| Exception::throw_message(&ctx, &format!("unsupported HMAC hash: {hash}")))
 }
 
-fn js_crypto_aes_gcm_encrypt<'a>(ctx: Ctx<'a>, key: TypedArray<'a, u8>, iv: TypedArray<'a, u8>, aad: TypedArray<'a, u8>, plaintext: TypedArray<'a, u8>) -> rquickjs::Result<TypedArray<'a, u8>> {
+fn js_crypto_aes_gcm_encrypt<'a>(
+    ctx: Ctx<'a>,
+    key: TypedArray<'a, u8>,
+    iv: TypedArray<'a, u8>,
+    aad: TypedArray<'a, u8>,
+    plaintext: TypedArray<'a, u8>,
+) -> rquickjs::Result<TypedArray<'a, u8>> {
     match aes_gcm_encrypt(
         key.as_bytes().unwrap_or(&[]),
         iv.as_bytes().unwrap_or(&[]),
@@ -382,7 +438,13 @@ fn js_crypto_aes_gcm_encrypt<'a>(ctx: Ctx<'a>, key: TypedArray<'a, u8>, iv: Type
     }
 }
 
-fn js_crypto_aes_gcm_decrypt<'a>(ctx: Ctx<'a>, key: TypedArray<'a, u8>, iv: TypedArray<'a, u8>, aad: TypedArray<'a, u8>, ciphertext: TypedArray<'a, u8>) -> rquickjs::Result<TypedArray<'a, u8>> {
+fn js_crypto_aes_gcm_decrypt<'a>(
+    ctx: Ctx<'a>,
+    key: TypedArray<'a, u8>,
+    iv: TypedArray<'a, u8>,
+    aad: TypedArray<'a, u8>,
+    ciphertext: TypedArray<'a, u8>,
+) -> rquickjs::Result<TypedArray<'a, u8>> {
     match aes_gcm_decrypt(
         key.as_bytes().unwrap_or(&[]),
         iv.as_bytes().unwrap_or(&[]),
