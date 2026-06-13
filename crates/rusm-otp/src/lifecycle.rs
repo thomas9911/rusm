@@ -88,6 +88,12 @@ fn tag() -> String {
     paint("2;35", "rusm") // dim magenta
 }
 
+/// The lead every platform line shares: the **timestamp first** (`HH:MM:SS` UTC, dim),
+/// then the `rusm` tag — so spawn / exit / census all read `<time> rusm <verb> …`.
+fn stamp() -> String {
+    format!("{} {}", paint("2", &now_hms()), tag())
+}
+
 /// `<id>` rendered as a bold name + dim `#pid` — the identifier shared by spawn/exit.
 fn ident(label: &str, pid: Pid) -> String {
     format!(
@@ -97,34 +103,34 @@ fn ident(label: &str, pid: Pid) -> String {
     )
 }
 
-/// Log a component **spawn**: `rusm spawn <label>#<pid>  <detail>` (detail = its
+/// Log a component **spawn**: `<time> rusm spawn <label>#<pid>  <detail>` (detail = its
 /// effective capabilities, so a reader sees exactly what the process can do).
 pub fn log_spawn(pid: Pid, label: &str, detail: &str) {
     eprintln!(
         "{} {} {}  {}",
-        tag(),
+        stamp(),
         paint("36", "spawn"), // cyan
         ident(label, pid),
         paint("2", detail), // dim
     );
 }
 
-/// Log a process **exit**: `rusm exit  <label>#<pid>  <reason>` — coloured by the
+/// Log a process **exit**: `<time> rusm exit  <label>#<pid>  <reason>` — coloured by the
 /// exit's level (red crash / yellow kill / green clean), the same mapping that gated it.
 pub fn log_exit(pid: Pid, label: &str, reason: ExitReason) {
     let code = LogLevel::for_exit(reason).colour();
     eprintln!(
         "{} {}  {}  {}",
-        tag(),
+        stamp(),
         paint(code, "exit"),
         ident(label, pid),
         paint(code, &format!("{reason:?}").to_lowercase()),
     );
 }
 
-/// Log a process **census**: `rusm <hh:mm:ss> census  <comp>=<n>  …` — the count of
-/// live processes per component (by label), timestamped (UTC) and emitted debounced
-/// after process state settles. Bold names, cyan counts; an idle node reads `(none)`.
+/// Log a process **census**: `<time> rusm census  <comp>=<n>  …` — the count of live
+/// processes per component (by label), emitted debounced after process state settles.
+/// Bold names, cyan counts; an idle node reads `(none)`.
 pub fn log_census(counts: &BTreeMap<String, u64>) {
     let body = if counts.is_empty() {
         paint("2", "(none)")
@@ -142,13 +148,7 @@ pub fn log_census(counts: &BTreeMap<String, u64>) {
             .collect::<Vec<_>>()
             .join("  ")
     };
-    eprintln!(
-        "{} {} {}  {}",
-        tag(),
-        paint("2", &now_hms()),
-        paint("36", "census"),
-        body
-    );
+    eprintln!("{} {}  {}", stamp(), paint("36", "census"), body);
 }
 
 /// `HH:MM:SS` (UTC) for a UNIX-epoch seconds value — pure (no clock read) so the

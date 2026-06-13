@@ -232,10 +232,14 @@ struct Inner {
     // name -> pid. Sharded too, so name lookups never take a global lock the way
     // Lunatic's single `RwLock<HashMap>` registry does.
     registry: DashMap<String, u64>,
-    /// Woken on each labeled-process state change (a spawn gets named, or a labeled
-    /// process exits) **only when logging is at `Info`+**. The census task debounces
-    /// these into one per-component summary line; a `Notify` holds at most one permit,
-    /// so a burst of changes coalesces to a single recount.
+    /// Bumped on each labeled-process state change (a spawn gets named, or a labeled
+    /// process exits) **only when logging is at `Info`+** — the census task reads it to
+    /// tell "something happened since my last line" from "nothing changed". This is what
+    /// distinguishes a real spawn+exit (gen advanced twice, net-same counts → *still*
+    /// logged) from a quiet node (gen unchanged → silent).
+    census_gen: AtomicU64,
+    /// Woken alongside [`census_gen`] so the census task parks at zero cost while idle;
+    /// a `Notify` holds at most one permit, so a burst coalesces to a single wake.
     census_dirty: Notify,
     /// Guards the single census task — spawned once, on the first `Info`+ enable.
     census_started: AtomicBool,
@@ -250,6 +254,15 @@ impl Inner {
     /// place the level rank is compared (the gate behind every lifecycle line).
     fn wants(&self, level: crate::LogLevel) -> bool {
         self.log_level.load(Ordering::Relaxed) >= level as u8
+    }
+
+    /// Record a labeled-process state change for the census: advance the generation
+    /// (so the task knows something happened, even if counts net out unchanged) and wake
+    /// it. The single place both spawn-naming and exit funnel through; call only when
+    /// [`wants`](Self::wants)`(Info)` (the caller gates it, so off pays nothing).
+    fn note_census(&self) {
+        self.census_gen.fetch_add(1, Ordering::Relaxed);
+        self.census_dirty.notify_one();
     }
 
     /// Enqueues `item` into `to`'s mailbox if it is still alive, keeping the
@@ -304,9 +317,9 @@ impl Inner {
             if self.wants(crate::LogLevel::for_exit(reason)) {
                 crate::lifecycle::log_exit(pid, label, reason);
             }
-            // A labeled process ended → the per-component census changed; recount (debounced).
+            // A labeled process ended → census activity; recount (debounced).
             if self.wants(crate::LogLevel::Info) {
-                self.census_dirty.notify_one();
+                self.note_census();
             }
         }
 
@@ -548,9 +561,9 @@ impl Runtime {
         match self.inner.table.get_mut(&pid.0) {
             Some(mut entry) => {
                 entry.label = Some(label.into());
-                // A newly-named (or relabeled) process changes the per-component census.
+                // A newly-named (or relabeled) process is census activity.
                 if self.inner.wants(crate::LogLevel::Info) {
-                    self.inner.census_dirty.notify_one();
+                    self.inner.note_census();
                 }
                 true
             }
@@ -589,32 +602,35 @@ impl Runtime {
         counts
     }
 
-    /// One census step: recount and emit a line **only if it differs** from `last` (the
-    /// caller's running snapshot, updated in place) — so an unchanged picture prints no
-    /// duplicate. Returns whether a line was emitted. Factored out of the task so the
-    /// dedup decision is testable without the debounce timing.
-    fn census_step(&self, last: &mut Option<BTreeMap<String, u64>>) -> bool {
-        let counts = self.census_counts();
-        if last.as_ref() == Some(&counts) {
-            return false;
+    /// One census step: emit a line iff a labeled-process change has happened **since the
+    /// last emission** — tracked by the change generation, not by comparing counts, so a
+    /// real spawn+exit (gen advanced, counts net-same) still logs, while a quiet stretch
+    /// (gen unchanged) stays silent. `printed` is the caller's last-logged generation,
+    /// updated in place. Returns whether a line was emitted. Factored out of the task so
+    /// the decision is testable without the debounce timing.
+    fn census_step(&self, printed: &mut u64) -> bool {
+        let gen = self.inner.census_gen.load(Ordering::Relaxed);
+        if gen == *printed {
+            return false; // nothing happened since the last line — no duplicate
         }
-        crate::lifecycle::log_census(&counts);
-        *last = Some(counts);
+        crate::lifecycle::log_census(&self.census_counts());
+        *printed = gen;
         true
     }
 
     /// The debounced census task — one per runtime, started on the first `Info`+ enable.
-    /// It waits for a state change, lets the burst settle for [`CENSUS_DEBOUNCE`], then
-    /// takes one [`census_step`](Self::census_step) (which dedups). Idle ⇒ parked (zero
-    /// cost); a spawn storm ⇒ one line. `last` is task-local — no shared state.
+    /// It parks until a change, lets the burst settle for [`CENSUS_DEBOUNCE`], then takes
+    /// one [`census_step`](Self::census_step). Idle ⇒ parked (zero cost); a spawn storm ⇒
+    /// one line; a spawn+exit ⇒ one line (activity, even if counts net out). `printed` is
+    /// task-local — no shared state.
     fn spawn_census_loop(&self) {
         let runtime = self.clone();
         tokio::spawn(async move {
-            let mut last: Option<BTreeMap<String, u64>> = None;
+            let mut printed = 0u64;
             loop {
                 runtime.inner.census_dirty.notified().await;
                 tokio::time::sleep(CENSUS_DEBOUNCE).await;
-                runtime.census_step(&mut last);
+                runtime.census_step(&mut printed);
             }
         });
     }
@@ -941,27 +957,44 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn census_step_emits_only_on_change() {
+    async fn census_step_emits_on_activity_not_on_count_equality() {
         let rt = Runtime::new();
-        let park = |mut ctx: Context| async move {
-            loop {
-                ctx.recv().await;
+        // The change generation only advances at Info+ (the level the census lives at).
+        rt.set_log_level(crate::LogLevel::Info);
+        fn park(mut ctx: Context) -> impl std::future::Future<Output = ()> {
+            async move {
+                loop {
+                    ctx.recv().await;
+                }
             }
-        };
-        let mut last = None;
+        }
+        let mut printed = 0u64;
 
+        // A labeled spawn is activity → emits; nothing since → no duplicate.
         let a = rt.spawn(park);
         rt.set_label(a.pid(), "alpha");
-        assert!(rt.census_step(&mut last), "first non-empty census emits");
+        assert!(rt.census_step(&mut printed), "a labeled spawn emits");
         assert!(
-            !rt.census_step(&mut last),
-            "unchanged picture → no duplicate line"
+            !rt.census_step(&mut printed),
+            "nothing happened since → no duplicate line"
         );
 
+        // A spawn+exit nets back to the same counts ({alpha:1}) — but processes genuinely
+        // changed, so it must STILL emit (the case a count-comparison dedup wrongly hid).
         let b = rt.spawn(park);
-        rt.set_label(b.pid(), "alpha");
-        assert!(rt.census_step(&mut last), "a count change emits again");
-        assert!(!rt.census_step(&mut last), "and then dedups once more");
+        rt.set_label(b.pid(), "beta");
+        b.kill();
+        b.join().await;
+        assert_eq!(
+            rt.census_counts().get("alpha"),
+            Some(&1),
+            "counts netted back to the pre-spawn picture"
+        );
+        assert!(
+            rt.census_step(&mut printed),
+            "a net-zero spawn+exit is real activity → emits"
+        );
+        assert!(!rt.census_step(&mut printed), "and then stays quiet");
     }
 
     #[tokio::test]
