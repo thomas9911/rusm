@@ -100,11 +100,6 @@ body {
   flex-direction: column;
   min-height: 0;
 }
-/* The main panel scrolls on its own if the chart + observer overrun the viewport. */
-.main {
-  min-height: 0;
-  overflow-y: auto;
-}
 .sidebar h2,
 .observer h2 {
   margin: 0 0 12px;
@@ -188,11 +183,13 @@ body {
   cursor: not-allowed;
 }
 
-/* Main */
+/* Main — scrolls on its own if the chart + observer overrun the viewport. */
 .main {
   display: flex;
   flex-direction: column;
   gap: 20px;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 /* Scenario info */
