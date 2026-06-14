@@ -57,6 +57,7 @@ pub fn main(attr: TokenStream, item: TokenStream) -> TokenStream {
             struct Component;
             impl Guest for Component {
                 fn run() {
+                    ::rusm_rs::logging::init();
                     super::#entry();
                 }
             }
@@ -119,6 +120,7 @@ pub fn handlers(_attr: TokenStream, item: TokenStream) -> TokenStream {
             struct Component;
             impl Guest for Component {
                 fn run() {
+                    ::rusm_rs::logging::init();
                     ::rusm_rs::http::serve_request(|__action, __request, __params| match __action {
                         #(#arms)*
                         _ => ::core::option::Option::None,

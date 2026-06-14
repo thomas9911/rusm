@@ -227,6 +227,7 @@ dependencies = [
 name = "rusm-rs"
 version = "0.1.0"
 dependencies = [
+ "log",
  "rusm-rs-macros",
  "rusm-wire",
  "serde",

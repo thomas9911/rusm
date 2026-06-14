@@ -15,6 +15,10 @@ repository = "https://github.com/archan937/rusm"
 wit-bindgen = "0.46"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# The `log` facade: a guest writes `log::info!`/`warn!`/`error!`/`debug!`; rusm-rs
+# installs a logger (set up by the entry-point macros) that routes records to the host
+# `log` op, which stamps the time, component name, pid, and colour. No init, no name/pid.
+log = "0.4"
 # The HTTP request/response wire types (with base64 bodies) are shared verbatim with
 # the host (rusm-wasm) so the two can never drift. `version` (alongside `path`) is what
 # crates.io resolves against once published; the path is used in-repo.

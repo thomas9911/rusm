@@ -67,12 +67,16 @@ resident = true               # long-lived service: boot-spawned + supervised
 
 It can also be changed live from the dashboard. (CLI override: `--profile`.)
 
-## `[log]` — platform lifecycle logging
+## `[log]` — platform & guest logging
 
-Opt-in, **off by default**, declared explicitly (no env magic). When set, the runtime
-logs each component process as it spawns and exits — coloured, tagged `rusm` (so a
-*platform* line is distinct from your app's own logs), as `component#pid` with the
-process's **effective capabilities** on the spawn line:
+Opt-in, **off by default**, declared explicitly (no env magic). One level gates **all
+three** of: the runtime's own lifecycle lines (each component process as it spawns and
+exits); your **guests' logs** (`console.*` in TS / the `log` crate in Rust); and a
+**serving access log** (every HTTP request, SSE stream, and WS upgrade). All route to the
+platform logger, which stamps the time, the calling `component#pid` (or `rusm` for the
+runtime's own lines), and a severity colour — so everything reads as one aligned stream.
+Guests wire **nothing** — no name, pid, or logger object; the host knows which process is
+calling.
 
 ```toml
 [log]
@@ -80,23 +84,29 @@ level = "debug"      # off | error | warn | info | debug
 ```
 
 ```text
-rusm spawn  meta-json#0    net spawn storage stdio env=3 mem=64M
-rusm spawn  api#7          net env=2 mem=64M
-rusm exit   api#7          normal
+rusm       spawn  meta-json#0   net spawn storage env=3 mem=64M   ← platform lifecycle line
+meta-json#0 info  meta-json ready (sink + broker)                 ← a guest's console.log / log::info!
+rusm       http   GET / → 200                                     ← a served HTTP request (access log)
+rusm       sse    GET /stream/app → 200                           ← an SSE stream
+rusm       ws     GET /socket → 101                               ← a WS upgrade
+commander#7 warn  retrying meta-json (attempt 2)                  ← a guest's console.warn / log::warn!
+rusm       exit   api#7         normal
 ```
 
-| `level` | Shows |
+| `level` | Shows (platform lifecycle · guest logs · access log) |
 | --- | --- |
 | `off` (default) | nothing — zero overhead |
-| `error` | crashes (a trap / OOM) |
-| `warn` | + kills and link cascades |
-| `info` | + clean exits (every process *ending*) |
-| `debug` | + every spawn (full visibility) |
+| `error` | crashes (a trap / OOM) · `console.error` / `log::error!` |
+| `warn` | + kills and link cascades · `console.warn` / `log::warn!` |
+| `info` | + clean exits · `console.log`/`console.info` / `log::info!` · **every served request** (`http`/`sse`/`ws`, status coloured by class) |
+| `debug` | + every spawn (full visibility) · `console.debug` / `log::debug!` |
 
 Levels are cumulative. A **restart** needs no special event — it reads as a crash
 `exit` (red) followed by a fresh `spawn` for the same component (a new pid). Only
 named components are logged (not internal plumbing), and the spawn line's capability
-summary makes a process's real privileges visible at the moment it starts.
+summary makes a process's real privileges visible at the moment it starts. A guest's log
+line is **not** stdout — it needs no `allow-stdio` grant; logging is a platform primitive
+gated only by this level.
 
 ## `[[serve]]` — a network listener
 
@@ -196,7 +206,7 @@ operator never declared). See [permissions & sandboxing](./concepts/permissions-
 | `allow-network` | bool? | from base | Allow outbound network (e.g. `fetch`). |
 | `allow-spawn` | bool? | from base | May spawn other components by name. |
 | `allow-process-control` | bool? | from base | May `monitor`/`kill`/`list`/`info` over foreign pids. |
-| `allow-stdio` | bool? | from base | Inherit the host's stdio (so `print` / `console.log` reaches the terminal). |
+| `allow-stdio` | bool? | from base | Inherit the host's raw stdout/stdin (a `wasi:cli` command, a raw `print!`). **Not** needed for logging — `console.*` / `log::*` route to the platform logger, gated by `[log]` (above). |
 | `allow-storage` | bool? | from base | May use durable key-value storage (the `kv-*` ABI); needs a node `store`. Granted by `trusted`. |
 | `max-memory-mb` | int? | from base | Per-process heap ceiling (MiB). |
 | `env` | string[] | `[]` | Env-var **keys** to grant; values resolved from the process env / `.env`. |

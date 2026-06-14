@@ -552,6 +552,19 @@ impl Guest for Component {
             def!("__print", |s: String| {
                 let _ = std::io::stderr().write_all(format!("{s}\n").as_bytes());
             });
+            // console.* → the platform logger: the host stamps the time, this process's
+            // component name + pid, and the severity colour (gated by the node `[log]
+            // level`). The guest passes only a severity + the joined message; no name,
+            // pid, or format wiring (webapi.js maps the console methods to a level).
+            def!("__log", |level: String, message: String| {
+                let level = match level.as_str() {
+                    "error" => actor::LogLevel::Error,
+                    "warn" => actor::LogLevel::Warn,
+                    "debug" => actor::LogLevel::Debug,
+                    _ => actor::LogLevel::Info,
+                };
+                actor::log(level, &message);
+            });
             // Whether stderr is a terminal — lets a TS logger colour only when piping
             // wouldn't litter escape codes, matching the host's platform-log gating.
             def!("__isatty", || std::io::stderr().is_terminal());

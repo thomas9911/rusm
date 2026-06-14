@@ -31,6 +31,7 @@ pub use serde_json;
 
 pub mod http;
 pub mod kv;
+pub mod logging;
 pub mod pubsub;
 pub mod supervisor;
 pub mod wire;

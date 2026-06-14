@@ -14,6 +14,9 @@ exclude = ["tests/"]
 
 [dependencies]
 rusm-otp = { path = "../rusm-otp", version = "0.1.0" }
+# Shared log palette/format — the host stamps + colours guest `log` lines through it, so
+# they read as one stream with the platform's own lifecycle logs.
+rusm-logfmt = { path = "../rusm-logfmt", version = "0.1.0" }
 # The durable KV store surfaced to guests behind the `storage` capability.
 rusm-kv = { path = "../rusm-kv", version = "0.1.0" }
 anyhow = { workspace = true }

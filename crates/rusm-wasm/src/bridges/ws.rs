@@ -177,9 +177,22 @@ impl WsServer {
         &self,
         req: hyper::Request<hyper::body::Incoming>,
     ) -> Result<hyper::Response<Empty<Bytes>>, Infallible> {
+        // Log the incoming WS request (gated by `[log] level`): a valid handshake as the
+        // `101` upgrade, a non-WS request as the `426` we reject it with.
+        let method = req.method().as_str().to_string();
+        let path = req
+            .uri()
+            .path_and_query()
+            .map(|pq| pq.as_str())
+            .unwrap_or("/")
+            .to_string();
+        let log =
+            |status| super::access::log_request(&self.spawner.rt, "ws", &method, &path, status);
         let Some(accept) = ws_accept(&req) else {
+            log(426);
             return Ok(upgrade_required());
         };
+        log(101);
         let server = self.clone();
         tokio::spawn(async move {
             if let Some(ws) = upgraded_ws(req).await {

@@ -73,23 +73,6 @@ impl LogLevel {
     }
 }
 
-/// The lead every platform line shares: gray timestamp, then the `rusm` tag in the shared
-/// identifier colour, padded to the `who` column — so platform and app lines (which put
-/// `component#pid` here) line up.
-fn lead() -> String {
-    format!(
-        "{} {}",
-        fmt::paint(fmt::TIME, &fmt::now_hms()),
-        fmt::paint(fmt::WHO, &format!("{:<w$}", "rusm", w = fmt::WHO_WIDTH)),
-    )
-}
-
-/// An action word (`spawn`/`exit`/`census`) coloured by `code`, padded to the action
-/// column so the subject/message that follows aligns across every line.
-fn action(code: &str, verb: &str) -> String {
-    fmt::paint(code, &format!("{:<w$}", verb, w = fmt::ACTION_WIDTH))
-}
-
 /// `<id>` rendered as a bold name + dim `#pid` — the spawned-process **subject** of a
 /// spawn/exit line (distinct from the `who` column the lead already holds).
 fn ident(label: &str, pid: Pid) -> String {
@@ -104,11 +87,12 @@ fn ident(label: &str, pid: Pid) -> String {
 /// effective capabilities, so a reader sees exactly what the process can do).
 pub fn log_spawn(pid: Pid, label: &str, detail: &str) {
     eprintln!(
-        "{} {} {}  {}",
-        lead(),
-        action(fmt::LEVEL, "spawn"), // cyan
-        ident(label, pid),
-        fmt::paint(fmt::DIM, detail),
+        "{}",
+        fmt::platform_line(
+            fmt::LEVEL, // cyan
+            "spawn",
+            &format!("{}  {}", ident(label, pid), fmt::paint(fmt::DIM, detail)),
+        )
     );
 }
 
@@ -117,11 +101,16 @@ pub fn log_spawn(pid: Pid, label: &str, detail: &str) {
 pub fn log_exit(pid: Pid, label: &str, reason: ExitReason) {
     let code = LogLevel::for_exit(reason).colour();
     eprintln!(
-        "{} {} {}  {}",
-        lead(),
-        action(code, "exit"),
-        ident(label, pid),
-        fmt::paint(code, &format!("{reason:?}").to_lowercase()),
+        "{}",
+        fmt::platform_line(
+            code,
+            "exit",
+            &format!(
+                "{}  {}",
+                ident(label, pid),
+                fmt::paint(code, &format!("{reason:?}").to_lowercase())
+            ),
+        )
     );
 }
 
@@ -145,7 +134,7 @@ pub fn log_census(counts: &BTreeMap<String, u64>) {
             .collect::<Vec<_>>()
             .join("  ")
     };
-    eprintln!("{} {} {}", lead(), action(fmt::LEVEL, "census"), body);
+    eprintln!("{}", fmt::platform_line(fmt::LEVEL, "census", &body));
 }
 
 // A supervisor **restart** intentionally has no dedicated event: it reads as the

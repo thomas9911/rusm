@@ -103,9 +103,16 @@ The component linker wires **WASI p2 and p3** — both `@0.2.0` and `@0.3.0`
 interfaces on one `WasiHost`, with the async component model enabled. It exposes a `rusm:runtime` **WIT actor world** (`bindgen!`): a
 component calls `self`/`send`/`receive`/`receive-timeout` (Erlang's `receive …
 after`)/`list`/`info`/`kill`/`register`/`whereis`/`set-label`/`spawn`/`monitor`/
-`supervise`/`stream-*`/`kv-*` — the Erlang `Process` API + durable storage, callable
-from Rust or TS guests — backed by thin calls into `rusm-otp` (and `rusm-kv` for
-`kv-*`). **Default-deny capability profiles** (`caps.rs`:
+`supervise`/`stream-*`/`kv-*`/`log` — the Erlang `Process` API + durable storage +
+platform logging, callable from Rust or TS guests — backed by thin calls into `rusm-otp`
+(and `rusm-kv` for `kv-*`). **Logging is a platform primitive**: a guest's `console.*`
+(TS) / `log` crate (Rust) routes to the host `log` op, which stamps the time,
+`component#pid`, and severity colour via `rusm-logfmt` and writes to the node's log
+stream — gated by `[log] level`, no `allow-stdio` and no name/pid wiring in guest code.
+The serving bridges also emit a **platform access log** (`bridges/access.rs`) — every
+HTTP request, SSE stream, and WS upgrade as `rusm <proto> <method> <path> → <status>`,
+same stream, same `[log]` gate. (`rusm-logfmt::platform_line` is the single source for
+every `rusm`-tagged line — lifecycle + access.) **Default-deny capability profiles** (`caps.rs`:
 Sandboxed/NetworkClient/Trusted; grants incl. `spawn`/`process-control`/`storage`)
 build a `WasiCtx` + a `StoreLimiter` memory cap. Durable **key-value storage** is
 the Wasm-free **`rusm-kv`** crate (embedded redb buckets), surfaced via the `kv-*`

@@ -2601,6 +2601,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "rusm-kv",
+ "rusm-logfmt",
  "rusm-node",
  "rusm-otp",
  "rusm-wire",
