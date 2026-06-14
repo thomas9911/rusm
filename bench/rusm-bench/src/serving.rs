@@ -4,17 +4,21 @@
 //! (WS via `ws_server` / `ws_server_js`). This is the shape RUSM standardizes serving
 //! on: stateless, isolated, no head-of-line blocking by construction.
 //!
-//! Load is generated through the shared [`rusm_loadtest`] path — **balter** for HTTP
-//! request rate, the connection-capacity harness for WS/SSE held connections.
+//! Load is generated through the shared [`rusm_loadtest`] path — a **closed-loop** driver
+//! for HTTP (a fixed set of outstanding requests, sized to the guest's capacity), the
+//! connection-capacity harness for WS/SSE held connections. Closed-loop self-limits to the
+//! real ceiling, so the live tile holds rock-steady and never floods or collapses,
+//! whatever the guest's speed. (The *fair* out-of-process headline still uses balter's
+//! rate sweep — a deliberate max-rate measurement, [`rusm_loadtest::http::run`].)
 //!
 //! These remain **co-resident live demos** (load + server in the node process); the
-//! *fair* headline numbers come from the out-of-process `rusm-loadtest` binary
-//! against a real `rusm serve` port. No leaks: the balter window loop self-exits on
-//! stop, `CapacityLoad` stops on drop, and each engine `shutdown()`s its runtime.
+//! *fair* headline numbers come from the out-of-process `rusm-loadtest` binary against a
+//! real `rusm serve` port. No leaks: the closed-loop driver stops on `stop`, `CapacityLoad`
+//! stops on drop, and each engine `shutdown()`s its runtime.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use rusm_loadtest::capacity::{CapacityLoad, Protocol};
 use rusm_otp::Runtime;
@@ -41,9 +45,6 @@ const TS_SSE: &str = include_str!("../../../crates/rusm-wasm/tests/fixtures/ts_s
 
 /// At most this many latency samples surfaced per tick.
 const LATENCY_SAMPLE: usize = 64;
-/// Each balter window completes before the next, so its workers shut down cleanly
-/// (balter only aborts workers on completion, never on drop) — no task leak.
-const HTTP_WINDOW: Duration = Duration::from_secs(3);
 
 /// Trusted's resources (roomy heap) but no inherited stdio: serving guests don't
 /// print, and this keeps any on-disconnect traps off the node's stderr.
@@ -64,15 +65,13 @@ fn bind_loopback() -> (std::net::SocketAddr, TcpListener) {
     (addr, listener)
 }
 
-/// **HTTP throughput** (Rust or TS), driven live by **balter** against a **per-request**
-/// HTTP handler (a fresh sandboxed instance per request). The tile charts the achieved
-/// req/s and request latency.
+/// **HTTP throughput** (Rust or TS): a **closed-loop** driver holds a fixed set of
+/// outstanding requests (sized to the guest's capacity) against a **per-request** HTTP
+/// handler (a fresh sandboxed instance per request), so the tile holds steady at the real
+/// ceiling and never collapses. Charts the achieved req/s and request latency.
 pub struct HttpServingEngine {
     // Held for the run; dropping it stops the server's epoch ticker + reclaims processes.
     _wr: WasmRuntime,
-    // The live process count — the per-request instances currently in flight (the
-    // logical concurrency actually spun), reported on the tile.
-    rt: Runtime,
     server_task: JoinHandle<()>,
     stop: Arc<AtomicBool>,
     lat_rx: UnboundedReceiver<u64>,
@@ -99,29 +98,30 @@ impl HttpServingEngine {
             Guest::Ts => tokio::spawn(wr.http_server_js(TS_HTTP.to_string(), caps).serve(listener)),
         };
 
-        // A steady, sustainable offered rate scaled by the profile; balter paces it
-        // and seeds enough concurrency to hit it without a long ramp.
-        let target_tps = (workers as u32 * 5_000).clamp(8_000, 50_000);
-        let concurrency = (workers * 12).clamp(24, 256);
+        // Closed-loop load: a fixed set of outstanding requests, sized to the guest's real
+        // capacity. The Rust path instantiates a component per request cheaply, so it
+        // sustains a high concurrency; the TS path pays a QuickJS init + eval per request,
+        // so its ceiling is the scheduler parallelism — over-subscribing it only builds a
+        // queue. Closed-loop self-limits to the true capacity: it holds **rock-steady** at
+        // the ceiling and can never flood or collapse to zero (no open-loop rate chase, no
+        // balter global state to wedge across scenario switches).
+        let concurrency = match guest {
+            Guest::Rust => (workers * 12).clamp(24, 256),
+            Guest::Ts => scheduler_count.clamp(4, 32),
+        };
 
         rusm_loadtest::http::set_target(format!("http://{addr}/"));
         rusm_loadtest::http::reset_counter();
         let lat_rx = rusm_loadtest::http::install_latency_sink();
 
         let stop = Arc::new(AtomicBool::new(false));
-        // Bounded-window loop: each window completes (clean balter shutdown), then we
-        // re-check `stop`. Detached on purpose — never aborted mid-window (that would
-        // leak balter's workers); it self-exits within one window of `stop`.
-        let loop_stop = Arc::clone(&stop);
-        tokio::spawn(async move {
-            while !loop_stop.load(Ordering::Relaxed) {
-                let _ = rusm_loadtest::http::run_window(target_tps, concurrency, HTTP_WINDOW).await;
-            }
-        });
+        tokio::spawn(rusm_loadtest::http::run_closed_loop(
+            concurrency,
+            Arc::clone(&stop),
+        ));
 
         Self {
             _wr: wr,
-            rt,
             server_task,
             stop,
             lat_rx,
@@ -150,9 +150,13 @@ impl HttpServingEngine {
             latencies_ns = latencies_ns.split_off(latencies_ns.len() - LATENCY_SAMPLE);
         }
 
-        // The charted concurrency is the real live RUSM process count — the
-        // per-request handler instances currently in flight.
-        let process_count = self.rt.process_count() as u64;
+        // The charted concurrency: the per-request handler instances running concurrently
+        // right now. HTTP throughput serves on the `wasi:http` path (a wasm instance per
+        // request on a Tokio task, not an `rt.spawn`'d process), so `rt.process_count()`
+        // is structurally 0 here; the real count is the load's in-flight requests (one
+        // in-flight request == one handler instance in flight). Small by nature — at this
+        // rate each handler lives microseconds, so only a handful overlap (Little's law).
+        let process_count = rusm_loadtest::http::inflight();
         Sample {
             ops_per_sec,
             process_count,
@@ -293,6 +297,7 @@ impl Drop for CapacityServingEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     /// Warm up until throughput appears, then verify it's **sustained** — every tick
     /// over a ~1.5s window keeps producing. Returns the minimum *nonzero* sustained
@@ -303,7 +308,7 @@ mod tests {
     /// transient dip (CPU starvation when the whole suite runs in parallel): a real
     /// collapse is all-zero, so it always trips the consecutive check.
     async fn sustained_throughput(mut tick: impl FnMut() -> Sample) -> f64 {
-        // Warm-up: engines ramp (connect, instantiate, balter seed) — wait for first ops.
+        // Warm-up: engines ramp (connect, instantiate, fill the closed loop) — wait for first ops.
         let mut warmed = false;
         for _ in 0..200 {
             tokio::time::sleep(Duration::from_millis(50)).await;

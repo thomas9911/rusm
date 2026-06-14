@@ -72,8 +72,11 @@ round-trips/s; SSE 256 held streams ~609k events/s; `conn` ~34k
 sandboxed-process-per-connection WS establishments/s. The **six serving dashboard
 scenarios are co-resident live demos** (`http-throughput`, `ws-echo`, `sse-fanout`
 and their `*-ts` twins): each spins up the same real in-process WASM server and
-drives it through the same load path as `rusm-loadtest` (balter for HTTP request-rate,
-a connection-capacity harness for WS/SSE held connections), with load generator and
+drives it through the shared `rusm-loadtest` path (a steady **closed-loop** driver for
+HTTP — a fixed set of outstanding requests that holds the tile at the server's real
+ceiling, never flooding or collapsing whatever the guest's speed — and a
+connection-capacity harness for WS/SSE held connections; the fair out-of-process headline
+still uses balter's rate sweep), with load generator and
 server sharing the node process — so live tile figures (http-throughput ~20k req/s,
 ws-echo ~195k rt/s, sse-fanout ~695k events/s) differ by design from the fair
 out-of-process headlines above. The Wasm-free
