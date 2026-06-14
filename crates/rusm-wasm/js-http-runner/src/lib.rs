@@ -1,32 +1,98 @@
-//! The **rusm-ts js-http-runner**: a raw `wasi:http` component that embeds rquickjs
-//! and runs a Bun-built TS/JS bundle's `fetch` handler — both request/response HTTP
-//! and **streaming SSE**. The TypeScript twin of the wstd HTTP path.
+//! The **rusm-ts js-http-runner**: a `wasi:http` component that embeds rquickjs and runs
+//! a Bun-built TS/JS bundle's `fetch` handler — both request/response HTTP and
+//! **streaming SSE**. The TypeScript twin of the wstd HTTP path.
 //!
 //! Why raw `wasi:http` (not wstd)? To stream, the response body must lazily pull each
 //! event from the JS reader *as bytes are sent* — i.e. touch the rquickjs context.
 //! rquickjs's context is `!Send`, and wstd's `Body` is `Send + 'static`, so a wstd
-//! streaming body can't hold it. The raw handler is synchronous `handle(request,
-//! out)`: we set headers, take the body's output-stream, and write chunks ourselves —
-//! the context just lives in a local for the duration, nothing crosses a thread
+//! streaming body can't hold it. The raw handler is synchronous `handle(request, out)`:
+//! we set headers, take the body's output-stream, and write chunks ourselves — the
+//! context just lives in a thread-local for the duration, nothing crosses a thread
 //! boundary, no `Send` bound. We own the bridge.
 //!
-//! The bundle is delivered per-request via the `RUSM_JS_BUNDLE` env capability; the
-//! guest writes the Workers/Deno `export default { fetch }` shape. A static response
-//! is written in one shot; a `ReadableStream` body is pulled chunk-by-chunk and
-//! flushed as it's produced (back-pressured by the socket via blocking writes).
+//! **Pre-initialized (wizer).** The QuickJS engine + the JS bridge are booted **once** at
+//! build time by [`wizer_initialize`] and snapshotted into the image; each per-request
+//! instance CoW-starts from that snapshot, so [`warm`] finds the engine already up and
+//! only the runtime bundle + `fetch` run per request. The exact same `warm()` path boots
+//! lazily if the module was *not* wizer'd, so behaviour is identical either way — wizer
+//! just moves the cost from per-request to build-time. Still **instance-per-request**
+//! (a fresh, isolated instance per request; never resident), so a hung or crashed
+//! request can never block the server.
+//!
+//! The bundle is delivered per-request via the `RUSM_JS_BUNDLE` env capability; the guest
+//! writes the Workers/Deno `export default { fetch }` shape. A static response is written
+//! in one shot; a `ReadableStream` body is pulled chunk-by-chunk and flushed as it's
+//! produced (back-pressured by the socket via blocking writes).
 
 use anyhow::{anyhow, Result};
 use rquickjs::{Array, Context, Ctx, Function, Object, Promise, Runtime, TypedArray};
-use wasip2::exports::wasi::http::incoming_handler::Guest;
-use wasip2::http::types::{
+use std::cell::OnceCell;
+
+wit_bindgen::generate!({ world: "bindings", path: "wit", generate_all });
+
+use exports::wasi::http::incoming_handler::Guest;
+use wasi::http::types::{
     Fields, IncomingRequest, Method, OutgoingBody, OutgoingResponse, ResponseOutparam,
 };
-use wasip2::io::streams::OutputStream;
+use wasi::io::streams::OutputStream;
 
 const WEBAPI_JS: &str = include_str!("../../js-runner/bridge/webapi.js");
 const HTTP_JS: &str = include_str!("../bridge/http.js");
 /// wasi:io `blocking-write-and-flush` accepts at most 4096 bytes per call.
 const WRITE_CHUNK: usize = 4096;
+
+thread_local! {
+    /// The **warm** QuickJS context — engine + bridge, booted once. Baked into the image
+    /// by [`wizer_initialize`] at build time (so each instance CoW-starts warm) and
+    /// reused for the instance's lifetime. The `Context` owns its `Runtime`, so holding
+    /// it here keeps the engine alive.
+    static WARM: OnceCell<Context> = const { OnceCell::new() };
+}
+
+/// Run `f` against the warm context, booting the engine + bridge **once** if it isn't up
+/// yet (the build-time wizer snapshot normally means it already is — this is the single
+/// source for "a ready context", whether wizer ran or not).
+fn with_warm<R>(f: impl FnOnce(&Ctx<'_>) -> R) -> R {
+    WARM.with(|cell| {
+        let ctx = cell.get_or_init(|| {
+            let runtime = Runtime::new().expect("quickjs runtime");
+            let context = Context::full(&runtime).expect("quickjs context");
+            context.with(boot_bridge);
+            context
+        });
+        ctx.with(|c| f(&c))
+    })
+}
+
+/// Boot the JS bridge into a fresh context: the host `__print`, the Web-API polyfills
+/// (`webapi.js`), the HTTP glue (`http.js`), and an empty CommonJS module the per-request
+/// bundle populates. This is the work wizer bakes into the snapshot — done once, not per
+/// request. (`__print` is a Rust closure; verified to survive the wizer snapshot.)
+fn boot_bridge(ctx: Ctx<'_>) {
+    let g = ctx.globals();
+    g.set(
+        "__print",
+        Function::new(ctx.clone(), |s: String| eprintln!("{s}")).expect("define __print"),
+    )
+    .ok();
+    eval(&ctx, WEBAPI_JS, "webapi.js").expect("webapi.js");
+    eval(&ctx, HTTP_JS, "http.js").expect("http.js");
+    eval(
+        &ctx,
+        "globalThis.module={exports:{}};globalThis.exports=module.exports;",
+        "cjs-shim",
+    )
+    .expect("cjs-shim");
+}
+
+/// Wizer's build-time entry point (`./build.sh` runs `wizer --init-func wizer_initialize`):
+/// boot the engine + bridge so the snapshot captures a warm context. Not part of the
+/// component interface — a plain core export wizer calls, then `wasm-tools component new`
+/// drops. May not call imports, so the bridge eval (pure JS, no host calls) is fine.
+#[no_mangle]
+pub extern "C" fn wizer_initialize() {
+    with_warm(|_| {});
+}
 
 /// The handler's response metadata; the body is either fully-known bytes (static) or
 /// pulled incrementally from the JS reader (`streaming`).
@@ -44,20 +110,10 @@ impl Guest for Handler {
         let bundle = std::env::var("RUSM_JS_BUNDLE").unwrap_or_default();
         let (method, url, req_headers, req_body) = read_request(request);
 
-        // One QuickJS runtime per request (instance-per-request isolation). Held for
-        // the whole handler so streaming pulls can re-enter it.
-        let Ok(runtime) = Runtime::new() else {
-            return fail(response_out, "quickjs runtime unavailable");
-        };
-        let Ok(context) = Context::full(&runtime) else {
-            return fail(response_out, "quickjs context unavailable");
-        };
-
-        // Phase 1: evaluate the bundle and run `fetch`, settling status + headers
-        // (+ a static body, or arming the stream reader).
-        let outcome = context.with(|ctx| {
-            run_fetch(&ctx, &bundle, &method, &url, &req_headers, &req_body)
-        });
+        // Phase 1: eval the bundle into the warm context and run `fetch`, settling status
+        // + headers (+ a static body, or arming the stream reader).
+        let outcome =
+            with_warm(|ctx| run_fetch(ctx, &bundle, &method, &url, &req_headers, &req_body));
         let outcome = match outcome {
             Ok(o) => o,
             Err(e) => return fail(response_out, &format!("{e}")),
@@ -75,14 +131,13 @@ impl Guest for Handler {
             // Pull each chunk from the JS reader and flush it — true incremental SSE.
             // A write error means the client hung up; stop pulling.
             loop {
-                match context.with(|ctx| pull_chunk(&ctx)) {
+                match with_warm(pull_chunk) {
                     Ok(Some(chunk)) => {
                         if write_all(&stream, &chunk).is_err() {
                             break;
                         }
                     }
-                    Ok(None) => break,
-                    Err(_) => break,
+                    Ok(None) | Err(_) => break,
                 }
             }
         } else {
@@ -94,9 +149,9 @@ impl Guest for Handler {
     }
 }
 
-/// Evaluate the bundle, build the JS `Request`, run `fetch`, and read back the
-/// response head. For a static body the bytes come back now; for a stream the JS
-/// reader is armed and `pull_chunk` drives it.
+/// In the **already-warm** context (bridge loaded), eval the per-request bundle, build the
+/// JS `Request`, run `fetch`, and read back the response head. For a static body the bytes
+/// come back now; for a stream the JS reader is armed and `pull_chunk` drives it.
 fn run_fetch(
     ctx: &Ctx<'_>,
     bundle: &str,
@@ -105,21 +160,6 @@ fn run_fetch(
     headers: &[(String, String)],
     body: &[u8],
 ) -> Result<Outcome> {
-    let g = ctx.globals();
-    g.set(
-        "__print",
-        Function::new(ctx.clone(), |s: String| eprintln!("{s}"))
-            .map_err(|e| anyhow!("define __print: {e}"))?,
-    )
-    .ok();
-
-    eval(ctx, WEBAPI_JS, "webapi.js")?;
-    eval(ctx, HTTP_JS, "http.js")?;
-    eval(
-        ctx,
-        "globalThis.module={exports:{}};globalThis.exports=module.exports;",
-        "cjs-shim",
-    )?;
     // Wrap the bundle in a CommonJS scope so its top-level vars don't leak.
     let wrapped = format!(
         "(function(module,exports){{\n{bundle}\n}})(globalThis.module,globalThis.module.exports);"
@@ -135,7 +175,10 @@ fn run_fetch(
     }
     let body_ta = TypedArray::new(ctx.clone(), body).map_err(|e| anyhow!("body array: {e}"))?;
 
-    let func: Function = g.get("__rusm_http").map_err(|e| anyhow!("__rusm_http: {e}"))?;
+    let func: Function = ctx
+        .globals()
+        .get("__rusm_http")
+        .map_err(|e| anyhow!("__rusm_http: {e}"))?;
     let promise: Promise = func
         .call((method, url, header_arr, body_ta))
         .map_err(|e| js_err(ctx, e, "call fetch handler"))?;
@@ -168,7 +211,9 @@ fn pull_chunk(ctx: &Ctx<'_>) -> Result<Option<Vec<u8>>> {
         .get("__rusm_http_pull")
         .map_err(|e| anyhow!("__rusm_http_pull: {e}"))?;
     let promise: Promise = func.call(()).map_err(|e| js_err(ctx, e, "pull"))?;
-    let chunk: Option<TypedArray<u8>> = promise.finish().map_err(|e| js_err(ctx, e, "pull resolve"))?;
+    let chunk: Option<TypedArray<u8>> = promise
+        .finish()
+        .map_err(|e| js_err(ctx, e, "pull resolve"))?;
     Ok(chunk.map(|ta| ta.as_bytes().unwrap_or(&[]).to_vec()))
 }
 
@@ -245,7 +290,10 @@ fn fail(response_out: ResponseOutparam, message: &str) {
     ResponseOutparam::set(response_out, Ok(response));
     if let Some(body) = body {
         if let Ok(stream) = body.write() {
-            let _ = write_all(&stream, format!("js-http-runner error: {message}").as_bytes());
+            let _ = write_all(
+                &stream,
+                format!("js-http-runner error: {message}").as_bytes(),
+            );
             drop(stream);
             let _ = OutgoingBody::finish(body, None);
         }
@@ -298,4 +346,4 @@ fn read_headers(arr: Array<'_>) -> Result<Vec<(String, String)>> {
     Ok(out)
 }
 
-wasip2::http::proxy::export!(Handler with_types_in wasip2);
+export!(Handler);

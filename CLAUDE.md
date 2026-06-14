@@ -27,7 +27,11 @@ round-trips/s, sandbox cost inside noise), and **SSE** (a `wasi:http` streaming 
 **Both guest languages serve all three**:
 RS compiles to `wasi:http`/the actor world; **TS** runs on embedded rquickjs runners —
 `http_server_js` + the raw-`wasi:http` **js-http-runner** (runs `export default { fetch }`,
-pull-based streaming for SSE) and `ws_server_js` (a TS worker, one process per
+pull-based streaming for SSE; **wizer-pre-initialized** — the QuickJS engine + bridge are
+booted once at build time and snapshotted into the image, so each per-request instance
+CoW-starts warm and only evals the bundle + runs `fetch`: ~8× the cold per-request rate,
+still instance-per-request/never-resident; built via `js-http-runner/build.sh`:
+wit-bindgen core module → wizer → `wasm-tools component new`) and `ws_server_js` (a TS worker, one process per
 connection). **The unified serving model: serving is ALWAYS process-per-request
 (HTTP/SSE) / process-per-connection (WS) — there is no "resident" serving mode**
 (removed; resident-vs-per-call now lives only in `[components.<name>]` via the

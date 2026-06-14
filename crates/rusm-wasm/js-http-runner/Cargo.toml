@@ -1,17 +1,15 @@
-# The rusm-ts "js-http-runner": a raw wasi:http component that embeds rquickjs and
-# runs a Bun-built TS/JS bundle's `fetch` handler — HTTP and **streaming SSE**. Raw
-# wasi:http (not wstd) so the response body can be written incrementally while the
-# rquickjs context (which is !Send) stays live on this fiber — see the crate docs.
-# The bundle arrives via the RUSM_JS_BUNDLE env var (a per-component capability).
-# Built for wasm32-wasip2 (needs wasi-sdk for QuickJS's C); checked in. Regenerate:
-#   CC_wasm32_wasip2=$HOME/.wasi-sdk/bin/clang \
-#   AR_wasm32_wasip2=$HOME/.wasi-sdk/bin/llvm-ar \
-#   CFLAGS_wasm32_wasip2=--sysroot=$HOME/.wasi-sdk/share/wasi-sysroot \
-#   cargo build --target wasm32-wasip2 --release
-#   cp target/wasm32-wasip2/release/js_http_runner.wasm ../runtimes/js_http_runner.wasm
-# (run from this crate dir. The artifact lives in ../runtimes/ — a plain dir, not
-# this nested crate — so it ships in the published rusm-wasm package; embedded via
-# include_bytes!.)
+# The rusm-ts "js-http-runner": a wasi:http component that embeds rquickjs and runs a
+# Bun-built TS/JS bundle's `fetch` handler — HTTP and **streaming SSE**. Raw wasi:http
+# (not wstd) so the response body can be written incrementally while the rquickjs context
+# (which is !Send) stays live on this fiber — see the crate docs. The bundle arrives via
+# the RUSM_JS_BUNDLE env var (a per-component capability).
+#
+# **Wizer-pre-initialized**: the QuickJS engine + the JS bridge are booted ONCE at build
+# time and snapshotted into the image (`wizer.initialize`), so each per-request instance
+# CoW-starts *warm* and only evals the (runtime) bundle + runs `fetch` — engine/bridge
+# init is no longer paid per request. Still instance-per-request, never resident: a hung
+# or crashed request can't block the server. The build is a core module (wit-bindgen) →
+# wizer → `wasm-tools component new`; checked in under ../runtimes/. Regenerate: ./build.sh
 [workspace]
 
 [package]
@@ -31,6 +29,9 @@ lto = true
 strip = true
 
 [dependencies]
-wasip2 = "1.0.3"
+# wit-bindgen (not the `wasip2` crate) so the build produces a **core module** — which
+# `wizer` can pre-initialize (snapshot the booted QuickJS engine + bridge into the image)
+# before `wasm-tools component new` re-wraps wasi:http. See ./build.sh and the header above.
+wit-bindgen = "0.46"
 rquickjs = "0.9"
 anyhow = "1"
