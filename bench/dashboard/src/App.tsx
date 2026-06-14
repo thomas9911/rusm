@@ -70,7 +70,6 @@ export function App() {
       <div className="layout">
         <aside className="sidebar">
           <h2>Scenarios</h2>
-          <ScenarioMenu scenarios={state.scenarios} active={selected} onPick={setSelected} />
           <div className="controls">
             <button className="run" disabled={!selected || !state.connected} onClick={startRun}>
               Run
@@ -85,6 +84,7 @@ export function App() {
               </button>
             )}
           </div>
+          <ScenarioMenu scenarios={state.scenarios} active={selected} onPick={setSelected} />
         </aside>
 
         <main className="main">
