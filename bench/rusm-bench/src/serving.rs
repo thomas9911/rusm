@@ -100,16 +100,17 @@ impl HttpServingEngine {
 
         // Closed-loop load: a fixed set of outstanding requests, sized to the guest's real
         // capacity. The Rust path instantiates a component per request cheaply, so it
-        // sustains a high concurrency. The (wizer-warmed) TS path is CPU-bound at the
-        // scheduler parallelism — measured knee on an 8-core box: 8→~5.3k/s @1.4ms,
-        // 16→~5.6k/s @2.6ms, 32→~6k/s @5.7ms — so `2 ×` the cores doubles the in-flight
-        // (charted) process count for a modest throughput gain at still-low latency; past
-        // that is mostly queue. Closed-loop self-limits to the true capacity: it holds
-        // **rock-steady** at the ceiling and can never flood or collapse to zero (no
-        // open-loop rate chase, no balter global state to wedge across scenario switches).
+        // sustains a high concurrency. The (wizer-warmed) TS path is CPU-bound, so its
+        // throughput ceiling is at the scheduler parallelism — concurrency = cores. Past
+        // that, more in-flight requests don't raise req/s, they only add queue latency
+        // (measured on an 8-core box: 8→~5.3k/s @1.4ms, 16→~5.6k/s @2.6ms, 32→~6k/s
+        // @5.7ms), so there's no reason to chart more processes than the cores can run.
+        // Closed-loop self-limits to the true capacity: it holds **rock-steady** at the
+        // ceiling and can never flood or collapse to zero (no open-loop rate chase, no
+        // balter global state to wedge across scenario switches).
         let concurrency = match guest {
             Guest::Rust => (workers * 12).clamp(24, 256),
-            Guest::Ts => (scheduler_count * 2).clamp(8, 32),
+            Guest::Ts => scheduler_count.clamp(4, 32),
         };
 
         rusm_loadtest::http::set_target(format!("http://{addr}/"));
