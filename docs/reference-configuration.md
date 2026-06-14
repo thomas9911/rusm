@@ -15,9 +15,10 @@ Tables read top-down in the order an app is built: the node, the listener and it
 routes, the capability profiles, then the components those routes and profiles name.
 
 ```toml
-# Node — the attach endpoint (`rusm node start`) and the benchmark node (`rusm-bench start`)
-listen = "127.0.0.1:4000"     # WebSocket address the node's attach endpoint binds
-profile = "balanced"          # light | balanced | max  — the benchmark node's throughput dial
+# The node itself — its attach endpoint (`rusm node start` / `rusm-bench start`)
+[node]
+listen = "127.0.0.1:4000"     # WebSocket address the attach endpoint binds
+profile = "balanced"          # light | balanced | max — the throughput dial
 ticks_per_second = 20         # snapshot rate, 10–60 Hz
 
 # A network listener (`rusm serve`) — just a port + its routes
@@ -48,11 +49,16 @@ capability = "sandboxed"
 resident = true               # long-lived service: boot-spawned + supervised
 ```
 
-## Node settings
+## `[node]` — node settings
+
+The `[node]` table holds the node's *own* settings — its attach endpoint, throughput
+dial, snapshot rate, and durable store — distinct from the listeners it serves
+(`[[serve]]`) and the components it hosts (`[components.<name>]`). The whole table (and
+any key) is optional; omitted keys take the defaults below.
 
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `listen` | string | `"127.0.0.1:4000"` | The WebSocket address a node's attach endpoint binds (`rusm node start` / `rusm-bench start`). |
+| `listen` | string | `"127.0.0.1:4000"` | The WebSocket address a node's attach endpoint binds (`rusm node start` / `rusm-bench start`). Not a serving port — `[[serve]]` listeners bind their own. |
 | `profile` | enum | `balanced` | The benchmark node's throughput dial — see below. |
 | `ticks_per_second` | int (10–60) | `20` | How often the node samples + broadcasts a snapshot. |
 | `store` | string? | none | Path (relative to the app dir) to the node's embedded durable key-value store — one file the node owns, no daemon. Required for components granted `allow-storage` (the `kv` ABI) or a `kv:` bundle `source`. Omitted → no store. |
@@ -249,7 +255,8 @@ Every table together — a Rust HTTP API with a routed handler, a long-lived sta
 service, and a custom capability profile, in canonical order:
 
 ```toml
-# Node
+# The node itself
+[node]
 listen = "127.0.0.1:4000"
 profile = "balanced"
 store = "data/app.redb"            # durable KV — backs `allow-storage` grants and `kv:` sources
@@ -302,6 +309,7 @@ cached bundle.
 | _(omitted)_ | the local `./wasm/<name>` artifact — the default, unchanged |
 
 ```toml
+[node]
 store = "data/app.redb"          # kv: sources read from here
 
 # A routes-less HTTP listener names its one handler — loaded from a remote bundle

@@ -178,7 +178,7 @@ is resolved the Rust way — process env first, then `.env`. Full reference:
 **[configuration](docs/reference-configuration)**.
 
 > The benchmark/dashboard node (`rusm-bench start`, a repo-only tool) has its own,
-> separate knobs — `listen`, `profile` (`light`/`balanced`/`max`),
+> separate `[node]` knobs — `listen`, `profile` (`light`/`balanced`/`max`),
 > `ticks_per_second` — set via `rusm.toml`/`--config`/flags and switchable live
 > from the dashboard ([details](docs/03-benchmark-dashboard.md)).
 

@@ -70,7 +70,7 @@ impl Default for RunnerConfig {
 /// `profile` is applied to the running node separately, so it shows up in frames
 /// and can be changed live).
 pub fn runner_config(cfg: &rusm_node::NodeConfig) -> RunnerConfig {
-    let ticks_per_second = cfg.ticks_per_second.max(1);
+    let ticks_per_second = cfg.node.ticks_per_second.max(1);
     RunnerConfig {
         ticks_per_second,
         // Steady-state latency: discard the first ~2s of samples so reported
@@ -457,7 +457,7 @@ mod tests {
 
     #[test]
     fn runner_config_carries_the_tick_rate() {
-        let cfg = rusm_node::NodeConfig::from_toml("ticks_per_second = 30").unwrap();
+        let cfg = rusm_node::NodeConfig::from_toml("[node]\nticks_per_second = 30").unwrap();
         assert_eq!(runner_config(&cfg).ticks_per_second, 30);
     }
 

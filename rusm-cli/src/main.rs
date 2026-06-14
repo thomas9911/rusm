@@ -114,7 +114,7 @@ async fn main() {
 }
 
 /// `rusm node start`: host the app's `[components.<name>]` (like `rusm run`) and expose
-/// a live **attach** endpoint on `cfg.listen`, so `rusm attach` can observe the
+/// a live **attach** endpoint on `[node] listen`, so `rusm attach` can observe the
 /// node's processes. The served runtime + held handles keep everything alive for
 /// the lifetime of the server (which runs until Ctrl-C or a bind error).
 async fn start_node(args: &[String]) -> anyhow::Result<()> {
@@ -126,15 +126,15 @@ async fn start_node(args: &[String]) -> anyhow::Result<()> {
     let wasm = wasm_runtime(rt.clone(), &cfg)?;
     let hosted =
         spawn_components(Path::new("."), &wasm, &cfg.components, &cfg.capabilities).await?;
-    let node = Node::new(rt.clone(), node_name(), cfg.ticks_per_second);
+    let node = Node::new(rt.clone(), node_name(), cfg.node.ticks_per_second);
     println!(
         "rusm node listening on ws://{} ({} component(s), {} Hz)",
-        cfg.listen,
+        cfg.node.listen,
         hosted.names.len(),
-        cfg.ticks_per_second
+        cfg.node.ticks_per_second
     );
-    println!("attach with:  rusm attach {}", cfg.listen);
-    serve(&cfg.listen, node).await?;
+    println!("attach with:  rusm attach {}", cfg.node.listen);
+    serve(&cfg.node.listen, node).await?;
     Ok(())
 }
 
@@ -444,7 +444,7 @@ fn load_node_config(args: &[String]) -> NodeConfig {
         std::process::exit(2);
     });
     if let Some(listen) = flag(args, "--listen") {
-        cfg.listen = listen;
+        cfg.node.listen = listen;
     }
     cfg
 }
@@ -454,7 +454,7 @@ fn load_node_config(args: &[String]) -> NodeConfig {
 /// components granted `storage` can persist; otherwise a store-less runtime. The
 /// store's parent dir is created so a fresh app's first run doesn't trip on it.
 fn wasm_runtime(rt: Runtime, cfg: &NodeConfig) -> anyhow::Result<WasmRuntime> {
-    let wasm = match &cfg.store {
+    let wasm = match &cfg.node.store {
         Some(rel) => {
             let path = Path::new(".").join(rel);
             if let Some(parent) = path.parent() {

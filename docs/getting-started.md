@@ -169,6 +169,7 @@ and supervise them from `./wasm/`:
 
 ```toml
 # rusm.toml
+[node]
 listen = "127.0.0.1:4000"
 profile = "balanced"
 

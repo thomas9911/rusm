@@ -15,8 +15,8 @@ pub mod protocol;
 pub mod routes;
 
 pub use config::{
-    BundleSource, CapabilitySpec, ComponentSpec, LogConfig, NodeConfig, PreopenSpec, ServeProtocol,
-    ServeSpec,
+    BundleSource, CapabilitySpec, ComponentSpec, LogConfig, NodeConfig, NodeSettings, PreopenSpec,
+    ServeProtocol, ServeSpec,
 };
 pub use node::{serve, serve_on, Node};
 pub use profile::{ResourceProfile, ResourceProfileMeta};

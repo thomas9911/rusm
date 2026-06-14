@@ -4,6 +4,9 @@
 # on the command line override what's here, and this file overrides the defaults.
 # Every field is optional; unknown fields are rejected (to catch typos).
 
+# --- The node's own settings (endpoint, throughput dial, durable store) ----------
+[node]
+
 # WebSocket address the node listens on (the dashboard and `rusm attach` connect here).
 listen = "127.0.0.1:4000"
 
