@@ -134,8 +134,12 @@ interface actor {
 }
 
 /// A RUSM actor component: imports the actor API and exports an entry point the
-/// runtime calls to start the process.
+/// runtime calls to start the process. It also imports outbound `wasi:http` for the
+/// `fetch` polyfill (the host gates it on the network capability) — declared here, via
+/// wit-bindgen, rather than pulled from the `wasip2` crate, so the guest builds as a
+/// **core module** that `wizer` can pre-initialize (a component can't be wizer'd).
 world process {
     import actor;
+    import wasi:http/outgoing-handler@0.2.6;
     export run: func();
 }

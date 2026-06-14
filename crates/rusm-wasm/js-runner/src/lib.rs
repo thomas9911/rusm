@@ -17,23 +17,27 @@
 wit_bindgen::generate!({
     world: "process",
     path: "wit",
+    generate_all,
 });
 
-use std::cell::{Cell, RefCell};
+use std::cell::{Cell, OnceCell, RefCell};
 use std::collections::HashMap;
 use std::io::{IsTerminal, Write};
 
 use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes128Gcm, Aes256Gcm, Nonce};
 use hmac::{Hmac, Mac};
-use rquickjs::{Ctx, Exception, Function, Promise, TypedArray};
+use rquickjs::{Context, Ctx, Exception, Function, Promise, Runtime, TypedArray};
 use rusm::runtime::actor;
 use sha1::Sha1;
 use sha2::{Digest, Sha256, Sha384, Sha512};
-use wasip2::http::types::{
-    IncomingBody, IncomingResponse, Method, OutgoingBody, OutgoingRequest, Scheme,
+// Outbound `wasi:http` bindings come from wit-bindgen (the `process` world imports
+// `wasi:http/outgoing-handler`), not the `wasip2` crate — so the guest is a core module
+// `wizer` can pre-initialize. Same interface, same blocking-read streaming as before.
+use wasi::http::types::{
+    Fields, IncomingBody, IncomingResponse, Method, OutgoingBody, OutgoingRequest, Scheme,
 };
-use wasip2::io::streams::InputStream;
+use wasi::io::streams::InputStream;
 
 struct Component;
 
@@ -114,7 +118,7 @@ fn js_fetch(
     let (scheme, authority, path) =
         split_url(&url).ok_or_else(|| throw(format!("fetch: unsupported URL {url:?}")))?;
 
-    let fields = wasip2::http::types::Fields::new();
+    let fields = Fields::new();
     for line in headers.split('\n').filter(|l| !l.is_empty()) {
         if let Some((k, v)) = line.split_once(':') {
             let _ = fields.append(&k.trim().to_string(), v.trim().as_bytes());
@@ -143,13 +147,10 @@ fn js_fetch(
     // Canonical wasi:http order: take the body handle, **dispatch** the request, then
     // stream the body into it, then finish. Dispatching first is required — a POST body
     // written before `handle` never reaches the server (the request goes out empty).
-    // Canonical wasi:http order: take the body handle, **dispatch** the request, then
-    // stream the body into it, then finish. Dispatching first is required — a POST body
-    // written before `handle` never reaches the server (the request goes out empty).
     let out_body = req
         .body()
         .map_err(|_| throw("fetch: no request body".into()))?;
-    let future = wasip2::http::outgoing_handler::handle(req, None)
+    let future = wasi::http::outgoing_handler::handle(req, None)
         .map_err(|e| throw(format!("fetch: {e:?}")))?;
     let payload = body.as_bytes().unwrap_or(&[]);
     if !payload.is_empty() {
@@ -468,142 +469,177 @@ const PROCESS_JS: &str = include_str!("../bridge/process.js");
 const KV_JS: &str = include_str!("../bridge/kv.js");
 const RPC_JS: &str = include_str!("../bridge/rpc.js");
 
+thread_local! {
+    /// The **warm** QuickJS context — engine + the full bridge (host `__*` primitives +
+    /// webapi/process/kv/rpc), booted once. Baked into the image by [`wizer_initialize`]
+    /// at build time so each spawned instance CoW-starts warm; reused for its lifetime.
+    /// The `Context` owns its `Runtime`, so holding it here keeps the engine alive.
+    static WARM: OnceCell<Context> = const { OnceCell::new() };
+}
+
+/// Run `f` against the warm context, booting the engine + bridge **once** if it isn't up
+/// yet (the build-time wizer snapshot normally means it already is — this is the single
+/// source for "a ready context", whether wizer ran or not).
+fn with_warm<R>(f: impl FnOnce(&Ctx<'_>) -> R) -> R {
+    WARM.with(|cell| {
+        let ctx = cell.get_or_init(|| {
+            let runtime = Runtime::new().expect("quickjs runtime");
+            let context = Context::full(&runtime).expect("quickjs context");
+            context.with(boot_bridge);
+            context
+        });
+        ctx.with(|c| f(&c))
+    })
+}
+
+/// Wizer's build-time entry (`./build.sh` runs `wizer --init-func wizer_initialize`): boot
+/// the engine + bridge so the snapshot captures a warm context. Not part of the component
+/// interface — a plain core export wizer calls, then `wasm-tools component new` drops. The
+/// bridge eval is pure JS that never calls a host import, so it is wizer-safe.
+#[no_mangle]
+pub extern "C" fn wizer_initialize() {
+    with_warm(|_| {});
+}
+
+/// Boot the full JS bridge into a fresh context: bind the host `__*` primitives, then eval
+/// the Web-API polyfills, the actor `Process`/`Stream` API, KV, and the RPC/service layer,
+/// plus an empty CommonJS module the per-instance bundle populates. This is the work wizer
+/// bakes into the snapshot — done once, not per spawn. (The bound closures are Rust
+/// closures; like the js-http-runner's `__print`, they survive the wizer snapshot.)
+fn boot_bridge(ctx: Ctx<'_>) {
+    let g = ctx.globals();
+    // Each closure is its own type, so a macro (not a helper fn/closure) is
+    // what lets us register them uniformly.
+    macro_rules! def {
+        ($name:expr, $func:expr) => {
+            g.set($name, Function::new(ctx.clone(), $func).unwrap())
+                .unwrap();
+        };
+    }
+
+    // --- process / messaging ---
+    def!("__own_pid", || actor::own_pid().to_string());
+    def!("__list", || actor::list_processes()
+        .into_iter()
+        .map(|p| p.to_string())
+        .collect::<Vec<_>>());
+    def!("__send_text", |to: String, s: String| actor::send(
+        to.parse().unwrap_or(0),
+        s.as_bytes()
+    ));
+    def!("__send", js_send);
+    def!("__receive", js_receive);
+    def!("__receive_text", || String::from_utf8(actor::receive())
+        .unwrap_or_default());
+    // `receive … after`: the next message, or `undefined` on timeout.
+    def!("__receive_timeout", js_receive_timeout);
+    def!("__register", |n: String| actor::register(&n));
+    def!("__whereis", |n: String| actor::whereis(&n)
+        .map(|p| p.to_string())
+        .unwrap_or_default());
+    def!("__is_alive", |p: String| actor::is_alive(
+        p.parse().unwrap_or(0)
+    ));
+    def!("__kill", |p: String| actor::kill(p.parse().unwrap_or(0)));
+    def!("__set_label", |l: String| actor::set_label(&l));
+    def!("__spawn", js_spawn);
+    def!("__monitor", |p: String| actor::monitor(
+        p.parse().unwrap_or(0)
+    ));
+    // Delegate guest `supervise` to the host's single native supervisor.
+    def!("__supervise", |strategy: String,
+                         children: Vec<String>,
+                         max_restarts: f64,
+                         within_ms: f64| {
+        let strategy = match strategy.as_str() {
+            "one_for_all" => actor::SuperviseStrategy::OneForAll,
+            "rest_for_one" => actor::SuperviseStrategy::RestForOne,
+            _ => actor::SuperviseStrategy::OneForOne,
+        };
+        let _ = actor::supervise(strategy, &children, max_restarts as u32, within_ms as u32);
+    });
+
+    // --- streams (handles are small ints carried as JS numbers) ---
+    def!("__stream_open", |to: String| actor::stream_open(
+        to.parse().unwrap_or(0)
+    )
+    .map_or(-1.0, |h| h as f64));
+    def!("__stream_write", js_stream_write);
+    def!("__stream_write_text", |h: f64, s: String| {
+        actor::stream_write(h as u64, s.as_bytes())
+    });
+    def!("__stream_close", |h: f64| actor::stream_close(h as u64));
+    def!("__stream_accept", || actor::stream_accept() as f64);
+    def!("__stream_read", js_stream_read);
+    // console output → WASI stderr (shown only if the `inherit_stdio`
+    // capability is granted; discarded for a sandboxed guest). One `write_all` of
+    // the whole line (not `eprintln!`'s piece-by-piece writes) so concurrent guest
+    // processes sharing the host stderr can't interleave mid-line.
+    def!("__print", |s: String| {
+        let _ = std::io::stderr().write_all(format!("{s}\n").as_bytes());
+    });
+    // console.* → the platform logger: the host stamps the time, this process's
+    // component name + pid, and the severity colour (gated by the node `[log]
+    // level`). The guest passes only a severity + the joined message; no name,
+    // pid, or format wiring (webapi.js maps the console methods to a level).
+    def!("__log", |level: String, message: String| {
+        let level = match level.as_str() {
+            "error" => actor::LogLevel::Error,
+            "warn" => actor::LogLevel::Warn,
+            "debug" => actor::LogLevel::Debug,
+            _ => actor::LogLevel::Info,
+        };
+        actor::log(level, &message);
+    });
+    // Whether stderr is a terminal — lets a TS logger colour only when piping
+    // wouldn't litter escape codes, matching the host's platform-log gating.
+    def!("__isatty", || std::io::stderr().is_terminal());
+    // Secure randomness for the `crypto` polyfill (webapi.js).
+    def!("__random_bytes", js_random_bytes);
+    // Outbound HTTP for the `fetch` polyfill (capability-gated at the host).
+    def!("__fetch", js_fetch);
+    def!("__fetch_read", js_fetch_read);
+    def!("__fetch_close", js_fetch_close);
+    // Durable key-value storage for the `kv` polyfill (capability-gated).
+    def!("__kv_get", js_kv_get);
+    def!("__kv_set", js_kv_set);
+    def!("__kv_delete", js_kv_delete);
+    def!("__kv_exists", js_kv_exists);
+    def!("__kv_list", js_kv_list);
+    // Native crypto primitives for the `crypto.subtle` polyfill (webapi.js).
+    def!("__crypto_digest", js_crypto_digest);
+    def!("__crypto_hmac_sign", js_crypto_hmac_sign);
+    def!("__crypto_hmac_verify", js_crypto_hmac_verify);
+    def!("__crypto_aes_gcm_encrypt", js_crypto_aes_gcm_encrypt);
+    def!("__crypto_aes_gcm_decrypt", js_crypto_aes_gcm_decrypt);
+
+    // Capability-granted environment variables: `std::env::var` reads
+    // `wasi:cli/environment`, which the host populates from this process's
+    // capability `env = [...]` grants — so a guest sees only its granted keys
+    // (an ungranted/absent key is `null`). Surfaced to JS as `process.env`.
+    def!("__getenv", |key: String| std::env::var(key).ok());
+
+    // Web API polyfills, the raw actor API, durable storage, then the
+    // RPC/service layer.
+    let _: () = ctx.eval(WEBAPI_JS).unwrap();
+    let _: () = ctx.eval(PROCESS_JS).unwrap();
+    let _: () = ctx.eval(KV_JS).unwrap();
+    let _: () = ctx.eval(RPC_JS).unwrap();
+    // A CommonJS surface so a Bun-bundled (`--format=cjs`) service/worker can
+    // populate `module.exports`; a bare script just ignores it. Empty in the
+    // snapshot — each per-instance bundle populates it in `run`.
+    let _: () = ctx
+        .eval("globalThis.module={exports:{}};globalThis.exports=module.exports;")
+        .unwrap();
+}
+
 impl Guest for Component {
     fn run() {
         // First message is the JS bundle: either raw JS source, or `rusm-jsc`
         // precompiled QuickJS bytecode (prefixed with the `QJSB` magic). Kept as raw
         // bytes so bytecode (not UTF-8) survives.
         let bundle_bytes = actor::receive();
-
-        let rt = rquickjs::Runtime::new().unwrap();
-        let context = rquickjs::Context::full(&rt).unwrap();
-        context.with(|ctx| {
-            let g = ctx.globals();
-            // Each closure is its own type, so a macro (not a helper fn/closure) is
-            // what lets us register them uniformly.
-            macro_rules! def {
-                ($name:expr, $func:expr) => {
-                    g.set($name, Function::new(ctx.clone(), $func).unwrap())
-                        .unwrap();
-                };
-            }
-
-            // --- process / messaging ---
-            def!("__own_pid", || actor::own_pid().to_string());
-            def!("__list", || actor::list_processes()
-                .into_iter()
-                .map(|p| p.to_string())
-                .collect::<Vec<_>>());
-            def!("__send_text", |to: String, s: String| actor::send(
-                to.parse().unwrap_or(0),
-                s.as_bytes()
-            ));
-            def!("__send", js_send);
-            def!("__receive", js_receive);
-            def!("__receive_text", || String::from_utf8(actor::receive())
-                .unwrap_or_default());
-            // `receive … after`: the next message, or `undefined` on timeout.
-            def!("__receive_timeout", js_receive_timeout);
-            def!("__register", |n: String| actor::register(&n));
-            def!("__whereis", |n: String| actor::whereis(&n)
-                .map(|p| p.to_string())
-                .unwrap_or_default());
-            def!("__is_alive", |p: String| actor::is_alive(
-                p.parse().unwrap_or(0)
-            ));
-            def!("__kill", |p: String| actor::kill(p.parse().unwrap_or(0)));
-            def!("__set_label", |l: String| actor::set_label(&l));
-            def!("__spawn", js_spawn);
-            def!("__monitor", |p: String| actor::monitor(p.parse().unwrap_or(0)));
-            // Delegate guest `supervise` to the host's single native supervisor.
-            def!(
-                "__supervise",
-                |strategy: String, children: Vec<String>, max_restarts: f64, within_ms: f64| {
-                    let strategy = match strategy.as_str() {
-                        "one_for_all" => actor::SuperviseStrategy::OneForAll,
-                        "rest_for_one" => actor::SuperviseStrategy::RestForOne,
-                        _ => actor::SuperviseStrategy::OneForOne,
-                    };
-                    let _ = actor::supervise(
-                        strategy,
-                        &children,
-                        max_restarts as u32,
-                        within_ms as u32,
-                    );
-                }
-            );
-
-            // --- streams (handles are small ints carried as JS numbers) ---
-            def!("__stream_open", |to: String| actor::stream_open(
-                to.parse().unwrap_or(0)
-            )
-            .map_or(-1.0, |h| h as f64));
-            def!("__stream_write", js_stream_write);
-            def!("__stream_write_text", |h: f64, s: String| {
-                actor::stream_write(h as u64, s.as_bytes())
-            });
-            def!("__stream_close", |h: f64| actor::stream_close(h as u64));
-            def!("__stream_accept", || actor::stream_accept() as f64);
-            def!("__stream_read", js_stream_read);
-            // console output → WASI stderr (shown only if the `inherit_stdio`
-            // capability is granted; discarded for a sandboxed guest). One `write_all` of
-            // the whole line (not `eprintln!`'s piece-by-piece writes) so concurrent guest
-            // processes sharing the host stderr can't interleave mid-line.
-            def!("__print", |s: String| {
-                let _ = std::io::stderr().write_all(format!("{s}\n").as_bytes());
-            });
-            // console.* → the platform logger: the host stamps the time, this process's
-            // component name + pid, and the severity colour (gated by the node `[log]
-            // level`). The guest passes only a severity + the joined message; no name,
-            // pid, or format wiring (webapi.js maps the console methods to a level).
-            def!("__log", |level: String, message: String| {
-                let level = match level.as_str() {
-                    "error" => actor::LogLevel::Error,
-                    "warn" => actor::LogLevel::Warn,
-                    "debug" => actor::LogLevel::Debug,
-                    _ => actor::LogLevel::Info,
-                };
-                actor::log(level, &message);
-            });
-            // Whether stderr is a terminal — lets a TS logger colour only when piping
-            // wouldn't litter escape codes, matching the host's platform-log gating.
-            def!("__isatty", || std::io::stderr().is_terminal());
-            // Secure randomness for the `crypto` polyfill (webapi.js).
-            def!("__random_bytes", js_random_bytes);
-            // Outbound HTTP for the `fetch` polyfill (capability-gated at the host).
-            def!("__fetch", js_fetch);
-            def!("__fetch_read", js_fetch_read);
-            def!("__fetch_close", js_fetch_close);
-            // Durable key-value storage for the `kv` polyfill (capability-gated).
-            def!("__kv_get", js_kv_get);
-            def!("__kv_set", js_kv_set);
-            def!("__kv_delete", js_kv_delete);
-            def!("__kv_exists", js_kv_exists);
-            def!("__kv_list", js_kv_list);
-            // Native crypto primitives for the `crypto.subtle` polyfill (webapi.js).
-            def!("__crypto_digest", js_crypto_digest);
-            def!("__crypto_hmac_sign", js_crypto_hmac_sign);
-            def!("__crypto_hmac_verify", js_crypto_hmac_verify);
-            def!("__crypto_aes_gcm_encrypt", js_crypto_aes_gcm_encrypt);
-            def!("__crypto_aes_gcm_decrypt", js_crypto_aes_gcm_decrypt);
-
-            // Capability-granted environment variables: `std::env::var` reads
-            // `wasi:cli/environment`, which the host populates from this process's
-            // capability `env = [...]` grants — so a guest sees only its granted keys
-            // (an ungranted/absent key is `null`). Surfaced to JS as `process.env`.
-            def!("__getenv", |key: String| std::env::var(key).ok());
-
-            // Web API polyfills, the raw actor API, durable storage, then the
-            // RPC/service layer.
-            let _: () = ctx.eval(WEBAPI_JS).unwrap();
-            let _: () = ctx.eval(PROCESS_JS).unwrap();
-            let _: () = ctx.eval(KV_JS).unwrap();
-            let _: () = ctx.eval(RPC_JS).unwrap();
-            // A CommonJS surface so a Bun-bundled (`--format=cjs`) service/worker can
-            // populate `module.exports`; a bare script just ignores it.
-            let _: () = ctx
-                .eval("globalThis.module={exports:{}};globalThis.exports=module.exports;")
-                .unwrap();
+        with_warm(|ctx| {
             // The user's bundle, in a CommonJS module scope. Wrapping in a function
             // keeps its top-level `var`s (e.g. a bundled `var spawn`) out of the
             // global object, where a classic eval would leak them and clobber the

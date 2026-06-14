@@ -164,10 +164,16 @@ streaming** (`stream_open`/`write`/`close`/`accept`/`read` over the Wasm-free
 (module-storm bench). Cross-process **byte streaming** works from both core
 modules (raw ABI) and **components** (the `rusm:runtime` WIT world:
 `stream-open`/`write`/`close`/`accept`/`read`, handle-based). **TS/JS guests**
-(Phase 8, rusm-ts core): the **js-runner** component embeds rquickjs (QuickJS →
-`wasm32-wasip2`, ~920 KB with crypto + outbound `fetch`, built with wasi-sdk) and runs a Bun-bundled JS file,
+(Phase 8, rusm-ts core): the **js-runner** component embeds rquickjs (QuickJS,
+~1.1 MB with crypto + outbound `fetch`, built with wasi-sdk) and runs a Bun-bundled JS file,
 bridging a `Process` global to the actor world — a JS guest is a first-class
-sandboxed process (proven by test). **Phase 8 (guest ergonomics) is complete**:
+sandboxed process (proven by test). Like the js-http-runner, it is **wizer-pre-initialized**:
+the QuickJS engine + the full JS bridge (host `__*` primitives + webapi/process/kv/rpc) are
+booted once at build time and snapshotted into the image, so every spawned TS guest
+CoW-starts *warm* and only evals its own bundle — no per-spawn engine/bridge boot (built via
+`js-runner/build.sh`: wit-bindgen core module → wizer → `wasm-tools component new`; outbound
+`wasi:http` for `fetch` is a wit-bindgen import, not the `wasip2` crate, so the artifact is a
+wizer-able core module). **Phase 8 (guest ergonomics) is complete**:
 **rusm-ts** (service components = exported functions; a worker = `export default`;
 the concealed typed client `spawn<Svc>("svc")` with call / `for await`
 streaming / callbacks / `.cast`; `rusm build` Bun→cjs; app-model loader; the

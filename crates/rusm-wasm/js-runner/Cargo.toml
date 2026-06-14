@@ -1,15 +1,17 @@
 # The rusm-ts "js-runner": a component that embeds rquickjs and runs a JS bundle,
 # bridging a `Process` global to the rusm:runtime actor world. A TS app is just a
 # Bun-bundled .js the runner executes — one shared, sandboxed runner per process.
-# Built for wasm32-wasip2 (needs wasi-sdk for QuickJS's C); checked in. Regenerate:
-#   CC_wasm32_wasip2=$HOME/.wasi-sdk/bin/clang \
-#   AR_wasm32_wasip2=$HOME/.wasi-sdk/bin/llvm-ar \
-#   CFLAGS_wasm32_wasip2=--sysroot=$HOME/.wasi-sdk/share/wasi-sysroot \
-#   cargo build --target wasm32-wasip2 --release
-#   cp target/wasm32-wasip2/release/js_runner.wasm ../runtimes/js_runner.wasm
-# (run from this crate dir. The artifact lives in ../runtimes/ — a plain dir, not
-# this nested crate — so it ships in the published rusm-wasm package; embedded via
-# include_bytes!.)
+#
+# **Wizer-pre-initialized** (like js-http-runner): the QuickJS engine + the full JS bridge
+# (host `__*` primitives + webapi/process/kv/rpc) are booted ONCE at build time and
+# snapshotted into the image (`wizer_initialize`), so each spawned instance CoW-starts
+# *warm* and only evals its own bundle — the engine+bridge boot is no longer paid per
+# spawn. The build is a core module (wit-bindgen; wasi-sdk compiles QuickJS's C) → wizer →
+# `wasm-tools component new` (preview1 adapter), checked in under ../runtimes/. Outbound
+# `wasi:http` for `fetch` is a wit-bindgen import (the `process` world), not the `wasip2`
+# crate, so the artifact is a wizer-able core module. Regenerate: ./build.sh
+# (The artifact lives in ../runtimes/ — a plain dir, not this nested crate — so it ships in
+# the published rusm-wasm package; embedded via include_bytes!.)
 [workspace]
 
 [package]
@@ -28,15 +30,15 @@ lto = true
 strip = true
 
 [dependencies]
+# wit-bindgen (not the `wasip2` crate) so the build is a **core module** wizer can
+# pre-initialize. It generates both the `rusm:runtime` actor world AND the outbound
+# `wasi:http` bindings for `fetch` (blocking-read streaming: each `pollable.block()` /
+# `input-stream.blocking-read` suspends the fiber until the host has data — the guest
+# parks, never busy-polls — and the body streams chunk-by-chunk, so token-by-token LLM
+# responses arrive as sent). See ./build.sh and the header above.
 wit-bindgen = "0.46"
 rquickjs = "0.9"
 getrandom = "0.3"
-# Outbound HTTP for the `fetch` polyfill: raw `wasi:http` (same crate + blocking-read
-# pattern the js-http-runner serves with), NOT an in-guest async reactor. Each
-# `pollable.block()` / `input-stream.blocking-read` suspends the fiber until the host
-# has data — the guest parks, never busy-polls — and the body streams chunk-by-chunk
-# (no buffering, so token-by-token LLM responses arrive as sent).
-wasip2 = "1.0.3"
 # Native, constant-time crypto for the `crypto.subtle` polyfill (RustCrypto) — far
 # faster + safer than a pure-JS implementation in QuickJS, all pure-Rust (wasm-clean).
 sha1 = "0.10"
