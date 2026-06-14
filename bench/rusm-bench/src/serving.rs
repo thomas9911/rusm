@@ -197,9 +197,11 @@ pub enum CapacityKind {
 /// events/sec (SSE) and live concurrency.
 pub struct CapacityServingEngine {
     _wr: WasmRuntime,
-    // Live process count: a process per held connection or stream (plus its writer/
-    // responder) — the logical concurrency actually spun.
+    // Live concurrency source depends on `kind` (see `tick`): WS spawns a real RUSM
+    // process per connection, so `rt.process_count()` is authoritative; SSE streams over
+    // `wasi:http` (no `rt` process), so the harness's held-stream count is the measure.
     rt: Runtime,
+    kind: CapacityKind,
     server_task: JoinHandle<()>,
     load: CapacityLoad,
     last_ops: u64,
@@ -248,6 +250,7 @@ impl CapacityServingEngine {
         Self {
             _wr: wr,
             rt,
+            kind,
             server_task,
             load,
             last_ops: 0,
@@ -272,9 +275,16 @@ impl CapacityServingEngine {
             latencies_ns = latencies_ns.split_off(latencies_ns.len() - LATENCY_SAMPLE);
         }
 
-        // Real live RUSM processes (a process per connection/stream plus its writer/
-        // responder) — the logical concurrency, not the client-side connection count.
-        let process_count = self.rt.process_count() as u64;
+        // Live concurrency. WS spawns a real RUSM process per connection (plus its writer/
+        // responder), so the runtime's own count is authoritative. SSE serves
+        // instance-per-request over `wasi:http` — those streams are *not* `rt`-spawned
+        // processes, so `rt.process_count()` would read 0; the harness's held-stream count
+        // is the faithful measure (each held connection is exactly one live server-side
+        // streaming instance, 1:1).
+        let process_count = match self.kind {
+            CapacityKind::Ws => self.rt.process_count() as u64,
+            CapacityKind::Sse => self.load.alive(),
+        };
         Sample {
             ops_per_sec,
             process_count,
@@ -302,104 +312,158 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
+    /// A sustained-window probe: the minimum *nonzero* throughput and the peak live
+    /// concurrency observed. `peak_concurrency == 0` is the **"peak 0"** regression —
+    /// the engine produced throughput but never reported the connections/streams it
+    /// actually held (e.g. reading `rt.process_count()` for an SSE workload whose
+    /// streams aren't `rt`-spawned processes).
+    struct Sustained {
+        min_ops: f64,
+        peak_concurrency: u64,
+    }
+
     /// Warm up until throughput appears, then verify it's **sustained** — every tick
-    /// over a ~1.5s window keeps producing. Returns the minimum *nonzero* sustained
-    /// rate, or `0.0` if it stalled mid-run. A first-nonzero check would miss the
-    /// silent-zero class (a finite stream the harness holds as if infinite: it spikes
-    /// once, then drops to 0 **and stays there**). We catch exactly that — a permanent
-    /// stall — by failing on **two consecutive** zero ticks, while tolerating a single
-    /// transient dip (CPU starvation when the whole suite runs in parallel): a real
-    /// collapse is all-zero, so it always trips the consecutive check.
-    async fn sustained_throughput(mut tick: impl FnMut() -> Sample) -> f64 {
+    /// over a ~1.5s window keeps producing — while tracking peak concurrency throughout.
+    /// `min_ops` is the minimum *nonzero* sustained rate, or `0.0` if it stalled mid-run.
+    /// A first-nonzero check would miss the silent-zero class (a finite stream the harness
+    /// holds as if infinite: it spikes once, then drops to 0 **and stays there**). We catch
+    /// exactly that — a permanent stall — by failing on **two consecutive** zero ticks,
+    /// while tolerating a single transient dip (CPU starvation when the whole suite runs in
+    /// parallel): a real collapse is all-zero, so it always trips the consecutive check.
+    async fn sustained(mut tick: impl FnMut() -> Sample) -> Sustained {
+        let mut peak = 0u64;
         // Warm-up: engines ramp (connect, instantiate, fill the closed loop) — wait for first ops.
         let mut warmed = false;
         for _ in 0..200 {
             tokio::time::sleep(Duration::from_millis(50)).await;
-            if tick().ops_per_sec > 0.0 {
+            let s = tick();
+            peak = peak.max(s.process_count);
+            if s.ops_per_sec > 0.0 {
                 warmed = true;
                 break;
             }
         }
         if !warmed {
-            return 0.0;
+            return Sustained {
+                min_ops: 0.0,
+                peak_concurrency: peak,
+            };
         }
         let mut min = f64::INFINITY;
         let mut prev_zero = false;
         for _ in 0..30 {
             tokio::time::sleep(Duration::from_millis(50)).await;
-            let ops = tick().ops_per_sec;
-            if ops == 0.0 {
+            let s = tick();
+            peak = peak.max(s.process_count);
+            if s.ops_per_sec == 0.0 {
                 if prev_zero {
-                    return 0.0; // two ticks running with no output → a genuine stall
+                    return Sustained {
+                        min_ops: 0.0,
+                        peak_concurrency: peak,
+                    }; // two ticks running with no output → a genuine stall
                 }
                 prev_zero = true;
                 continue;
             }
             prev_zero = false;
-            min = min.min(ops);
+            min = min.min(s.ops_per_sec);
         }
-        min
+        Sustained {
+            min_ops: min,
+            peak_concurrency: peak,
+        }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
     async fn http_engine_sustains_throughput_rust() {
         let mut engine = HttpServingEngine::new(1, 4, Guest::Rust);
-        let min = sustained_throughput(|| engine.tick()).await;
+        let r = sustained(|| engine.tick()).await;
         assert!(
-            min > 0.0,
-            "per-request HTTP (RS) sustained throughput (min {min:.0}/s)"
+            r.min_ops > 0.0,
+            "per-request HTTP (RS) sustained throughput (min {:.0}/s)",
+            r.min_ops
+        );
+        assert!(
+            r.peak_concurrency > 0,
+            "per-request HTTP (RS) reported live concurrency (peak 0 = the regression)"
         );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
     async fn http_engine_sustains_throughput_ts() {
         let mut engine = HttpServingEngine::new(1, 4, Guest::Ts);
-        let min = sustained_throughput(|| engine.tick()).await;
+        let r = sustained(|| engine.tick()).await;
         assert!(
-            min > 0.0,
-            "per-request HTTP (TS) sustained throughput (min {min:.0}/s)"
+            r.min_ops > 0.0,
+            "per-request HTTP (TS) sustained throughput (min {:.0}/s)",
+            r.min_ops
+        );
+        assert!(
+            r.peak_concurrency > 0,
+            "per-request HTTP (TS) reported live concurrency (peak 0 = the regression)"
         );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn ws_engine_sustains_throughput_rust() {
         let mut engine = CapacityServingEngine::new(1, 4, CapacityKind::Ws, Guest::Rust);
-        let min = sustained_throughput(|| engine.tick()).await;
+        let r = sustained(|| engine.tick()).await;
         assert!(
-            min > 0.0,
-            "per-request WS echo (RS) sustained round-trips (min {min:.0}/s)"
+            r.min_ops > 0.0,
+            "per-request WS echo (RS) sustained round-trips (min {:.0}/s)",
+            r.min_ops
+        );
+        assert!(
+            r.peak_concurrency > 0,
+            "per-request WS echo (RS) reported live process concurrency (peak 0 = the regression)"
         );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn ws_engine_sustains_throughput_ts() {
         let mut engine = CapacityServingEngine::new(1, 4, CapacityKind::Ws, Guest::Ts);
-        let min = sustained_throughput(|| engine.tick()).await;
+        let r = sustained(|| engine.tick()).await;
         assert!(
-            min > 0.0,
-            "per-request WS echo (TS) sustained round-trips (min {min:.0}/s)"
+            r.min_ops > 0.0,
+            "per-request WS echo (TS) sustained round-trips (min {:.0}/s)",
+            r.min_ops
+        );
+        assert!(
+            r.peak_concurrency > 0,
+            "per-request WS echo (TS) reported live process concurrency (peak 0 = the regression)"
         );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn sse_engine_sustains_throughput_rust() {
-        // The exact regression that bit us: a finite SSE burst held as an
-        // infinite stream collapses to 0. The sustained window must stay nonzero.
+        // The exact regression that bit us twice: a finite SSE burst held as an infinite
+        // stream collapses to 0 (throughput), and — since SSE streams aren't `rt`-spawned
+        // processes — the live-concurrency count reads 0 ("peak 0"). Both must stay nonzero.
         let mut engine = CapacityServingEngine::new(1, 4, CapacityKind::Sse, Guest::Rust);
-        let min = sustained_throughput(|| engine.tick()).await;
+        let r = sustained(|| engine.tick()).await;
         assert!(
-            min > 0.0,
-            "per-request SSE (RS) sustained events (min {min:.0}/s)"
+            r.min_ops > 0.0,
+            "per-request SSE (RS) sustained events (min {:.0}/s)",
+            r.min_ops
+        );
+        assert!(
+            r.peak_concurrency > 0,
+            "per-request SSE (RS) reported held-stream concurrency (peak 0 = the regression)"
         );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn sse_engine_sustains_throughput_ts() {
         let mut engine = CapacityServingEngine::new(1, 4, CapacityKind::Sse, Guest::Ts);
-        let min = sustained_throughput(|| engine.tick()).await;
+        let r = sustained(|| engine.tick()).await;
         assert!(
-            min > 0.0,
-            "per-request SSE (TS) sustained events (min {min:.0}/s)"
+            r.min_ops > 0.0,
+            "per-request SSE (TS) sustained events (min {:.0}/s)",
+            r.min_ops
+        );
+        assert!(
+            r.peak_concurrency > 0,
+            "per-request SSE (TS) reported held-stream concurrency (peak 0 = the regression)"
         );
     }
 }

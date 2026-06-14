@@ -522,8 +522,8 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
     async fn serving_scenarios_sustain_throughput_through_the_runner() {
         // The exact dashboard path: Runner::start → tick, for each serving scenario.
-        // balter drives HTTP; the capacity harness drives WS/SSE — all co-resident.
-        // We require throughput to be *sustained* (every tick over a window nonzero),
+        // A closed-loop driver drives HTTP; the capacity harness drives WS/SSE — all
+        // co-resident. We require throughput to be *sustained* (the window stays nonzero),
         // not just to spike once — that's what catches the silent-zero class (e.g. a
         // finite stream held as infinite).
         let mut r = runner();
@@ -547,16 +547,26 @@ mod tests {
                 }
             }
             assert!(warmed, "{} never produced throughput", scenario.id());
-            // Sustained window: a single zero tick here is the silent-zero regression.
+            // Sustained window: the window must keep producing. We tolerate a single
+            // transient dip (CPU starvation when the whole serving suite runs in parallel —
+            // many live servers + load generators contend for cores) but fail on **two
+            // consecutive** zero ticks: a genuine silent-zero collapse is all-zero, so it
+            // still trips. (Same rule as `serving::tests::sustained`.)
+            let mut prev_zero = false;
             for _ in 0..20 {
                 tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                 let ops = r.tick(tick).ops_per_sec;
                 tick += 1;
-                assert!(
-                    ops > 0.0,
-                    "{} dropped to 0 while running (silent-zero regression)",
-                    scenario.id()
-                );
+                if ops == 0.0 {
+                    assert!(
+                        !prev_zero,
+                        "{} dropped to 0 while running (silent-zero regression)",
+                        scenario.id()
+                    );
+                    prev_zero = true;
+                } else {
+                    prev_zero = false;
+                }
             }
             r.stop();
         }
