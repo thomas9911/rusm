@@ -1572,6 +1572,81 @@ mod tests {
         );
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_ts_guest_drives_process_group_tags() {
+        // The TS twin of the Rust tag test, through the rquickjs bridge: Process.registerTag
+        // / Process.killTag, with the same gating (sandboxed killer denied → 0).
+        const TAGGER: &str = r#"
+            module.exports.default = async function () {
+                const replyTo = await Process.receiveText();
+                Process.registerTag("tsgrp");
+                Process.send(replyTo, "tagged");
+                for (;;) await Process.receive(); // stay alive in the group
+            };
+        "#;
+        const KILLER: &str = r#"
+            module.exports.default = async function () {
+                const replyTo = await Process.receiveText();
+                const tag = await Process.receiveText();
+                Process.send(replyTo, String(Process.killTag(tag)));
+            };
+        "#;
+        let rt = Runtime::new();
+        let wr = WasmRuntime::new(rt.clone()).unwrap();
+
+        // Spawn a JS guest under `caps` (bundle is message 1), hand it a reply-to collector
+        // then any extra messages, and return its handle + a receiver for its reply.
+        let drive = |bundle: &str, caps: crate::Capabilities, then: &[&[u8]]| {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            let collector = rt.spawn(move |mut ctx| async move {
+                let _ = tx.send(ctx.recv().await.message().unwrap());
+            });
+            let g = wr.spawn_js_with(bundle.as_bytes().to_vec(), caps);
+            rt.send(g.pid(), collector.pid().raw().to_string().into_bytes());
+            for m in then {
+                rt.send(g.pid(), m.to_vec());
+            }
+            (g, rx)
+        };
+
+        // Two TS taggers join "tsgrp" via Process.registerTag; each acks "tagged".
+        let (t1, r1) = drive(TAGGER, CapabilityProfile::Sandboxed.capabilities(), &[]);
+        let (t2, r2) = drive(TAGGER, CapabilityProfile::Sandboxed.capabilities(), &[]);
+        assert_eq!(r1.await.unwrap(), b"tagged");
+        assert_eq!(r2.await.unwrap(), b"tagged");
+        assert_eq!(
+            rt.whereis_tag("tsgrp").len(),
+            2,
+            "TS registerTag reached the runtime"
+        );
+
+        // A sandboxed killer is denied (process-control) → 0; the group survives.
+        let (denied, rd) = drive(
+            KILLER,
+            CapabilityProfile::Sandboxed.capabilities(),
+            &[b"tsgrp"],
+        );
+        assert_eq!(
+            rd.await.unwrap(),
+            b"0",
+            "killTag denied without process-control"
+        );
+        denied.join().await;
+        assert_eq!(rt.whereis_tag("tsgrp").len(), 2);
+
+        // A process-control killer terminates the whole group.
+        let (killer, rk) = drive(
+            KILLER,
+            CapabilityProfile::Trusted.capabilities(),
+            &[b"tsgrp"],
+        );
+        assert_eq!(rk.await.unwrap(), b"2", "killTag terminated both members");
+        killer.join().await;
+        t1.join().await;
+        t2.join().await;
+        assert!(rt.whereis_tag("tsgrp").is_empty());
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_rust_guest_receives_with_a_timeout_via_rusm_rs() {
         // The ergonomic `rusm-rs` helpers: `receive_bytes_timeout` (idle → None)

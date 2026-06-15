@@ -542,6 +542,15 @@ fn boot_bridge(ctx: Ctx<'_>) {
     ));
     def!("__kill", |p: String| actor::kill(p.parse().unwrap_or(0)));
     def!("__set_label", |l: String| actor::set_label(&l));
+    // Process-group tags (Erlang `pg`): self-tag (unprivileged); `__kill_tag` is gated at
+    // the host by process-control. Pids cross as decimal strings, like `__list`.
+    def!("__register_tag", |t: String| actor::register_tag(&t));
+    def!("__unregister_tag", |t: String| actor::unregister_tag(&t));
+    def!("__whereis_tag", |t: String| actor::whereis_tag(&t)
+        .into_iter()
+        .map(|p| p.to_string())
+        .collect::<Vec<_>>());
+    def!("__kill_tag", |t: String| actor::kill_tag(&t) as f64);
     def!("__spawn", js_spawn);
     def!("__monitor", |p: String| actor::monitor(
         p.parse().unwrap_or(0)

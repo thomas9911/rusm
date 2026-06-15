@@ -43,6 +43,14 @@ export interface ProcessApi {
   isAlive(pid: bigint | string): boolean;
   kill(pid: bigint | string): boolean;
   setLabel(label: string): void;
+  /** Join **this** process to a process-group `tag` (Erlang's `pg`); released on exit. */
+  registerTag(tag: string): void;
+  /** Leave a process-group `tag` this process holds. */
+  unregisterTag(tag: string): void;
+  /** Live members (pids) of process-group `tag`. */
+  whereisTag(tag: string): bigint[];
+  /** Terminate every live member of `tag`; returns the count. Needs `process-control`. */
+  killTag(tag: string): number;
   openStream(to: bigint | string): Stream | null;
   acceptStream(): Stream;
 }

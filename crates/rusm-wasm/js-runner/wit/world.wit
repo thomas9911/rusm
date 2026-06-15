@@ -65,6 +65,13 @@ interface actor {
     /// Attach a human-readable label for observability (`Process.set_label/1`).
     set-label: func(label: string);
 
+    /// Process-group tags (Erlang's `pg`) — matches the host + rusm-rs interface. Self-tag
+    /// (unprivileged); `kill-tag` is process-control-gated.
+    register-tag: func(tag: string);
+    unregister-tag: func(tag: string);
+    whereis-tag: func(tag: string) -> list<pid>;
+    kill-tag: func(tag: string) -> u32;
+
     /// Severity for [`log`] — maps to `console.{error,warn,log/info,debug}` (TS) and the
     /// `log` crate's levels (Rust).
     enum log-level {
