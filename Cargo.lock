@@ -2486,7 +2486,7 @@ dependencies = [
 
 [[package]]
 name = "rusm-cli"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "anyhow",
  "dotenvy",
@@ -2560,7 +2560,7 @@ dependencies = [
 
 [[package]]
 name = "rusm-node"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "futures-util",
  "rusm-otp",
@@ -2583,7 +2583,7 @@ dependencies = [
 
 [[package]]
 name = "rusm-otp"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "dashmap 6.2.1",
  "futures-util",
@@ -2593,7 +2593,7 @@ dependencies = [
 
 [[package]]
 name = "rusm-wasm"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "anyhow",
  "futures-util",

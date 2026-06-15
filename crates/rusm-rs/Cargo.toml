@@ -5,7 +5,7 @@
 # wasm32-wasip2; excluded from the host workspace (wasm-only).
 [package]
 name = "rusm-rs"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 license = "MIT"
 description = "The ergonomic Rust guest crate for RUSM: the actor API, services, and components."
@@ -23,4 +23,4 @@ log = "0.4"
 # the host (rusm-wasm) so the two can never drift. `version` (alongside `path`) is what
 # crates.io resolves against once published; the path is used in-repo.
 rusm-wire = { path = "../rusm-wire", version = "0.1.0" }
-rusm-rs-macros = { path = "../rusm-rs-macros", version = "0.1.0" }
+rusm-rs-macros = { path = "../rusm-rs-macros", version = "0.1.1" }
