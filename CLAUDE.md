@@ -109,7 +109,8 @@ model** (`wasmtime-wasi`; `bridges/{wasip1,wasip2,wasip3}.rs` over a shared core
 The component linker wires **WASI p2 and p3** — both `@0.2.0` and `@0.3.0`
 interfaces on one `WasiHost`, with the async component model enabled. It exposes a `rusm:runtime` **WIT actor world** (`bindgen!`): a
 component calls `self`/`send`/`receive`/`receive-timeout` (Erlang's `receive …
-after`)/`list`/`info`/`kill`/`register`/`whereis`/`set-label`/`spawn`/`monitor`/
+after`)/`list`/`info`/`kill`/`register`/`whereis`/`set-label`/`register-tag`/`kill-tag`
+(Erlang `pg` process groups — self-tag + capability-gated group kill)/`spawn`/`monitor`/
 `supervise`/`stream-*`/`kv-*`/`log` — the Erlang `Process` API + durable storage +
 platform logging, callable from Rust or TS guests — backed by thin calls into `rusm-otp`
 (and `rusm-kv` for `kv-*`). **Logging is a platform primitive**: a guest's `console.*`
