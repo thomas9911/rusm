@@ -120,6 +120,30 @@ pub fn set_label(label: &str) {
     actor::set_label(label);
 }
 
+/// Join **this** process to a process-group `tag` (Erlang's `pg`): a process may hold many
+/// tags, a tag many processes. Released automatically on exit. Unprivileged — a process
+/// tags itself; terminating a group is the gated [`kill_tag`].
+pub fn register_tag(tag: &str) {
+    actor::register_tag(tag);
+}
+
+/// Leave a process-group `tag` this process holds.
+pub fn unregister_tag(tag: &str) {
+    actor::unregister_tag(tag);
+}
+
+/// Live members of process-group `tag` (empty if unknown).
+pub fn whereis_tag(tag: &str) -> Vec<Pid> {
+    actor::whereis_tag(tag).into_iter().map(Pid).collect()
+}
+
+/// Terminate every live member of process-group `tag`; returns how many were killed.
+/// Capability-gated by `process-control` (it terminates other processes); returns `0` if
+/// denied or the tag is empty.
+pub fn kill_tag(tag: &str) -> u32 {
+    actor::kill_tag(tag)
+}
+
 /// Whether a pid is still alive (subject to capability).
 pub fn is_alive(pid: Pid) -> bool {
     actor::is_alive(pid.0)
