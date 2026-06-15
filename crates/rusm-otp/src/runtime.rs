@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::fmt;
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -176,6 +176,10 @@ struct ProcessEntry {
     monitors: Vec<Monitor>,
     /// Names this process holds in the registry, released on exit.
     names: Vec<String>,
+    /// Process-group tags this process holds (Erlang `pg`-style: one pid → many tags,
+    /// one tag → many pids), released on exit alongside `names`. Empty (zero-allocation)
+    /// until the process tags itself, so an untagged process costs nothing here.
+    tags: Vec<String>,
     /// A reason staged by a link cascade, so this process exits with the
     /// *original* reason rather than the bare `Killed` an abort would imply.
     exit_reason: Option<ExitReason>,
@@ -232,6 +236,11 @@ struct Inner {
     // name -> pid. Sharded too, so name lookups never take a global lock the way
     // Lunatic's single `RwLock<HashMap>` registry does.
     registry: DashMap<String, u64>,
+    // tag -> live pids: Erlang `pg`-style process groups (one pid → many tags, one tag →
+    // many pids). Sharded like the registry; touched only by register/unregister/whereis/
+    // kill_tag and the exit reaper — never by spawn or message passing, so the hot path is
+    // unaffected. Members are removed on exit (see `deregister`).
+    tags: DashMap<String, HashSet<u64>>,
     /// Bumped on each labeled-process state change (a spawn gets named, or a labeled
     /// process exits) **only when logging is at `Info`+** — the census task reads it to
     /// tell "something happened since my last line" from "nothing changed". This is what
@@ -325,6 +334,14 @@ impl Inner {
 
         for name in &entry.names {
             self.registry.remove(name);
+        }
+        // Release process-group memberships the same way (and drop a group that empties),
+        // so `whereis_tag`/`kill_tag` only ever see live members.
+        for tag in &entry.tags {
+            if let Some(mut members) = self.tags.get_mut(tag) {
+                members.remove(&pid.0);
+            }
+            self.tags.remove_if(tag, |_, members| members.is_empty());
         }
         for monitor in entry.monitors {
             self.deliver(
@@ -459,6 +476,7 @@ impl Runtime {
                 links,
                 monitors: Vec::new(),
                 names: Vec::new(),
+                tags: Vec::new(),
                 exit_reason: None,
                 label: None,
                 depth: depth.clone(),
@@ -816,6 +834,72 @@ impl Runtime {
         }
     }
 
+    /// Adds `pid` to the process group `tag` (Erlang's `pg`): one pid may hold many tags,
+    /// one tag many pids. Idempotent. Returns `false` only if `pid` is not alive. Tags are
+    /// released automatically on exit (like names) or via
+    /// [`unregister_tag`](Runtime::unregister_tag). This is the unprivileged half of the
+    /// mechanism — a process tags *itself*; terminating a group ([`kill_tag`]) is where
+    /// capability gating belongs, at the host ABI.
+    ///
+    /// [`kill_tag`]: Runtime::kill_tag
+    pub fn register_tag(&self, tag: impl Into<String>, pid: Pid) -> bool {
+        let tag = tag.into();
+        // Same lock order as `register` — process entry first, then the tag map — so the
+        // two can never deadlock against each other or against teardown.
+        let Some(mut entry) = self.inner.table.get_mut(&pid.0) else {
+            return false;
+        };
+        if self
+            .inner
+            .tags
+            .entry(tag.clone())
+            .or_default()
+            .insert(pid.0)
+        {
+            entry.tags.push(tag);
+        }
+        true
+    }
+
+    /// Live members of process group `tag` (empty if unknown). The set holds only live
+    /// pids — [`deregister`](Inner::deregister) removes a process from its tags on exit.
+    pub fn whereis_tag(&self, tag: &str) -> Vec<Pid> {
+        self.inner.tags.get(tag).map_or_else(Vec::new, |members| {
+            members.iter().map(|&id| Pid(id)).collect()
+        })
+    }
+
+    /// Removes `pid` from process group `tag`. Returns `false` if it wasn't a member.
+    pub fn unregister_tag(&self, tag: &str, pid: Pid) -> bool {
+        // Drop the tag-map lock before touching the table (mirrors `unregister`), so the
+        // order here is never tag→table to clash with `register_tag`'s table→tag.
+        let removed = self
+            .inner
+            .tags
+            .get_mut(tag)
+            .is_some_and(|mut members| members.remove(&pid.0));
+        if removed {
+            if let Some(mut entry) = self.inner.table.get_mut(&pid.0) {
+                entry.tags.retain(|held| held != tag);
+            }
+            self.inner
+                .tags
+                .remove_if(tag, |_, members| members.is_empty());
+        }
+        removed
+    }
+
+    /// Terminates every live member of process group `tag`; returns how many were killed
+    /// (`0` for an unknown/empty tag). Each member deregisters on exit, emptying the group
+    /// — Erlang's "kill the whole `pg`". Members are snapshotted first, so one that dies
+    /// concurrently is simply not counted, never double-killed.
+    pub fn kill_tag(&self, tag: &str) -> usize {
+        self.whereis_tag(tag)
+            .into_iter()
+            .filter(|&pid| self.kill(pid))
+            .count()
+    }
+
     /// Sends to a registered `name`. Returns `false` if the name is unknown (or
     /// its process just died).
     pub fn send_named(&self, name: &str, message: Message) -> bool {
@@ -1090,6 +1174,69 @@ mod tests {
         let pid = handle.pid();
         handle.join().await; // finished and reaped — mailbox is gone
         assert!(!rt.send(pid, b"too late".to_vec()));
+    }
+
+    #[tokio::test]
+    async fn tags_group_processes_and_kill_tag_terminates_only_that_group() {
+        let rt = Runtime::new();
+        let a = rt.spawn(|_| std::future::pending::<()>());
+        let b = rt.spawn(|_| std::future::pending::<()>());
+        let c = rt.spawn(|_| std::future::pending::<()>());
+        assert!(rt.register_tag("plan:1", a.pid()));
+        assert!(rt.register_tag("plan:1", b.pid()));
+        assert!(rt.register_tag("plan:2", c.pid())); // a separate group
+
+        let mut g1 = rt.whereis_tag("plan:1");
+        g1.sort_by_key(|p| p.0);
+        let mut want = vec![a.pid(), b.pid()];
+        want.sort_by_key(|p| p.0);
+        assert_eq!(g1, want);
+        assert_eq!(rt.whereis_tag("plan:2"), vec![c.pid()]);
+        assert!(rt.whereis_tag("nope").is_empty());
+
+        assert_eq!(rt.kill_tag("plan:1"), 2);
+        a.join().await;
+        b.join().await;
+        assert!(rt.whereis_tag("plan:1").is_empty()); // members reaped to empty
+        assert!(rt.is_alive(c.pid())); // the other group is untouched
+        assert_eq!(rt.whereis_tag("plan:2"), vec![c.pid()]);
+        c.kill();
+        c.join().await;
+    }
+
+    #[tokio::test]
+    async fn a_dead_process_leaves_its_tags_and_cannot_be_re_tagged() {
+        let rt = Runtime::new();
+        let a = rt.spawn(|_| std::future::pending::<()>());
+        let pid = a.pid();
+        assert!(rt.register_tag("g", pid));
+        a.kill();
+        a.join().await;
+        assert!(rt.whereis_tag("g").is_empty()); // membership reaped on exit
+        assert!(!rt.register_tag("g", pid)); // a dead pid can't be tagged
+    }
+
+    #[tokio::test]
+    async fn a_process_holds_multiple_tags_and_can_leave_one() {
+        let rt = Runtime::new();
+        let a = rt.spawn(|_| std::future::pending::<()>());
+        assert!(rt.register_tag("x", a.pid()));
+        assert!(rt.register_tag("y", a.pid()));
+        assert!(rt.register_tag("x", a.pid())); // idempotent re-tag
+        assert_eq!(rt.whereis_tag("x"), vec![a.pid()]);
+
+        assert!(rt.unregister_tag("x", a.pid()));
+        assert!(rt.whereis_tag("x").is_empty()); // emptied group is dropped
+        assert_eq!(rt.whereis_tag("y"), vec![a.pid()]); // the other tag is intact
+        assert!(!rt.unregister_tag("x", a.pid())); // already gone
+        a.kill();
+        a.join().await;
+    }
+
+    #[tokio::test]
+    async fn kill_tag_of_an_unknown_group_is_zero() {
+        let rt = Runtime::new();
+        assert_eq!(rt.kill_tag("ghost"), 0);
     }
 
     #[tokio::test]
