@@ -1511,6 +1511,67 @@ mod tests {
         );
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_rust_guest_drives_process_group_tags() {
+        // End-to-end through the guest ABI: a guest tags itself (register_tag), the host
+        // sees the group, and kill_tag terminates it — gated by process-control.
+        const RS_TAG: &[u8] = include_bytes!("../../tests/fixtures/rs_tag.wasm");
+        let rt = Runtime::new();
+        let wr = WasmRuntime::new(rt.clone()).unwrap();
+        let pre = wr
+            .prepare_component(&wr.compile_component(RS_TAG).unwrap(), "run")
+            .unwrap();
+
+        // Spawn a guest under `caps`, hand it a reply-to collector + a command, and return
+        // its handle plus a receiver for its single reply.
+        let drive = |caps: crate::Capabilities, cmd: &str| {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            let collector = rt.spawn(move |mut ctx| async move {
+                let _ = tx.send(ctx.recv().await.message().unwrap());
+            });
+            let g = wr.spawn_component_with(&pre, caps);
+            rt.send(g.pid(), collector.pid().raw().to_string().into_bytes());
+            rt.send(g.pid(), cmd.as_bytes().to_vec());
+            (g, rx)
+        };
+
+        // Two taggers join "grp" via the guest's register_tag; each acks "tagged".
+        let (t1, r1) = drive(CapabilityProfile::Sandboxed.capabilities(), "tag grp");
+        let (t2, r2) = drive(CapabilityProfile::Sandboxed.capabilities(), "tag grp");
+        assert_eq!(r1.await.unwrap(), b"tagged");
+        assert_eq!(r2.await.unwrap(), b"tagged");
+        assert_eq!(
+            rt.whereis_tag("grp").len(),
+            2,
+            "the guests' register_tag reached the runtime through the ABI"
+        );
+
+        // A sandboxed killer cannot terminate the group (process-control denied) → 0.
+        let (denied, rd) = drive(CapabilityProfile::Sandboxed.capabilities(), "kill grp");
+        assert_eq!(
+            rd.await.unwrap(),
+            b"0",
+            "kill_tag is denied without process-control"
+        );
+        denied.join().await;
+        assert_eq!(
+            rt.whereis_tag("grp").len(),
+            2,
+            "the group survived the denied kill"
+        );
+
+        // A process-control killer terminates the whole group.
+        let (killer, rk) = drive(CapabilityProfile::Trusted.capabilities(), "kill grp");
+        assert_eq!(rk.await.unwrap(), b"2", "kill_tag terminated both members");
+        killer.join().await;
+        t1.join().await;
+        t2.join().await;
+        assert!(
+            rt.whereis_tag("grp").is_empty(),
+            "killed members are reaped out of the group"
+        );
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_rust_guest_receives_with_a_timeout_via_rusm_rs() {
         // The ergonomic `rusm-rs` helpers: `receive_bytes_timeout` (idle → None)
