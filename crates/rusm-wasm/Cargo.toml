@@ -1,6 +1,6 @@
 [package]
 name = "rusm-wasm"
-version = "0.1.3"
+version = "0.1.4"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -13,7 +13,7 @@ description = "The Wasmtime backend for RUSM: each process runs as an isolated W
 exclude = ["tests/"]
 
 [dependencies]
-rusm-otp = { path = "../rusm-otp", version = "0.1.1" }
+rusm-otp = { path = "../rusm-otp", version = "0.1.2" }
 # Shared log palette/format — the host stamps + colours guest `log` lines through it, so
 # they read as one stream with the platform's own lifecycle logs.
 rusm-logfmt = { path = "../rusm-logfmt", version = "0.1.0" }
