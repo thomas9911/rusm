@@ -1,7 +1,7 @@
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::fmt;
 use std::future::Future;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -9,6 +9,7 @@ use dashmap::mapref::entry::Entry;
 use dashmap::DashMap;
 use futures_util::future::{AbortHandle, Abortable};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
+use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 
 use crate::exit::{ExitReason, MonitorRef};
@@ -175,6 +176,10 @@ struct ProcessEntry {
     monitors: Vec<Monitor>,
     /// Names this process holds in the registry, released on exit.
     names: Vec<String>,
+    /// Process-group tags this process holds (Erlang `pg`-style: one pid → many tags,
+    /// one tag → many pids), released on exit alongside `names`. Empty (zero-allocation)
+    /// until the process tags itself, so an untagged process costs nothing here.
+    tags: Vec<String>,
     /// A reason staged by a link cascade, so this process exits with the
     /// *original* reason rather than the bare `Killed` an abort would imply.
     exit_reason: Option<ExitReason>,
@@ -231,9 +236,44 @@ struct Inner {
     // name -> pid. Sharded too, so name lookups never take a global lock the way
     // Lunatic's single `RwLock<HashMap>` registry does.
     registry: DashMap<String, u64>,
+    // tag -> live pids: Erlang `pg`-style process groups (one pid → many tags, one tag →
+    // many pids). Sharded like the registry; touched only by register/unregister/whereis/
+    // kill_tag and the exit reaper — never by spawn or message passing, so the hot path is
+    // unaffected. Members are removed on exit (see `deregister`).
+    tags: DashMap<String, HashSet<u64>>,
+    /// Bumped on each labeled-process state change (a spawn gets named, or a labeled
+    /// process exits) **only when logging is at `Info`+** — the census task reads it to
+    /// tell "something happened since my last line" from "nothing changed". This is what
+    /// distinguishes a real spawn+exit (gen advanced twice, net-same counts → *still*
+    /// logged) from a quiet node (gen unchanged → silent).
+    census_gen: AtomicU64,
+    /// Woken alongside [`census_gen`] so the census task parks at zero cost while idle;
+    /// a `Notify` holds at most one permit, so a burst coalesces to a single wake.
+    census_dirty: Notify,
+    /// Guards the single census task — spawned once, on the first `Info`+ enable.
+    census_started: AtomicBool,
 }
 
+/// How long the census task lets process-state changes settle before emitting one
+/// summary — a burst (e.g. a fan-out of workers) coalesces into a single line.
+const CENSUS_DEBOUNCE: Duration = Duration::from_secs(2);
+
 impl Inner {
+    /// Whether the configured platform-log level is at least `level` — the single
+    /// place the level rank is compared (the gate behind every lifecycle line).
+    fn wants(&self, level: crate::LogLevel) -> bool {
+        self.log_level.load(Ordering::Relaxed) >= level as u8
+    }
+
+    /// Record a labeled-process state change for the census: advance the generation
+    /// (so the task knows something happened, even if counts net out unchanged) and wake
+    /// it. The single place both spawn-naming and exit funnel through; call only when
+    /// [`wants`](Self::wants)`(Info)` (the caller gates it, so off pays nothing).
+    fn note_census(&self) {
+        self.census_gen.fetch_add(1, Ordering::Relaxed);
+        self.census_dirty.notify_one();
+    }
+
     /// Enqueues `item` into `to`'s mailbox if it is still alive, keeping the
     /// mailbox-depth counter in step. The single place a mailbox grows — used by
     /// user sends, stream sends, and system deliveries alike. Returns whether it
@@ -283,14 +323,25 @@ impl Inner {
         // named — so the stream is signal, not internal plumbing. `for_exit` is the one
         // place that maps a reason to its level (crash → Error, kill → Warn, clean → Info).
         if let Some(label) = &entry.label {
-            let want = crate::LogLevel::for_exit(reason);
-            if self.log_level.load(Ordering::Relaxed) >= want as u8 {
+            if self.wants(crate::LogLevel::for_exit(reason)) {
                 crate::lifecycle::log_exit(pid, label, reason);
+            }
+            // A labeled process ended → census activity; recount (debounced).
+            if self.wants(crate::LogLevel::Info) {
+                self.note_census();
             }
         }
 
         for name in &entry.names {
             self.registry.remove(name);
+        }
+        // Release process-group memberships the same way (and drop a group that empties),
+        // so `whereis_tag`/`kill_tag` only ever see live members.
+        for tag in &entry.tags {
+            if let Some(mut members) = self.tags.get_mut(tag) {
+                members.remove(&pid.0);
+            }
+            self.tags.remove_if(tag, |_, members| members.is_empty());
         }
         for monitor in entry.monitors {
             self.deliver(
@@ -425,6 +476,7 @@ impl Runtime {
                 links,
                 monitors: Vec::new(),
                 names: Vec::new(),
+                tags: Vec::new(),
                 exit_reason: None,
                 label: None,
                 depth: depth.clone(),
@@ -527,6 +579,10 @@ impl Runtime {
         match self.inner.table.get_mut(&pid.0) {
             Some(mut entry) => {
                 entry.label = Some(label.into());
+                // A newly-named (or relabeled) process is census activity.
+                if self.inner.wants(crate::LogLevel::Info) {
+                    self.inner.note_census();
+                }
                 true
             }
             None => false,
@@ -538,12 +594,69 @@ impl Runtime {
     /// explicitly (`rusm.toml [log] level = "debug"`). Set once at startup.
     pub fn set_log_level(&self, level: crate::LogLevel) {
         self.inner.log_level.store(level as u8, Ordering::Relaxed);
+        // Bring up the single census task the first time logging reaches `Info`+ (the
+        // level its per-component summary belongs to). It then parks on `census_dirty`
+        // at no cost, and quiets itself if the level later drops (no more notifies).
+        // Needs a Tokio runtime — skip cleanly if set outside one (e.g. a sync test).
+        if level >= crate::LogLevel::Info
+            && tokio::runtime::Handle::try_current().is_ok()
+            && !self.inner.census_started.swap(true, Ordering::AcqRel)
+        {
+            self.spawn_census_loop();
+        }
+    }
+
+    /// The per-component live-process **census**: every labeled process grouped by its
+    /// label. Unlabeled processes (internal plumbing — responders, writers) are omitted,
+    /// so the summary is about *components*. The single source of the count, shared by
+    /// the census task and tests.
+    pub(crate) fn census_counts(&self) -> BTreeMap<String, u64> {
+        let mut counts = BTreeMap::new();
+        for entry in self.inner.table.iter() {
+            if let Some(label) = &entry.label {
+                *counts.entry(label.clone()).or_insert(0) += 1;
+            }
+        }
+        counts
+    }
+
+    /// One census step: emit a line iff a labeled-process change has happened **since the
+    /// last emission** — tracked by the change generation, not by comparing counts, so a
+    /// real spawn+exit (gen advanced, counts net-same) still logs, while a quiet stretch
+    /// (gen unchanged) stays silent. `printed` is the caller's last-logged generation,
+    /// updated in place. Returns whether a line was emitted. Factored out of the task so
+    /// the decision is testable without the debounce timing.
+    fn census_step(&self, printed: &mut u64) -> bool {
+        let gen = self.inner.census_gen.load(Ordering::Relaxed);
+        if gen == *printed {
+            return false; // nothing happened since the last line — no duplicate
+        }
+        crate::lifecycle::log_census(&self.census_counts());
+        *printed = gen;
+        true
+    }
+
+    /// The debounced census task — one per runtime, started on the first `Info`+ enable.
+    /// It parks until a change, lets the burst settle for [`CENSUS_DEBOUNCE`], then takes
+    /// one [`census_step`](Self::census_step). Idle ⇒ parked (zero cost); a spawn storm ⇒
+    /// one line; a spawn+exit ⇒ one line (activity, even if counts net out). `printed` is
+    /// task-local — no shared state.
+    fn spawn_census_loop(&self) {
+        let runtime = self.clone();
+        tokio::spawn(async move {
+            let mut printed = 0u64;
+            loop {
+                runtime.inner.census_dirty.notified().await;
+                tokio::time::sleep(CENSUS_DEBOUNCE).await;
+                runtime.census_step(&mut printed);
+            }
+        });
     }
 
     /// Whether the configured level would log an event at `event` — a spawn site checks
     /// this before building a label/detail it would otherwise not need (off path free).
     pub fn wants_log(&self, event: crate::LogLevel) -> bool {
-        self.inner.log_level.load(Ordering::Relaxed) >= event as u8
+        self.inner.wants(event)
     }
 
     /// Emit a platform `spawn` log line (`detail` = the process's effective
@@ -721,6 +834,72 @@ impl Runtime {
         }
     }
 
+    /// Adds `pid` to the process group `tag` (Erlang's `pg`): one pid may hold many tags,
+    /// one tag many pids. Idempotent. Returns `false` only if `pid` is not alive. Tags are
+    /// released automatically on exit (like names) or via
+    /// [`unregister_tag`](Runtime::unregister_tag). This is the unprivileged half of the
+    /// mechanism — a process tags *itself*; terminating a group ([`kill_tag`]) is where
+    /// capability gating belongs, at the host ABI.
+    ///
+    /// [`kill_tag`]: Runtime::kill_tag
+    pub fn register_tag(&self, tag: impl Into<String>, pid: Pid) -> bool {
+        let tag = tag.into();
+        // Same lock order as `register` — process entry first, then the tag map — so the
+        // two can never deadlock against each other or against teardown.
+        let Some(mut entry) = self.inner.table.get_mut(&pid.0) else {
+            return false;
+        };
+        if self
+            .inner
+            .tags
+            .entry(tag.clone())
+            .or_default()
+            .insert(pid.0)
+        {
+            entry.tags.push(tag);
+        }
+        true
+    }
+
+    /// Live members of process group `tag` (empty if unknown). The set holds only live
+    /// pids — [`deregister`](Inner::deregister) removes a process from its tags on exit.
+    pub fn whereis_tag(&self, tag: &str) -> Vec<Pid> {
+        self.inner.tags.get(tag).map_or_else(Vec::new, |members| {
+            members.iter().map(|&id| Pid(id)).collect()
+        })
+    }
+
+    /// Removes `pid` from process group `tag`. Returns `false` if it wasn't a member.
+    pub fn unregister_tag(&self, tag: &str, pid: Pid) -> bool {
+        // Drop the tag-map lock before touching the table (mirrors `unregister`), so the
+        // order here is never tag→table to clash with `register_tag`'s table→tag.
+        let removed = self
+            .inner
+            .tags
+            .get_mut(tag)
+            .is_some_and(|mut members| members.remove(&pid.0));
+        if removed {
+            if let Some(mut entry) = self.inner.table.get_mut(&pid.0) {
+                entry.tags.retain(|held| held != tag);
+            }
+            self.inner
+                .tags
+                .remove_if(tag, |_, members| members.is_empty());
+        }
+        removed
+    }
+
+    /// Terminates every live member of process group `tag`; returns how many were killed
+    /// (`0` for an unknown/empty tag). Each member deregisters on exit, emptying the group
+    /// — Erlang's "kill the whole `pg`". Members are snapshotted first, so one that dies
+    /// concurrently is simply not counted, never double-killed.
+    pub fn kill_tag(&self, tag: &str) -> usize {
+        self.whereis_tag(tag)
+            .into_iter()
+            .filter(|&pid| self.kill(pid))
+            .count()
+    }
+
     /// Sends to a registered `name`. Returns `false` if the name is unknown (or
     /// its process just died).
     pub fn send_named(&self, name: &str, message: Message) -> bool {
@@ -828,6 +1007,80 @@ mod tests {
         assert!(rt.wants_log(crate::LogLevel::Debug));
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn census_counts_live_processes_by_label() {
+        let rt = Runtime::new();
+        // Four parked processes; label two "alpha", one "beta", leave one unlabeled.
+        let mut procs: Vec<_> = (0..4)
+            .map(|_| {
+                rt.spawn(|mut ctx| async move {
+                    loop {
+                        ctx.recv().await;
+                    }
+                })
+            })
+            .collect();
+        assert!(rt.set_label(procs[0].pid(), "alpha"));
+        assert!(rt.set_label(procs[1].pid(), "alpha"));
+        assert!(rt.set_label(procs[2].pid(), "beta"));
+
+        let counts = rt.census_counts();
+        assert_eq!(counts.get("alpha"), Some(&2));
+        assert_eq!(counts.get("beta"), Some(&1));
+        assert_eq!(counts.len(), 2, "the unlabeled process is excluded");
+
+        // When a labeled process exits, the census reflects it.
+        let victim = procs.remove(1); // an "alpha"
+        victim.kill();
+        victim.join().await;
+        assert_eq!(
+            rt.census_counts().get("alpha"),
+            Some(&1),
+            "a drained process drops out of the census"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn census_step_emits_on_activity_not_on_count_equality() {
+        let rt = Runtime::new();
+        // The change generation only advances at Info+ (the level the census lives at).
+        rt.set_log_level(crate::LogLevel::Info);
+        fn park(mut ctx: Context) -> impl std::future::Future<Output = ()> {
+            async move {
+                loop {
+                    ctx.recv().await;
+                }
+            }
+        }
+        let mut printed = 0u64;
+
+        // A labeled spawn is activity → emits; nothing since → no duplicate.
+        let a = rt.spawn(park);
+        rt.set_label(a.pid(), "alpha");
+        assert!(rt.census_step(&mut printed), "a labeled spawn emits");
+        assert!(
+            !rt.census_step(&mut printed),
+            "nothing happened since → no duplicate line"
+        );
+
+        // A spawn+exit nets back to the same counts ({alpha:1}) — but processes genuinely
+        // changed, so it must STILL emit (the case a count-comparison dedup wrongly hid).
+        let b = rt.spawn(park);
+        rt.set_label(b.pid(), "beta");
+        b.kill();
+        b.join().await;
+        assert_eq!(
+            rt.census_counts().get("alpha"),
+            Some(&1),
+            "counts netted back to the pre-spawn picture"
+        );
+        assert!(
+            rt.census_step(&mut printed),
+            "a net-zero spawn+exit is real activity → emits"
+        );
+        assert!(!rt.census_step(&mut printed), "and then stays quiet");
+    }
+
     #[tokio::test]
     async fn a_process_receives_a_message_sent_to_its_pid() {
         let rt = Runtime::new();
@@ -921,6 +1174,69 @@ mod tests {
         let pid = handle.pid();
         handle.join().await; // finished and reaped — mailbox is gone
         assert!(!rt.send(pid, b"too late".to_vec()));
+    }
+
+    #[tokio::test]
+    async fn tags_group_processes_and_kill_tag_terminates_only_that_group() {
+        let rt = Runtime::new();
+        let a = rt.spawn(|_| std::future::pending::<()>());
+        let b = rt.spawn(|_| std::future::pending::<()>());
+        let c = rt.spawn(|_| std::future::pending::<()>());
+        assert!(rt.register_tag("plan:1", a.pid()));
+        assert!(rt.register_tag("plan:1", b.pid()));
+        assert!(rt.register_tag("plan:2", c.pid())); // a separate group
+
+        let mut g1 = rt.whereis_tag("plan:1");
+        g1.sort_by_key(|p| p.0);
+        let mut want = vec![a.pid(), b.pid()];
+        want.sort_by_key(|p| p.0);
+        assert_eq!(g1, want);
+        assert_eq!(rt.whereis_tag("plan:2"), vec![c.pid()]);
+        assert!(rt.whereis_tag("nope").is_empty());
+
+        assert_eq!(rt.kill_tag("plan:1"), 2);
+        a.join().await;
+        b.join().await;
+        assert!(rt.whereis_tag("plan:1").is_empty()); // members reaped to empty
+        assert!(rt.is_alive(c.pid())); // the other group is untouched
+        assert_eq!(rt.whereis_tag("plan:2"), vec![c.pid()]);
+        c.kill();
+        c.join().await;
+    }
+
+    #[tokio::test]
+    async fn a_dead_process_leaves_its_tags_and_cannot_be_re_tagged() {
+        let rt = Runtime::new();
+        let a = rt.spawn(|_| std::future::pending::<()>());
+        let pid = a.pid();
+        assert!(rt.register_tag("g", pid));
+        a.kill();
+        a.join().await;
+        assert!(rt.whereis_tag("g").is_empty()); // membership reaped on exit
+        assert!(!rt.register_tag("g", pid)); // a dead pid can't be tagged
+    }
+
+    #[tokio::test]
+    async fn a_process_holds_multiple_tags_and_can_leave_one() {
+        let rt = Runtime::new();
+        let a = rt.spawn(|_| std::future::pending::<()>());
+        assert!(rt.register_tag("x", a.pid()));
+        assert!(rt.register_tag("y", a.pid()));
+        assert!(rt.register_tag("x", a.pid())); // idempotent re-tag
+        assert_eq!(rt.whereis_tag("x"), vec![a.pid()]);
+
+        assert!(rt.unregister_tag("x", a.pid()));
+        assert!(rt.whereis_tag("x").is_empty()); // emptied group is dropped
+        assert_eq!(rt.whereis_tag("y"), vec![a.pid()]); // the other tag is intact
+        assert!(!rt.unregister_tag("x", a.pid())); // already gone
+        a.kill();
+        a.join().await;
+    }
+
+    #[tokio::test]
+    async fn kill_tag_of_an_unknown_group_is_zero() {
+        let rt = Runtime::new();
+        assert_eq!(rt.kill_tag("ghost"), 0);
     }
 
     #[tokio::test]

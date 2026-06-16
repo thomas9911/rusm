@@ -312,7 +312,10 @@ curl http://127.0.0.1:8080/
 TypeScript serving uses **web standards** (the `#[handlers]` macro is Rust-only). TS
 HTTP/SSE components run on the embedded rquickjs **js-http-runner** — a raw-`wasi:http`
 component instantiated per request — and need **no `[serve.routes]` table**; the component
-*is* the handler.
+*is* the handler. The runner is **wizer-pre-initialized**: the QuickJS engine + the Web-API
+bridge are booted once at build time and snapshotted into the image, so each per-request
+instance starts *warm* and only evaluates your bundle + runs `fetch` (≈8× the cold
+per-request rate) — still a fresh, isolated instance per request, never resident.
 
 **HTTP** — `export default` a request → response function:
 

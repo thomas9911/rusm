@@ -17,15 +17,15 @@ async fn main() {
             let node = Node::new(runner_config(&cfg));
             // Apply the startup profile (sets the spawn tuning, reflected in frames).
             let _ = node.apply(ClientCommand::SetResourceProfile {
-                profile: cfg.profile.id().to_string(),
+                profile: cfg.node.profile.id().to_string(),
             });
             println!(
                 "rusm-bench node listening on ws://{} (profile: {}, {} Hz)",
-                cfg.listen,
-                cfg.profile.id(),
-                cfg.ticks_per_second
+                cfg.node.listen,
+                cfg.node.profile.id(),
+                cfg.node.ticks_per_second
             );
-            if let Err(error) = serve(&cfg.listen, node).await {
+            if let Err(error) = serve(&cfg.node.listen, node).await {
                 eprintln!("server error: {error}");
                 std::process::exit(1);
             }
@@ -64,10 +64,10 @@ fn load_config(args: &[String]) -> NodeConfig {
         std::process::exit(2);
     });
     if let Some(listen) = flag(args, "--listen") {
-        cfg.listen = listen;
+        cfg.node.listen = listen;
     }
     if let Some(profile) = flag(args, "--profile") {
-        cfg.profile = ResourceProfile::from_id(&profile).unwrap_or_else(|| {
+        cfg.node.profile = ResourceProfile::from_id(&profile).unwrap_or_else(|| {
             eprintln!("unknown profile: {profile} (use light | balanced | max)");
             std::process::exit(2);
         });

@@ -56,7 +56,7 @@ export function App() {
     <div className="app">
       <header className="topbar">
         <div className="brand">
-          <span className="brand-mark">◇</span> RUSM <span className="brand-sub">live</span>
+          <span className="brand-mark">◇</span> RUSM <span className="brand-sub">· Live Benchmarks</span>
         </div>
         <div className="status">
           <span className={`dot ${state.connected ? 'dot--up' : 'dot--down'}`} />
@@ -70,7 +70,6 @@ export function App() {
       <div className="layout">
         <aside className="sidebar">
           <h2>Scenarios</h2>
-          <ScenarioMenu scenarios={state.scenarios} active={selected} onPick={setSelected} />
           <div className="controls">
             <button className="run" disabled={!selected || !state.connected} onClick={startRun}>
               Run
@@ -85,6 +84,7 @@ export function App() {
               </button>
             )}
           </div>
+          <ScenarioMenu scenarios={state.scenarios} active={selected} onPick={setSelected} />
         </aside>
 
         <main className="main">

@@ -103,10 +103,43 @@ impl RoutedHttpServer {
         }
     }
 
+    /// Serve one request and log it: `rusm http|sse <method> <path> → <status>` (gated by
+    /// `[log] level`). SSE is told apart from plain HTTP by the response content-type,
+    /// since both ride this path.
+    async fn handle(
+        &self,
+        req: hyper::Request<hyper::body::Incoming>,
+    ) -> Result<Response<ResBody>, Infallible> {
+        let method = req.method().as_str().to_string();
+        let path = req
+            .uri()
+            .path_and_query()
+            .map(|pq| pq.as_str())
+            .unwrap_or("/")
+            .to_string();
+        let response = match self.dispatch(req).await {
+            Ok(response) => response,
+            Err(never) => match never {}, // dispatch is infallible
+        };
+        let proto = if super::access::is_event_stream(response.headers()) {
+            "sse"
+        } else {
+            "http"
+        };
+        super::access::log_request(
+            &self.spawner.rt,
+            proto,
+            &method,
+            &path,
+            response.status().as_u16(),
+        );
+        Ok(response)
+    }
+
     /// Resolve one request, spawn the matched handler fresh, dispatch the action over
     /// the `"fetch"` wire, and turn the reply into the response. Always `Ok` — every
     /// failure becomes a status code.
-    async fn handle(
+    async fn dispatch(
         &self,
         req: hyper::Request<hyper::body::Incoming>,
     ) -> Result<Response<ResBody>, Infallible> {

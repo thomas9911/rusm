@@ -139,8 +139,38 @@ impl HttpServer {
         Ok(())
     }
 
-    /// Run one request through a fresh component instance and return its response.
+    /// Serve one request and log it: `rusm http|sse <method> <path> → <status>` (gated by
+    /// `[log] level`). SSE is told from plain HTTP by the response content-type; a handler
+    /// that errors before producing a response logs as `502`.
     async fn handle(
+        &self,
+        req: hyper::Request<hyper::body::Incoming>,
+    ) -> Result<hyper::Response<HyperOutgoingBody>> {
+        let method = req.method().as_str().to_string();
+        let path = req
+            .uri()
+            .path_and_query()
+            .map(|pq| pq.as_str())
+            .unwrap_or("/")
+            .to_string();
+        let result = self.dispatch(req).await;
+        let (status, proto) = match &result {
+            Ok(r) => (
+                r.status().as_u16(),
+                if super::access::is_event_stream(r.headers()) {
+                    "sse"
+                } else {
+                    "http"
+                },
+            ),
+            Err(_) => (502, "http"),
+        };
+        super::access::log_request(&self.spawner.rt, proto, &method, &path, status);
+        result
+    }
+
+    /// Run one request through a fresh component instance and return its response.
+    async fn dispatch(
         &self,
         req: hyper::Request<hyper::body::Incoming>,
     ) -> Result<hyper::Response<HyperOutgoingBody>> {

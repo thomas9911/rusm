@@ -6,6 +6,7 @@
 //! each version in its own file keeps `lib.rs` lean (the project's file-splitting
 //! convention) and makes "add a WASI version" a local change.
 
+pub(crate) mod access;
 pub(crate) mod http;
 pub(crate) mod routed;
 pub(crate) mod wasip1;

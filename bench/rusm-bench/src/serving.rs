@@ -4,17 +4,21 @@
 //! (WS via `ws_server` / `ws_server_js`). This is the shape RUSM standardizes serving
 //! on: stateless, isolated, no head-of-line blocking by construction.
 //!
-//! Load is generated through the shared [`rusm_loadtest`] path — **balter** for HTTP
-//! request rate, the connection-capacity harness for WS/SSE held connections.
+//! Load is generated through the shared [`rusm_loadtest`] path — a **closed-loop** driver
+//! for HTTP (a fixed set of outstanding requests, sized to the guest's capacity), the
+//! connection-capacity harness for WS/SSE held connections. Closed-loop self-limits to the
+//! real ceiling, so the live tile holds rock-steady and never floods or collapses,
+//! whatever the guest's speed. (The *fair* out-of-process headline still uses balter's
+//! rate sweep — a deliberate max-rate measurement, [`rusm_loadtest::http::run`].)
 //!
 //! These remain **co-resident live demos** (load + server in the node process); the
-//! *fair* headline numbers come from the out-of-process `rusm-loadtest` binary
-//! against a real `rusm serve` port. No leaks: the balter window loop self-exits on
-//! stop, `CapacityLoad` stops on drop, and each engine `shutdown()`s its runtime.
+//! *fair* headline numbers come from the out-of-process `rusm-loadtest` binary against a
+//! real `rusm serve` port. No leaks: the closed-loop driver stops on `stop`, `CapacityLoad`
+//! stops on drop, and each engine `shutdown()`s its runtime.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use rusm_loadtest::capacity::{CapacityLoad, Protocol};
 use rusm_otp::Runtime;
@@ -41,9 +45,6 @@ const TS_SSE: &str = include_str!("../../../crates/rusm-wasm/tests/fixtures/ts_s
 
 /// At most this many latency samples surfaced per tick.
 const LATENCY_SAMPLE: usize = 64;
-/// Each balter window completes before the next, so its workers shut down cleanly
-/// (balter only aborts workers on completion, never on drop) — no task leak.
-const HTTP_WINDOW: Duration = Duration::from_secs(3);
 
 /// Trusted's resources (roomy heap) but no inherited stdio: serving guests don't
 /// print, and this keeps any on-disconnect traps off the node's stderr.
@@ -64,15 +65,13 @@ fn bind_loopback() -> (std::net::SocketAddr, TcpListener) {
     (addr, listener)
 }
 
-/// **HTTP throughput** (Rust or TS), driven live by **balter** against a **per-request**
-/// HTTP handler (a fresh sandboxed instance per request). The tile charts the achieved
-/// req/s and request latency.
+/// **HTTP throughput** (Rust or TS): a **closed-loop** driver holds a fixed set of
+/// outstanding requests (sized to the guest's capacity) against a **per-request** HTTP
+/// handler (a fresh sandboxed instance per request), so the tile holds steady at the real
+/// ceiling and never collapses. Charts the achieved req/s and request latency.
 pub struct HttpServingEngine {
     // Held for the run; dropping it stops the server's epoch ticker + reclaims processes.
     _wr: WasmRuntime,
-    // The live process count — the per-request instances currently in flight (the
-    // logical concurrency actually spun), reported on the tile.
-    rt: Runtime,
     server_task: JoinHandle<()>,
     stop: Arc<AtomicBool>,
     lat_rx: UnboundedReceiver<u64>,
@@ -99,29 +98,33 @@ impl HttpServingEngine {
             Guest::Ts => tokio::spawn(wr.http_server_js(TS_HTTP.to_string(), caps).serve(listener)),
         };
 
-        // A steady, sustainable offered rate scaled by the profile; balter paces it
-        // and seeds enough concurrency to hit it without a long ramp.
-        let target_tps = (workers as u32 * 5_000).clamp(8_000, 50_000);
-        let concurrency = (workers * 12).clamp(24, 256);
+        // Closed-loop load: a fixed set of outstanding requests, sized to the guest's real
+        // capacity. The Rust path instantiates a component per request cheaply, so it
+        // sustains a high concurrency. The (wizer-warmed) TS path is CPU-bound, so its
+        // throughput ceiling is at the scheduler parallelism — concurrency = cores. Past
+        // that, more in-flight requests don't raise req/s, they only add queue latency
+        // (measured on an 8-core box: 8→~5.3k/s @1.4ms, 16→~5.6k/s @2.6ms, 32→~6k/s
+        // @5.7ms), so there's no reason to chart more processes than the cores can run.
+        // Closed-loop self-limits to the true capacity: it holds **rock-steady** at the
+        // ceiling and can never flood or collapse to zero (no open-loop rate chase, no
+        // balter global state to wedge across scenario switches).
+        let concurrency = match guest {
+            Guest::Rust => (workers * 12).clamp(24, 256),
+            Guest::Ts => scheduler_count.clamp(4, 32),
+        };
 
         rusm_loadtest::http::set_target(format!("http://{addr}/"));
         rusm_loadtest::http::reset_counter();
         let lat_rx = rusm_loadtest::http::install_latency_sink();
 
         let stop = Arc::new(AtomicBool::new(false));
-        // Bounded-window loop: each window completes (clean balter shutdown), then we
-        // re-check `stop`. Detached on purpose — never aborted mid-window (that would
-        // leak balter's workers); it self-exits within one window of `stop`.
-        let loop_stop = Arc::clone(&stop);
-        tokio::spawn(async move {
-            while !loop_stop.load(Ordering::Relaxed) {
-                let _ = rusm_loadtest::http::run_window(target_tps, concurrency, HTTP_WINDOW).await;
-            }
-        });
+        tokio::spawn(rusm_loadtest::http::run_closed_loop(
+            concurrency,
+            Arc::clone(&stop),
+        ));
 
         Self {
             _wr: wr,
-            rt,
             server_task,
             stop,
             lat_rx,
@@ -150,9 +153,13 @@ impl HttpServingEngine {
             latencies_ns = latencies_ns.split_off(latencies_ns.len() - LATENCY_SAMPLE);
         }
 
-        // The charted concurrency is the real live RUSM process count — the
-        // per-request handler instances currently in flight.
-        let process_count = self.rt.process_count() as u64;
+        // The charted concurrency: the per-request handler instances running concurrently
+        // right now. HTTP throughput serves on the `wasi:http` path (a wasm instance per
+        // request on a Tokio task, not an `rt.spawn`'d process), so `rt.process_count()`
+        // is structurally 0 here; the real count is the load's in-flight requests (one
+        // in-flight request == one handler instance in flight). Small by nature — at this
+        // rate each handler lives microseconds, so only a handful overlap (Little's law).
+        let process_count = rusm_loadtest::http::inflight();
         Sample {
             ops_per_sec,
             process_count,
@@ -190,9 +197,11 @@ pub enum CapacityKind {
 /// events/sec (SSE) and live concurrency.
 pub struct CapacityServingEngine {
     _wr: WasmRuntime,
-    // Live process count: a process per held connection or stream (plus its writer/
-    // responder) — the logical concurrency actually spun.
+    // Live concurrency source depends on `kind` (see `tick`): WS spawns a real RUSM
+    // process per connection, so `rt.process_count()` is authoritative; SSE streams over
+    // `wasi:http` (no `rt` process), so the harness's held-stream count is the measure.
     rt: Runtime,
+    kind: CapacityKind,
     server_task: JoinHandle<()>,
     load: CapacityLoad,
     last_ops: u64,
@@ -241,6 +250,7 @@ impl CapacityServingEngine {
         Self {
             _wr: wr,
             rt,
+            kind,
             server_task,
             load,
             last_ops: 0,
@@ -265,9 +275,16 @@ impl CapacityServingEngine {
             latencies_ns = latencies_ns.split_off(latencies_ns.len() - LATENCY_SAMPLE);
         }
 
-        // Real live RUSM processes (a process per connection/stream plus its writer/
-        // responder) — the logical concurrency, not the client-side connection count.
-        let process_count = self.rt.process_count() as u64;
+        // Live concurrency. WS spawns a real RUSM process per connection (plus its writer/
+        // responder), so the runtime's own count is authoritative. SSE serves
+        // instance-per-request over `wasi:http` — those streams are *not* `rt`-spawned
+        // processes, so `rt.process_count()` would read 0; the harness's held-stream count
+        // is the faithful measure (each held connection is exactly one live server-side
+        // streaming instance, 1:1).
+        let process_count = match self.kind {
+            CapacityKind::Ws => self.rt.process_count() as u64,
+            CapacityKind::Sse => self.load.alive(),
+        };
         Sample {
             ops_per_sec,
             process_count,
@@ -293,105 +310,160 @@ impl Drop for CapacityServingEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
+
+    /// A sustained-window probe: the minimum *nonzero* throughput and the peak live
+    /// concurrency observed. `peak_concurrency == 0` is the **"peak 0"** regression —
+    /// the engine produced throughput but never reported the connections/streams it
+    /// actually held (e.g. reading `rt.process_count()` for an SSE workload whose
+    /// streams aren't `rt`-spawned processes).
+    struct Sustained {
+        min_ops: f64,
+        peak_concurrency: u64,
+    }
 
     /// Warm up until throughput appears, then verify it's **sustained** — every tick
-    /// over a ~1.5s window keeps producing. Returns the minimum *nonzero* sustained
-    /// rate, or `0.0` if it stalled mid-run. A first-nonzero check would miss the
-    /// silent-zero class (a finite stream the harness holds as if infinite: it spikes
-    /// once, then drops to 0 **and stays there**). We catch exactly that — a permanent
-    /// stall — by failing on **two consecutive** zero ticks, while tolerating a single
-    /// transient dip (CPU starvation when the whole suite runs in parallel): a real
-    /// collapse is all-zero, so it always trips the consecutive check.
-    async fn sustained_throughput(mut tick: impl FnMut() -> Sample) -> f64 {
-        // Warm-up: engines ramp (connect, instantiate, balter seed) — wait for first ops.
+    /// over a ~1.5s window keeps producing — while tracking peak concurrency throughout.
+    /// `min_ops` is the minimum *nonzero* sustained rate, or `0.0` if it stalled mid-run.
+    /// A first-nonzero check would miss the silent-zero class (a finite stream the harness
+    /// holds as if infinite: it spikes once, then drops to 0 **and stays there**). We catch
+    /// exactly that — a permanent stall — by failing on **two consecutive** zero ticks,
+    /// while tolerating a single transient dip (CPU starvation when the whole suite runs in
+    /// parallel): a real collapse is all-zero, so it always trips the consecutive check.
+    async fn sustained(mut tick: impl FnMut() -> Sample) -> Sustained {
+        let mut peak = 0u64;
+        // Warm-up: engines ramp (connect, instantiate, fill the closed loop) — wait for first ops.
         let mut warmed = false;
         for _ in 0..200 {
             tokio::time::sleep(Duration::from_millis(50)).await;
-            if tick().ops_per_sec > 0.0 {
+            let s = tick();
+            peak = peak.max(s.process_count);
+            if s.ops_per_sec > 0.0 {
                 warmed = true;
                 break;
             }
         }
         if !warmed {
-            return 0.0;
+            return Sustained {
+                min_ops: 0.0,
+                peak_concurrency: peak,
+            };
         }
         let mut min = f64::INFINITY;
         let mut prev_zero = false;
         for _ in 0..30 {
             tokio::time::sleep(Duration::from_millis(50)).await;
-            let ops = tick().ops_per_sec;
-            if ops == 0.0 {
+            let s = tick();
+            peak = peak.max(s.process_count);
+            if s.ops_per_sec == 0.0 {
                 if prev_zero {
-                    return 0.0; // two ticks running with no output → a genuine stall
+                    return Sustained {
+                        min_ops: 0.0,
+                        peak_concurrency: peak,
+                    }; // two ticks running with no output → a genuine stall
                 }
                 prev_zero = true;
                 continue;
             }
             prev_zero = false;
-            min = min.min(ops);
+            min = min.min(s.ops_per_sec);
         }
-        min
+        Sustained {
+            min_ops: min,
+            peak_concurrency: peak,
+        }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
     async fn http_engine_sustains_throughput_rust() {
         let mut engine = HttpServingEngine::new(1, 4, Guest::Rust);
-        let min = sustained_throughput(|| engine.tick()).await;
+        let r = sustained(|| engine.tick()).await;
         assert!(
-            min > 0.0,
-            "per-request HTTP (RS) sustained throughput (min {min:.0}/s)"
+            r.min_ops > 0.0,
+            "per-request HTTP (RS) sustained throughput (min {:.0}/s)",
+            r.min_ops
+        );
+        assert!(
+            r.peak_concurrency > 0,
+            "per-request HTTP (RS) reported live concurrency (peak 0 = the regression)"
         );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
     async fn http_engine_sustains_throughput_ts() {
         let mut engine = HttpServingEngine::new(1, 4, Guest::Ts);
-        let min = sustained_throughput(|| engine.tick()).await;
+        let r = sustained(|| engine.tick()).await;
         assert!(
-            min > 0.0,
-            "per-request HTTP (TS) sustained throughput (min {min:.0}/s)"
+            r.min_ops > 0.0,
+            "per-request HTTP (TS) sustained throughput (min {:.0}/s)",
+            r.min_ops
+        );
+        assert!(
+            r.peak_concurrency > 0,
+            "per-request HTTP (TS) reported live concurrency (peak 0 = the regression)"
         );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn ws_engine_sustains_throughput_rust() {
         let mut engine = CapacityServingEngine::new(1, 4, CapacityKind::Ws, Guest::Rust);
-        let min = sustained_throughput(|| engine.tick()).await;
+        let r = sustained(|| engine.tick()).await;
         assert!(
-            min > 0.0,
-            "per-request WS echo (RS) sustained round-trips (min {min:.0}/s)"
+            r.min_ops > 0.0,
+            "per-request WS echo (RS) sustained round-trips (min {:.0}/s)",
+            r.min_ops
+        );
+        assert!(
+            r.peak_concurrency > 0,
+            "per-request WS echo (RS) reported live process concurrency (peak 0 = the regression)"
         );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn ws_engine_sustains_throughput_ts() {
         let mut engine = CapacityServingEngine::new(1, 4, CapacityKind::Ws, Guest::Ts);
-        let min = sustained_throughput(|| engine.tick()).await;
+        let r = sustained(|| engine.tick()).await;
         assert!(
-            min > 0.0,
-            "per-request WS echo (TS) sustained round-trips (min {min:.0}/s)"
+            r.min_ops > 0.0,
+            "per-request WS echo (TS) sustained round-trips (min {:.0}/s)",
+            r.min_ops
+        );
+        assert!(
+            r.peak_concurrency > 0,
+            "per-request WS echo (TS) reported live process concurrency (peak 0 = the regression)"
         );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn sse_engine_sustains_throughput_rust() {
-        // The exact regression that bit us: a finite SSE burst held as an
-        // infinite stream collapses to 0. The sustained window must stay nonzero.
+        // The exact regression that bit us twice: a finite SSE burst held as an infinite
+        // stream collapses to 0 (throughput), and — since SSE streams aren't `rt`-spawned
+        // processes — the live-concurrency count reads 0 ("peak 0"). Both must stay nonzero.
         let mut engine = CapacityServingEngine::new(1, 4, CapacityKind::Sse, Guest::Rust);
-        let min = sustained_throughput(|| engine.tick()).await;
+        let r = sustained(|| engine.tick()).await;
         assert!(
-            min > 0.0,
-            "per-request SSE (RS) sustained events (min {min:.0}/s)"
+            r.min_ops > 0.0,
+            "per-request SSE (RS) sustained events (min {:.0}/s)",
+            r.min_ops
+        );
+        assert!(
+            r.peak_concurrency > 0,
+            "per-request SSE (RS) reported held-stream concurrency (peak 0 = the regression)"
         );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn sse_engine_sustains_throughput_ts() {
         let mut engine = CapacityServingEngine::new(1, 4, CapacityKind::Sse, Guest::Ts);
-        let min = sustained_throughput(|| engine.tick()).await;
+        let r = sustained(|| engine.tick()).await;
         assert!(
-            min > 0.0,
-            "per-request SSE (TS) sustained events (min {min:.0}/s)"
+            r.min_ops > 0.0,
+            "per-request SSE (TS) sustained events (min {:.0}/s)",
+            r.min_ops
+        );
+        assert!(
+            r.peak_concurrency > 0,
+            "per-request SSE (TS) reported held-stream concurrency (peak 0 = the regression)"
         );
     }
 }

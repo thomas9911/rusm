@@ -5,20 +5,48 @@ use serde::Deserialize;
 
 use crate::profile::ResourceProfile;
 
+/// The `[node]` table — the node's own settings, distinct from the listeners it serves
+/// (`[[serve]]`) and the components it hosts (`[components.<name>]`). Missing keys (or an
+/// absent `[node]` table) fall back to these defaults.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct NodeSettings {
+    /// The attach/observer WebSocket endpoint — what `rusm attach` and the live dashboard
+    /// connect to (`rusm node start` opens it). Not a serving port: each `[[serve]]`
+    /// listener binds its own.
+    pub listen: String,
+    /// Starting resource profile (`light` / `balanced` / `max`).
+    pub profile: ResourceProfile,
+    /// Observer snapshot/sampling rate in Hz.
+    pub ticks_per_second: u32,
+    /// Path to the node's durable key-value store (one embedded file the node owns,
+    /// resolved relative to the app directory). Omitted → no store: a component
+    /// granted `storage` then gets an error if it uses `kv`. Set it to give resident
+    /// state somewhere to survive a restart.
+    pub store: Option<String>,
+}
+
+impl Default for NodeSettings {
+    fn default() -> Self {
+        Self {
+            listen: "127.0.0.1:4000".to_string(),
+            profile: ResourceProfile::default(),
+            ticks_per_second: 20,
+            store: None,
+        }
+    }
+}
+
 /// Node startup configuration, loaded from `rusm.toml`.
 ///
 /// Layering: these are *defaults* — the CLI applies any flags on top. Missing
 /// fields fall back to the values below; unknown fields are an error (catch typos
 /// early rather than silently ignore them).
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct NodeConfig {
-    /// WebSocket listen address.
-    pub listen: String,
-    /// Starting resource profile (`light` / `balanced` / `max`).
-    pub profile: ResourceProfile,
-    /// Snapshot/sampling rate in Hz.
-    pub ticks_per_second: u32,
+    /// The node's own settings — the `[node]` table (endpoint, profile, store, …).
+    pub node: NodeSettings,
     /// Components the app hosts, declared as `[components.<name>]` tables keyed by
     /// name (consistent with `[capabilities.<name>]`). Every entry is registered so
     /// a route or a sibling can `spawn` it by name; one marked `resident = true` is
@@ -27,30 +55,25 @@ pub struct NodeConfig {
     /// Servers to host, declared as `[[serve]]` tables. Each loads a component
     /// from `./wasm/<name>.{wasm,js}` and serves it on a real TCP port over HTTP
     /// (also SSE) or WebSocket — what `rusm serve` runs and a load driver hits.
-    #[serde(default)]
     pub serve: Vec<ServeSpec>,
     /// Custom capability profiles, declared as `[capabilities.<name>]` tables. A
     /// component's `capability = "<name>"` resolves to one of these first, then to
     /// the built-in profiles (`sandboxed` / `network-client` / `trusted`).
     pub capabilities: HashMap<String, CapabilitySpec>,
-    /// Path to the node's durable key-value store (one embedded file the node owns,
-    /// resolved relative to the app directory). Omitted → no store: a component
-    /// granted `storage` then gets an error if it uses `kv`. Set it to give resident
-    /// state somewhere to survive a restart.
-    #[serde(default)]
-    pub store: Option<String>,
     /// Platform logging, the `[log]` table — explicit, off by default.
-    #[serde(default)]
     pub log: LogConfig,
 }
 
-/// The `[log]` table: opt-in **platform lifecycle logging**. Off by default; set
-/// `level` to see the runtime spawn/exit/crash processes (coloured, `component#pid`).
+/// The `[log]` table: opt-in **platform logging**, off by default. One node-wide `level`
+/// gates three streams at once — the runtime's lifecycle log (spawn/exit/crash), guest
+/// logs (`console.*` / the `log` crate), and the serving access log (HTTP/SSE/WS) — all
+/// coloured and tagged `rusm` or `component#pid`.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LogConfig {
-    /// `off` (default) / `error` (crashes) / `warn` (+ kills) / `info` (+ clean exits)
-    /// / `debug` (+ every spawn). Anything unrecognised is `off`.
+    /// `off` (default) / `error` (crashes) / `warn` (+ kills) / `info` (+ clean exits,
+    /// guest info logs, every served request) / `debug` (+ every spawn, guest debug).
+    /// Anything unrecognised is `off`.
     #[serde(default)]
     pub level: String,
 }
@@ -244,21 +267,6 @@ impl ServeSpec {
     }
 }
 
-impl Default for NodeConfig {
-    fn default() -> Self {
-        Self {
-            listen: "127.0.0.1:4000".to_string(),
-            profile: ResourceProfile::default(),
-            ticks_per_second: 20,
-            components: BTreeMap::new(),
-            serve: Vec::new(),
-            capabilities: HashMap::new(),
-            store: None,
-            log: LogConfig::default(),
-        }
-    }
-}
-
 impl NodeConfig {
     pub fn from_toml(text: &str) -> Result<Self, toml::de::Error> {
         toml::from_str(text)
@@ -292,10 +300,10 @@ mod tests {
     fn load_reads_file_defaults_when_optional_and_errors_when_required() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("rusm.toml");
-        std::fs::write(&path, "listen = \"0.0.0.0:9000\"\n").unwrap();
+        std::fs::write(&path, "[node]\nlisten = \"0.0.0.0:9000\"\n").unwrap();
         // An explicit, valid file is parsed.
         assert_eq!(
-            NodeConfig::load(&path, true).unwrap().listen,
+            NodeConfig::load(&path, true).unwrap().node.listen,
             "0.0.0.0:9000"
         );
         // A missing optional file → defaults; a missing required file → error.
@@ -314,22 +322,23 @@ mod tests {
     fn parses_a_full_file() {
         let cfg = NodeConfig::from_toml(
             r#"
+            [node]
             listen = "0.0.0.0:9000"
             profile = "max"
             ticks_per_second = 60
             "#,
         )
         .unwrap();
-        assert_eq!(cfg.listen, "0.0.0.0:9000");
-        assert_eq!(cfg.profile, ResourceProfile::Max);
-        assert_eq!(cfg.ticks_per_second, 60);
+        assert_eq!(cfg.node.listen, "0.0.0.0:9000");
+        assert_eq!(cfg.node.profile, ResourceProfile::Max);
+        assert_eq!(cfg.node.ticks_per_second, 60);
     }
 
     #[test]
     fn missing_fields_fall_back_to_defaults() {
-        let cfg = NodeConfig::from_toml("profile = \"light\"").unwrap();
-        assert_eq!(cfg.profile, ResourceProfile::Light);
-        assert_eq!(cfg.listen, NodeConfig::default().listen); // default kept
+        let cfg = NodeConfig::from_toml("[node]\nprofile = \"light\"").unwrap();
+        assert_eq!(cfg.node.profile, ResourceProfile::Light);
+        assert_eq!(cfg.node.listen, NodeConfig::default().node.listen); // default kept
     }
 
     #[test]
@@ -338,8 +347,16 @@ mod tests {
     }
 
     #[test]
+    fn bare_node_keys_are_rejected_now_they_live_under_node() {
+        // The pre-`[node]` layout (bare top-level keys) is no longer valid — a clear
+        // error, not a silent ignore, so an un-migrated rusm.toml fails fast.
+        assert!(NodeConfig::from_toml("listen = \"a:1\"").is_err());
+        assert!(NodeConfig::from_toml("store = \"x.redb\"").is_err());
+    }
+
+    #[test]
     fn invalid_profile_is_an_error() {
-        assert!(NodeConfig::from_toml("profile = \"turbo\"").is_err());
+        assert!(NodeConfig::from_toml("[node]\nprofile = \"turbo\"").is_err());
     }
 
     #[test]
@@ -473,6 +490,7 @@ mod tests {
     fn parses_store_and_storage_capability() {
         let cfg = NodeConfig::from_toml(
             r#"
+            [node]
             store = "data/app.redb"
 
             [capabilities.stateful]
@@ -481,10 +499,10 @@ mod tests {
             "#,
         )
         .unwrap();
-        assert_eq!(cfg.store.as_deref(), Some("data/app.redb"));
+        assert_eq!(cfg.node.store.as_deref(), Some("data/app.redb"));
         assert_eq!(cfg.capabilities["stateful"].allow_storage, Some(true));
         // Default: no store configured.
-        assert!(NodeConfig::from_toml("").unwrap().store.is_none());
+        assert!(NodeConfig::from_toml("").unwrap().node.store.is_none());
     }
 
     #[test]

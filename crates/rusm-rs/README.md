@@ -3,7 +3,8 @@
 Write a [RUSM](https://github.com/archan937/rusm) **component** in Rust — a sandboxed,
 supervised WASM process on an Erlang-style actor runtime. `rusm-rs` wraps the raw
 `wit-bindgen` actor bindings into a small, idiomatic API (`Pid`, `send`/`receive`,
-`spawn`, the registry, `Stream`), adds process-per-request HTTP/SSE handlers
+`spawn`, the registry, process groups (`register_tag`/`kill_tag`), `Stream`), adds
+process-per-request HTTP/SSE handlers
 (`#[rusm_rs::handlers]`) and per-connection WS (`ws::serve`), and hides the
 component boilerplate behind `#[rusm_rs::main]`. The TypeScript twin is the
 [`rusm-ts`](https://www.npmjs.com/package/rusm-ts) npm package — they share one JSON wire and

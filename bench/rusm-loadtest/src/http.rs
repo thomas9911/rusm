@@ -32,6 +32,21 @@ pub use balter::prelude::RunStatistics;
 /// Cumulative successful requests — a live counter the dashboard reads each tick to
 /// chart the *achieved* rate smoothly, independent of balter's window boundaries.
 static ACHIEVED: AtomicU64 = AtomicU64::new(0);
+/// Live in-flight requests — bumped while a request is outstanding (sent, awaiting a
+/// response) and dropped when it returns. A live **gauge** (current concurrency), not a
+/// cumulative count. The HTTP-throughput scenario serves on the `wasi:http` per-request
+/// path, whose instances aren't `rusm-otp` processes (so `rt.process_count()` is 0); this
+/// is the real concurrency the load is actually driving, which the dashboard charts.
+static INFLIGHT: AtomicU64 = AtomicU64::new(0);
+
+/// RAII guard: decrements [`INFLIGHT`] on every exit path of a request (incl. the `?`
+/// error returns), so the gauge can never leak.
+struct InFlightGuard;
+impl Drop for InFlightGuard {
+    fn drop(&mut self) {
+        INFLIGHT.fetch_sub(1, Ordering::Relaxed);
+    }
+}
 /// Optional live latency sink (installed by the dashboard engine; `None` for the CLI
 /// sweep, which reads latency from balter's `RunStatistics` instead).
 static LAT_TX: OnceLock<RwLock<Option<UnboundedSender<u64>>>> = OnceLock::new();
@@ -41,6 +56,13 @@ const LIVE_LAT_EVERY: u64 = 64;
 /// Total successful requests since the last [`reset_counter`].
 pub fn achieved() -> u64 {
     ACHIEVED.load(Ordering::Relaxed)
+}
+
+/// Requests currently in flight — the count of handler instances running concurrently on
+/// the server right now (each in-flight request is one `wasi:http` instance handling it).
+/// This is the HTTP-throughput scenario's live concurrency / "processes" reading.
+pub fn inflight() -> u64 {
+    INFLIGHT.load(Ordering::Relaxed)
 }
 
 /// Zeroes the live counter (call when (re)starting a live driver).
@@ -223,6 +245,15 @@ async fn http_load() {
 
 #[transaction]
 async fn get_root() -> Result<(), String> {
+    one_request().await
+}
+
+/// One GET against the target: send, drain the body (returns the keep-alive socket to the
+/// pool), record latency + the achieved/in-flight counters. Shared by balter's transaction
+/// (the CLI sweep) and the closed-loop driver (the dashboard).
+async fn one_request() -> Result<(), String> {
+    INFLIGHT.fetch_add(1, Ordering::Relaxed);
+    let _inflight = InFlightGuard; // decremented on return (incl. the `?` paths below)
     let started = Instant::now();
     let resp = client()
         .get(target())
@@ -230,7 +261,6 @@ async fn get_root() -> Result<(), String> {
         .await
         .map_err(|e| e.to_string())?;
     let ok = resp.status().is_success();
-    // Drain the body so the connection returns to the keep-alive pool for reuse.
     let _ = resp.bytes().await.map_err(|e| e.to_string())?;
     if !ok {
         return Err("non-success status".to_string());
@@ -246,6 +276,32 @@ async fn get_root() -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// Drive `concurrency` **closed-loop** workers (each: request → await → repeat) until
+/// `stop`. Closed-loop self-limits to the server's real capacity: with a fixed number of
+/// outstanding requests it can never flood or spiral the way an open-loop rate chase does
+/// against a slower-than-target server, so throughput holds steady at the true ceiling
+/// regardless of how fast the guest is — and there's no balter process-global state to
+/// wedge when the dashboard switches scenarios. This is the dashboard's HTTP driver; the
+/// CLI sweep still uses balter's controller (an explicit max-rate measurement).
+pub async fn run_closed_loop(
+    concurrency: usize,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) {
+    let workers: Vec<_> = (0..concurrency.max(1))
+        .map(|_| {
+            let stop = std::sync::Arc::clone(&stop);
+            tokio::spawn(async move {
+                while !stop.load(Ordering::Relaxed) {
+                    let _ = one_request().await;
+                }
+            })
+        })
+        .collect();
+    for w in workers {
+        let _ = w.await;
+    }
 }
 
 /// The tail-latency reading for a quantile (RunStatistics exposes p50/90/95/99;

@@ -178,7 +178,7 @@ is resolved the Rust way — process env first, then `.env`. Full reference:
 **[configuration](docs/reference-configuration)**.
 
 > The benchmark/dashboard node (`rusm-bench start`, a repo-only tool) has its own,
-> separate knobs — `listen`, `profile` (`light`/`balanced`/`max`),
+> separate `[node]` knobs — `listen`, `profile` (`light`/`balanced`/`max`),
 > `ticks_per_second` — set via `rusm.toml`/`--config`/flags and switchable live
 > from the dashboard ([details](docs/03-benchmark-dashboard.md)).
 
@@ -215,11 +215,12 @@ by construction** — Wasm lives only in the `rusm-wasm` backend.
 | `rusm-kv` | lib | **The durable key-value store** — embedded, transactional buckets over `redb` (pure-Rust, ACID, no daemon). Surfaced to guests by `rusm-wasm` behind the `allow-storage` capability (the `kv-*` ABI). Like `rusm-otp`, **no `wasmtime` dependency**. |
 | `rusm-metrics` | lib | Counters, HdrHistogram-backed latency percentiles, ring-buffer time-series. |
 | `rusm-observer` | lib | Low-overhead live-observer snapshots — aggregate counters plus a sampled per-instance table, with a detail on/off toggle. |
+| `rusm-logfmt` | lib | **The shared log format** — the single source for the log palette, column widths, timestamp, and tty-gated colour. Formats both `rusm-otp`'s lifecycle lines and every **guest** log line (the host's `log` op stamps a guest's `console.*` / `log::*` through `line()`), so platform and app logs read as one aligned stream. Pure (std only); compiles for the host and `wasm32-wasip2`. **No `wasmtime` dependency.** |
 | `rusm-node` | lib | **The node layer** — the `rusm.toml` app manifest, resource-tier profiles, and the live **attach** protocol + node (streams `rusm-otp` process introspection to `rusm attach`). What the `rusm` CLI builds on; **no `wasmtime` dependency**. |
 | `rusm-bench` | lib + bin | *(repo-only, unpublished)* Scenarios, the deterministic preview source, nineteen real engines — the ten core engines (spawn-storm, ping-pong, fault-recovery, connection-storm, connection-scale, fairness, module-storm, component-storm, stream-pipe, distributed-fanout), the six co-resident serving demos (`http-throughput`, `ws-echo`, `sse-fanout` and their `*-ts` twins, each a real in-process WASM server driven through the same load path as `rusm-loadtest`), and three platform-primitive scenarios (`kv-storm` durable read-modify-writes over redb, `pubsub-fanout` 1→N broadcast, `crypto-ops` `crypto.subtle` from a TS guest) — the run aggregator, the wire protocol, and the WebSocket node behind the dashboard. Binary: `rusm-bench start` / `run`. |
 | `rusm-loadtest` | bin | *(repo-only, unpublished)* **Out-of-process serving load test** — drives a live `rusm serve` port across a real socket in four modes: `http` (balter fixed-rate sweep), `ws` / `sse` (a tokio-native connection-capacity harness), and `conn` (a connection-establishment storm — sandboxed-process-per-connection WS establishments). Reports achieved throughput, tail latency, and error rate. |
 | `rusm-cli` | bin (`rusm`) | The `rusm` command: `new <name>` (scaffold an app), the app model — `build` / `run` / `serve` / `dev` over `rusm.toml` — plus `node start` (host the app as an attachable node) and `attach <url>` (observe a running node's processes). |
-| `rusm-rs` | lib (guest) | **The Rust guest crate** — write a component/service in Rust over the actor world: `Pid`/`send`/`receive` (serde, + `receive_timeout`)/`spawn`/registry/`Stream`, the `#[rusm_rs::service]` macro (dispatch loop + typed `Client`), plus modules for serving (`http`/`ws`, incl. offloaded SSE fan-out), durable storage (`kv`), and pub/sub (`pubsub::Topics`). Wasm-only (built for `wasm32-wasip2`), excluded from the host workspace. |
+| `rusm-rs` | lib (guest) | **The Rust guest crate** — write a component/service in Rust over the actor world: `Pid`/`send`/`receive` (serde, + `receive_timeout`)/`spawn`/registry/`Stream`, the `#[rusm_rs::service]` macro (dispatch loop + typed `Client`), plus modules for serving (`http`/`ws`, incl. offloaded SSE fan-out), durable storage (`kv`), pub/sub (`pubsub::Topics`), and a `log`-crate sink (`log::info!`/etc → the platform logger, installed by the entry macros). Wasm-only (built for `wasm32-wasip2`), excluded from the host workspace. |
 | `rusm-rs-macros` | proc-macro | The `#[rusm_rs::service]` macro behind `rusm-rs`. |
 
 Not crates: the dashboard at `bench/dashboard` (Bun/React); docs under `docs/`. The

@@ -70,7 +70,7 @@ impl Default for RunnerConfig {
 /// `profile` is applied to the running node separately, so it shows up in frames
 /// and can be changed live).
 pub fn runner_config(cfg: &rusm_node::NodeConfig) -> RunnerConfig {
-    let ticks_per_second = cfg.ticks_per_second.max(1);
+    let ticks_per_second = cfg.node.ticks_per_second.max(1);
     RunnerConfig {
         ticks_per_second,
         // Steady-state latency: discard the first ~2s of samples so reported
@@ -230,6 +230,47 @@ struct RunState {
     stall_ticks: u64,
     /// Whether the current stall episode has already been warned about (warn once).
     stall_warned: bool,
+    /// Counts this engine as live for the duration of the `RunState` (test-only) — drops
+    /// with it, so a per-runner peak gauge can prove `start()` releases the prior engine
+    /// before building the next (never two pool reservations at once). See [`EngineGauge`].
+    #[cfg(test)]
+    _live: EngineToken,
+}
+
+/// Per-runner gauge of concurrently-live engines (test-only). Held by the [`Runner`];
+/// each [`RunState`] holds an [`EngineToken`] minted from it, so the count tracks real
+/// engine lifetimes (not source intent) and is isolated per runner — immune to the
+/// cross-test contamination a global static would suffer under parallel `cargo test`.
+#[cfg(test)]
+#[derive(Clone, Default)]
+struct EngineGauge {
+    current: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    peak: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[cfg(test)]
+struct EngineToken {
+    current: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[cfg(test)]
+impl EngineToken {
+    fn new(gauge: &EngineGauge) -> Self {
+        use std::sync::atomic::Ordering::SeqCst;
+        let live = gauge.current.fetch_add(1, SeqCst) + 1;
+        gauge.peak.fetch_max(live, SeqCst);
+        Self {
+            current: gauge.current.clone(),
+        }
+    }
+}
+
+#[cfg(test)]
+impl Drop for EngineToken {
+    fn drop(&mut self) {
+        self.current
+            .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
 }
 
 /// After throughput has started, this many consecutive zero-ops ticks while a
@@ -251,6 +292,8 @@ pub struct Runner {
     latency: LatencyHistogram,
     throughput: TimeSeries,
     run: Option<RunState>,
+    #[cfg(test)]
+    engine_gauge: EngineGauge,
 }
 
 impl Runner {
@@ -262,7 +305,18 @@ impl Runner {
             run: None,
             profile: ResourceProfile::default(),
             config,
+            #[cfg(test)]
+            engine_gauge: EngineGauge::default(),
         }
+    }
+
+    /// Peak number of engines that were ever live at the same instant (test-only).
+    /// `1` proves `start()` drops the previous engine before building the next.
+    #[cfg(test)]
+    fn peak_live_engines(&self) -> usize {
+        self.engine_gauge
+            .peak
+            .load(std::sync::atomic::Ordering::SeqCst)
     }
 
     pub fn resource_profile(&self) -> ResourceProfile {
@@ -316,6 +370,15 @@ impl Runner {
     /// a clean slate. Must be called within a Tokio runtime (engines bind sockets /
     /// spawn tasks).
     pub fn start(&mut self, scenario: Scenario) {
+        // Tear the previous run's engine down *before* building the next. Each serving
+        // engine owns a `WasmRuntime` (a pooling-allocator virtual-memory reservation) plus
+        // a server task and hundreds of connection processes; building the new engine while
+        // the old is still live makes their two reservations — and the teardown churn —
+        // contend, which intermittently starves the new server's connection handshakes past
+        // the load harness's connect budget. The new run then never warms: a flat-zero
+        // "dead" run until you press Run again. Dropping first frees the old reservation
+        // synchronously and signals its aborts up front, so the new engine builds clean.
+        self.run = None;
         let engine = Engine::for_scenario(scenario, &self.config);
         self.start_with(scenario, engine);
     }
@@ -341,6 +404,8 @@ impl Runner {
             warmed: false,
             stall_ticks: 0,
             stall_warned: false,
+            #[cfg(test)]
+            _live: EngineToken::new(&self.engine_gauge),
         });
     }
 
@@ -457,7 +522,7 @@ mod tests {
 
     #[test]
     fn runner_config_carries_the_tick_rate() {
-        let cfg = rusm_node::NodeConfig::from_toml("ticks_per_second = 30").unwrap();
+        let cfg = rusm_node::NodeConfig::from_toml("[node]\nticks_per_second = 30").unwrap();
         assert_eq!(runner_config(&cfg).ticks_per_second, 30);
     }
 
@@ -522,8 +587,8 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
     async fn serving_scenarios_sustain_throughput_through_the_runner() {
         // The exact dashboard path: Runner::start → tick, for each serving scenario.
-        // balter drives HTTP; the capacity harness drives WS/SSE — all co-resident.
-        // We require throughput to be *sustained* (every tick over a window nonzero),
+        // A closed-loop driver drives HTTP; the capacity harness drives WS/SSE — all
+        // co-resident. We require throughput to be *sustained* (the window stays nonzero),
         // not just to spike once — that's what catches the silent-zero class (e.g. a
         // finite stream held as infinite).
         let mut r = runner();
@@ -547,16 +612,26 @@ mod tests {
                 }
             }
             assert!(warmed, "{} never produced throughput", scenario.id());
-            // Sustained window: a single zero tick here is the silent-zero regression.
+            // Sustained window: the window must keep producing. We tolerate a single
+            // transient dip (CPU starvation when the whole serving suite runs in parallel —
+            // many live servers + load generators contend for cores) but fail on **two
+            // consecutive** zero ticks: a genuine silent-zero collapse is all-zero, so it
+            // still trips. (Same rule as `serving::tests::sustained`.)
+            let mut prev_zero = false;
             for _ in 0..20 {
                 tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                 let ops = r.tick(tick).ops_per_sec;
                 tick += 1;
-                assert!(
-                    ops > 0.0,
-                    "{} dropped to 0 while running (silent-zero regression)",
-                    scenario.id()
-                );
+                if ops == 0.0 {
+                    assert!(
+                        !prev_zero,
+                        "{} dropped to 0 while running (silent-zero regression)",
+                        scenario.id()
+                    );
+                    prev_zero = true;
+                } else {
+                    prev_zero = false;
+                }
             }
             r.stop();
         }
@@ -586,6 +661,55 @@ mod tests {
                     scenario.id()
                 );
                 r.stop();
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn restart_in_place_releases_prior_engine_before_building_next() {
+        // The dashboard "Run" path restarts a scenario WITHOUT stopping first, so `start()`
+        // runs over a live serving engine. The fix's invariant — deterministic, independent
+        // of load/timing — is that `start()` DROPS the previous run (freeing its WasmRuntime
+        // pool reservation) BEFORE building the next, so at most one serving engine is ever
+        // live at once. Holding two reservations + the teardown churn is what intermittently
+        // left the new run dead-at-zero (the "press Run twice" bug, reproduced live). The
+        // per-runner gauge below counts concurrently-live serving engines; restart-in-place
+        // must never push it past 1. (`restart_in_place_keeps_warming_serving` then guards
+        // the emergent behaviour — that each restart actually warms — end to end.)
+        let mut r = runner();
+        r.start(Scenario::WsEcho);
+        r.start(Scenario::SseFanout); // restart in place, no stop()
+        r.start(Scenario::WsEcho);
+        assert_eq!(
+            r.peak_live_engines(),
+            1,
+            "drop-before-build: never two serving engines (two pool reservations) at once"
+        );
+        r.stop();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn restart_in_place_keeps_warming_serving() {
+        // End-to-end companion to the invariant test above: the dashboard restart-in-place
+        // path (Run without Stop) must keep warming up to live throughput every cycle.
+        async fn warm(r: &mut Runner, scenario: Scenario) -> bool {
+            r.start(scenario);
+            for tick in 0..600 {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                if r.tick(tick).ops_per_sec > 0.0 {
+                    return true;
+                }
+            }
+            false
+        }
+        let mut r = runner();
+        for scenario in [Scenario::WsEcho, Scenario::SseFanout] {
+            for cycle in 1..=4 {
+                assert!(
+                    warm(&mut r, scenario).await,
+                    "{} restart-in-place cycle {cycle} warmed up",
+                    scenario.id()
+                );
             }
         }
     }

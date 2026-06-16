@@ -169,6 +169,7 @@ and supervise them from `./wasm/`:
 
 ```toml
 # rusm.toml
+[node]
 listen = "127.0.0.1:4000"
 profile = "balanced"
 
@@ -209,6 +210,10 @@ rusm build
 rusm serve
 curl http://127.0.0.1:8080/
 ```
+
+With `[log] level` at `info`+, `rusm serve` access-logs each served request —
+`rusm http GET / → 200`, an SSE stream as `sse`, a WS upgrade as `ws … → 101` — in the
+same stream as the lifecycle and guest logs.
 
 **Custom capability profiles.** Beyond the three built-ins (`sandboxed` /
 `network-client` / `trusted`), you can define your own — like Cargo's
@@ -361,6 +366,7 @@ hi RUSM
 still suspends the whole instance's fiber (freeing the worker), so it's cheap and
 composes with Promises. The full `Process` API (`self`/`list`/`spawn`/`send`/
 `receive`/`receiveText`/`register`/`whereis`/`isAlive`/`kill`/`setLabel`/
+`registerTag`/`killTag`/`whereisTag` ([process groups](concepts/process-management.md#process-groups-tags))/
 `openStream`/`acceptStream`), the `spawn<T>()` typed client (call / `for await`
 stream / callback args / `.cast` / `.stop()`), binary (`Uint8Array`) messages, and
 [byte streams](#streaming-from-a-component) are all typed by the **`rusm-ts` package**.
@@ -394,6 +400,26 @@ pub mod calc {
 
 Same JSON wire as rusm-ts, so a Rust client and a TS service interoperate. See the
 `rusm-rs` crate README and the `rs-service` fixture.
+
+**Logging — zero setup, both languages.** A guest just uses the native idiom; the
+platform does the rest. The host stamps each line with the time, the calling
+`component#pid`, and a severity colour, and gates it by the node `[log] level` — so a
+guest never wires a name, pid, or logger object:
+
+```ts
+console.log(`generating ${req.collection}/${req.subjectId}`); // TS: console.{log,info,warn,error,debug}
+console.error("meta-json not found");
+```
+
+```rust
+log::info!("generating {}/{}", req.collection, req.subject_id); // Rust: the `log` crate
+log::error!("meta-json not found");
+```
+
+No `allow-stdio` grant — logging is a platform primitive, not stdout. The `console`
+methods are also typed by the standard `DOM` lib, and the `log` crate's sink is installed
+for you by `#[rusm_rs::main]` / `#[handlers]`. Both feed the same stream as the runtime's
+own lifecycle lines; see the [`[log]` reference](./reference-configuration).
 
 ## 6. Serve a component over HTTP (TypeScript or Rust)
 
@@ -549,7 +575,8 @@ from inside a real component.
 > **From TS/JS.** The same operations are bridged to the `Process` global in the
 > [js-runner](#_5-a-ts-js-wasm-component-source-only): `Process.self()`,
 > `Process.list()`, `Process.send(to, msg)`, `Process.receive()`,
-> `Process.register/whereis/isAlive/kill/setLabel`.
+> `Process.register/whereis/isAlive/kill/setLabel`,
+> `Process.registerTag/killTag/whereisTag` (process groups).
 
 ## Streaming (from a component)
 

@@ -1,18 +1,18 @@
 //! Opt-in process **lifecycle logging** — the "see what's happening" switch a node
-//! turns on explicitly (`rusm.toml [log] spawns = true`). Off by default: the spawn
-//! hot path does nothing. When on, the runtime logs each **labeled** process's spawn
-//! and exit to stderr, coloured — so the signal is *components* (which the host
-//! labels), not internal plumbing (responders, writers — left unlabeled).
+//! turns on explicitly (`rusm.toml [log] level`). Off by default: the spawn hot path
+//! does nothing. When on, the runtime logs each **labeled** process's spawn and exit to
+//! stderr — so the signal is *components* (which the host labels), not internal plumbing
+//! (responders, writers — left unlabeled).
 //!
-//! This module owns only the *format*; the runtime owns the *gate* (the flag) and the
-//! *when* (a spawn site, and `deregister` on exit). Lines are `component#pid` so a log
-//! reader can tell instances apart, with the spawn line carrying the process's
-//! effective capabilities — the thing that's otherwise invisible.
-//!
-//! Every line is tagged **`rusm`** so these *platform* events (the runtime spawning and
-//! ending processes) are visually distinct from an app's own domain logs.
+//! This module owns only the platform line's *structure*; the shared look (palette,
+//! column widths, timestamp, tty-gated colour) comes from [`rusm_logfmt`], so platform
+//! and app logs line up when interleaved. The runtime owns the *gate* (the level) and the
+//! *when* (a spawn site, and `deregister` on exit). Lines read `<time> rusm <verb>
+//! <label>#<pid>  <detail>`, the spawn line carrying the process's effective capabilities.
 
-use std::io::IsTerminal;
+use std::collections::BTreeMap;
+
+use rusm_logfmt as fmt;
 
 use crate::exit::ExitReason;
 use crate::pid::Pid;
@@ -61,64 +61,80 @@ impl LogLevel {
         }
     }
 
-    /// The ANSI colour code for this level (red / yellow / green; cyan for the rest).
+    /// The shared-palette colour for this level (red crash / yellow kill / green clean;
+    /// cyan otherwise).
     fn colour(self) -> &'static str {
         match self {
-            Self::Error => "31",
-            Self::Warn => "33",
-            Self::Info => "32",
-            _ => "36",
+            Self::Error => fmt::ERROR,
+            Self::Warn => fmt::WARN,
+            Self::Info => fmt::OK,
+            _ => fmt::LEVEL,
         }
     }
 }
 
-/// Wrap `text` in an ANSI colour `code`, but only when stderr is a terminal — piped or
-/// redirected logs stay plain (no escape soup in a file).
-fn paint(code: &str, text: &str) -> String {
-    if std::io::stderr().is_terminal() {
-        format!("\x1b[{code}m{text}\x1b[0m")
-    } else {
-        text.to_string()
-    }
-}
-
-/// The dim `rusm` tag that marks a line as a **platform** event (vs an app's logs).
-fn tag() -> String {
-    paint("2;35", "rusm") // dim magenta
-}
-
-/// `<id>` rendered as a bold name + dim `#pid` — the identifier shared by spawn/exit.
+/// `<id>` rendered as a bold name + dim `#pid` — the spawned-process **subject** of a
+/// spawn/exit line (distinct from the `who` column the lead already holds).
 fn ident(label: &str, pid: Pid) -> String {
     format!(
         "{}{}",
-        paint("1", label),
-        paint("2", &format!("#{}", pid.0))
+        fmt::paint(fmt::BOLD, label),
+        fmt::paint(fmt::DIM, &format!("#{}", pid.0))
     )
 }
 
-/// Log a component **spawn**: `rusm spawn <label>#<pid>  <detail>` (detail = its
+/// Log a component **spawn**: `<time> rusm spawn <label>#<pid>  <detail>` (detail = its
 /// effective capabilities, so a reader sees exactly what the process can do).
 pub fn log_spawn(pid: Pid, label: &str, detail: &str) {
     eprintln!(
-        "{} {} {}  {}",
-        tag(),
-        paint("36", "spawn"), // cyan
-        ident(label, pid),
-        paint("2", detail), // dim
+        "{}",
+        fmt::platform_line(
+            fmt::LEVEL, // cyan
+            "spawn",
+            &format!("{}  {}", ident(label, pid), fmt::paint(fmt::DIM, detail)),
+        )
     );
 }
 
-/// Log a process **exit**: `rusm exit  <label>#<pid>  <reason>` — coloured by the
+/// Log a process **exit**: `<time> rusm exit  <label>#<pid>  <reason>` — coloured by the
 /// exit's level (red crash / yellow kill / green clean), the same mapping that gated it.
 pub fn log_exit(pid: Pid, label: &str, reason: ExitReason) {
     let code = LogLevel::for_exit(reason).colour();
     eprintln!(
-        "{} {}  {}  {}",
-        tag(),
-        paint(code, "exit"),
-        ident(label, pid),
-        paint(code, &format!("{reason:?}").to_lowercase()),
+        "{}",
+        fmt::platform_line(
+            code,
+            "exit",
+            &format!(
+                "{}  {}",
+                ident(label, pid),
+                fmt::paint(code, &format!("{reason:?}").to_lowercase())
+            ),
+        )
     );
+}
+
+/// Log a process **census**: `<time> rusm census  <comp>=<n>  …` — the count of live
+/// processes per component (by label), emitted debounced after process state settles.
+/// Bold names, cyan counts; an idle node reads `(none)`.
+pub fn log_census(counts: &BTreeMap<String, u64>) {
+    let body = if counts.is_empty() {
+        fmt::paint(fmt::DIM, "(none)")
+    } else {
+        counts
+            .iter()
+            .map(|(name, n)| {
+                format!(
+                    "{}{}{}",
+                    fmt::paint(fmt::BOLD, name),
+                    fmt::paint(fmt::DIM, "="),
+                    fmt::paint(fmt::LEVEL, &n.to_string())
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("  ")
+    };
+    eprintln!("{}", fmt::platform_line(fmt::LEVEL, "census", &body));
 }
 
 // A supervisor **restart** intentionally has no dedicated event: it reads as the

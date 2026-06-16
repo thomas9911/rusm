@@ -66,6 +66,12 @@ globalThis.Process = {
   isAlive(pid) { return __is_alive(String(pid)); },
   kill(pid) { return __kill(String(pid)); },
   setLabel(label) { __set_label(label); },
+  // Process-group tags (Erlang `pg`): tag this process, leave a tag, list a group's live
+  // members (pids), or terminate a whole group (count). killTag needs process-control.
+  registerTag(tag) { __register_tag(tag); },
+  unregisterTag(tag) { __unregister_tag(tag); },
+  whereisTag(tag) { return __whereis_tag(tag).map((p) => BigInt(p)); },
+  killTag(tag) { return __kill_tag(tag); },
   openStream(to) { const h = __stream_open(String(to)); return h < 0 ? null : new Stream(h); },
   acceptStream() { return new Stream(__stream_accept()); },
 };

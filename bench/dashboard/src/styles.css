@@ -26,7 +26,10 @@ body {
 }
 
 .app {
-  min-height: 100vh;
+  /* Exactly the viewport, no page scroll: the scenario list and the main panel each
+     scroll internally (see .scenario-menu / .main), so the controls + topbar stay put. */
+  height: 100vh;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
 }
@@ -85,10 +88,17 @@ body {
 /* Layout */
 .layout {
   flex: 1;
+  min-height: 0; /* let the grid (and its children) shrink so they can scroll, not grow the page */
   display: grid;
   grid-template-columns: 280px 1fr;
   gap: 20px;
   padding: 20px 24px;
+}
+/* Sidebar: fixed header + controls, scrollable scenario list below. */
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
 }
 .sidebar h2,
 .observer h2 {
@@ -99,11 +109,15 @@ body {
   color: var(--muted);
 }
 
-/* Scenario menu */
+/* Scenario menu — the one scrolling region in the sidebar (controls stay pinned above). */
 .scenario-menu {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
   gap: 8px;
+  padding-right: 6px; /* breathing room for the scrollbar so it doesn't overlap a button */
 }
 .scenario {
   display: flex;
@@ -143,7 +157,8 @@ body {
 .controls {
   display: flex;
   gap: 10px;
-  margin-top: 16px;
+  margin-bottom: 16px; /* pinned at the top of the sidebar, above the scrolling list */
+  flex-shrink: 0;
 }
 .controls button {
   flex: 1;
@@ -168,11 +183,13 @@ body {
   cursor: not-allowed;
 }
 
-/* Main */
+/* Main — scrolls on its own if the chart + observer overrun the viewport. */
 .main {
   display: flex;
   flex-direction: column;
   gap: 20px;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 /* Scenario info */

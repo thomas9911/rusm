@@ -72,9 +72,11 @@ data to real measurements.
   sandboxed-process-per-connection WS establishments/s (`rusm-loadtest`'s `conn`
   mode). The **six serving dashboard tiles** (`http-throughput`, `ws-echo`,
   `sse-fanout` and their `*-ts` twins) are **co-resident live demos** — the same real
-  in-process WASM server driven through the same load path (balter for HTTP
-  request-rate, a connection-capacity harness for WS/SSE held connections), with load
-  generator and server sharing the node process. See
+  in-process WASM server driven through the shared `rusm-loadtest` path (a steady
+  closed-loop driver for HTTP — a fixed set of outstanding requests that holds the tile at
+  the server's real ceiling, never flooding or collapsing — and a connection-capacity
+  harness for WS/SSE held connections), with load generator and server sharing the node
+  process. (The fair out-of-process headline still uses balter's rate sweep.) See
   [serving HTTP/WS/SSE](./serving-http-ws-sse.md). Serving TLS and the edge-hardening
   it pairs with move to **Phase 12** (below). Beyond serving, Phase 11 closed the
   standard-WASI surface: **stock `wasi:cli/run` command components** run unchanged

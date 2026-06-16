@@ -263,6 +263,50 @@ mod tests {
         );
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn serving_frames_carry_throughput_and_concurrency() {
+        // The dashboard's data contract for every serving scenario, exercised over the
+        // exact node API the browser drives: a live frame must carry BOTH nonzero
+        // throughput *and* nonzero peak concurrency. SSE streams aren't `rt`-spawned
+        // processes (they serve instance-per-request over `wasi:http`), so a naive
+        // `rt.process_count()` reads 0 here — the "peak 0" the dashboard showed. This
+        // pins both numbers at the boundary the UI reads, so neither can regress to 0
+        // unnoticed (no manual QA needed).
+        let node = Node::new(RunnerConfig::default());
+        for scenario in [
+            "http-throughput",
+            "http-throughput-ts",
+            "ws-echo",
+            "ws-echo-ts",
+            "sse-fanout",
+            "sse-fanout-ts",
+        ] {
+            node.apply(ClientCommand::Run {
+                scenario: scenario.to_string(),
+            })
+            .unwrap();
+            // Warm up: connections establish / instances spin. peak_concurrent is a
+            // running max, so once nonzero it stays; ops is per-tick — break when both live.
+            let (mut ops, mut peak) = (0.0_f64, 0_u64);
+            for _ in 0..400 {
+                tokio::time::sleep(Duration::from_millis(25)).await;
+                let message = node.tick_message();
+                let frame = message.tick_frame().unwrap();
+                ops = frame.ops_per_sec;
+                peak = frame.peak_concurrent;
+                if ops > 0.0 && peak > 0 {
+                    break;
+                }
+            }
+            assert!(ops > 0.0, "{scenario}: frame throughput stayed 0");
+            assert!(
+                peak > 0,
+                "{scenario}: frame peak concurrency stayed 0 (the 'peak 0' regression)"
+            );
+            node.apply(ClientCommand::Stop).unwrap();
+        }
+    }
+
     #[test]
     fn apply_run_rejects_unknown_scenario() {
         let node = Node::new(RunnerConfig::default());

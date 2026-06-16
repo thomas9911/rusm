@@ -1,0 +1,8 @@
+// The wasi:http `proxy` world the runner targets: imports the WASI surface a handler
+// needs (clocks, random, io, cli stdio + env) and exports `incoming-handler`. Pinned to
+// 0.2.6 (fetched coherent via `wkg`); `wit-bindgen` generates the bindings, then the build
+// wizer-snapshots the warm QuickJS engine and `wasm-tools component new` re-wraps wasi:http.
+package local:js-http-runner;
+world bindings {
+  include wasi:http/proxy@0.2.6;
+}

@@ -15,21 +15,29 @@
     if (!G[name]) G[name] = value;
   };
 
-  // console → optional host __print (set by the runner; no-op if absent).
+  // console → the platform logger when available: the host stamps the time, this
+  // process's component name + pid, and the severity colour, and gates by the node
+  // `[log] level`, so a guest just calls console.* and gets the platform look. A runner
+  // without the actor world (e.g. the raw wasi:http js-http-runner) has no `__log`, so we
+  // fall back to raw stderr (`__print`) with a `[level]` prefix — same as before.
   if (!G.console) {
-    const print = G.__print ?? (() => {});
     // bigint (pids!) and undefined have no JSON form — String() them; JSON the rest.
     const show = (x) =>
       typeof x === "string" ? x
       : typeof x === "bigint" || x === undefined ? String(x)
       : JSON.stringify(x);
     const fmt = (...a) => a.map(show).join(" ");
+    const log = G.__log;
+    const print = G.__print ?? (() => {});
+    const at = log
+      ? (level) => (...a) => log(level, fmt(...a))
+      : (level) => (...a) => print(level === "info" ? fmt(...a) : `[${level}] ` + fmt(...a));
     G.console = {
-      log: (...a) => print(fmt(...a)),
-      info: (...a) => print(fmt(...a)),
-      warn: (...a) => print("[warn] " + fmt(...a)),
-      error: (...a) => print("[error] " + fmt(...a)),
-      debug: (...a) => print(fmt(...a)),
+      log: at("info"),
+      info: at("info"),
+      warn: at("warn"),
+      error: at("error"),
+      debug: at("debug"),
     };
   }
 
