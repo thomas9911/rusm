@@ -47,14 +47,13 @@ fn soft_limit() -> usize {
     rlimit::Resource::NOFILE
         .get()
         .map(|(soft, _hard)| soft as usize)
-        .unwrap_or(256);
+        .unwrap_or(256)
 }
 
 #[cfg(windows)]
 fn soft_limit() -> usize {
     256
 }
-
 
 impl ConnectionStormEngine {
     pub fn new(workers: usize, scheduler_count: usize) -> Self {
