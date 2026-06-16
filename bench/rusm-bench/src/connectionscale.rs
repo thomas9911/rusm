@@ -52,16 +52,26 @@ pub struct ConnectionScaleEngine {
     scheduler_count: usize,
 }
 
+#[cfg(not(windows))]
+fn soft_limit() -> usize {
+    rlimit::Resource::NOFILE
+        .get()
+        .map(|(soft, _hard)| soft as usize)
+        .unwrap_or(256)
+}
+
+#[cfg(windows)]
+fn soft_limit() -> usize {
+    256
+}
+
 impl ConnectionScaleEngine {
     pub fn new(workers: usize, scheduler_count: usize) -> Self {
         let workers = workers.max(1);
         // Raise the fd limit to the per-process cap, then keep headroom for the
         // dashboard's own sockets; the target is 80% of what's left.
         let _ = rlimit::increase_nofile_limit(u64::MAX);
-        let soft = rlimit::Resource::NOFILE
-            .get()
-            .map(|(s, _)| s as usize)
-            .unwrap_or(256);
+        let soft = soft_limit();
         let ceiling = (soft / 2).saturating_sub(1_024);
         let target = (workers * PER_WORKER).min(ceiling * 4 / 5).max(workers);
 
