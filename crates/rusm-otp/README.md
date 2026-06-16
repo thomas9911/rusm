@@ -12,7 +12,7 @@ threads; the goal is hundreds of thousands of spawns per second.
 - **Processes & scheduling** — `spawn`, abort-based lifecycle, a sharded-`DashMap` process table.
 - **Mailboxes & messaging** — per-process mailbox, `send`/`receive`, selective receive, `receive … after` timeouts.
 - **Links, monitors, supervision** — exit reasons, `link`/`monitor`/`trap_exit`/`spawn_link`/`exit`, exit cascades, supervisors with windowed restart intensity.
-- **Process management** — a named registry, timers (`send_after`/`cancel`), graceful `shutdown`, introspection (`list`/`info`/`set_label`).
+- **Process management** — a named registry, **process groups** (Erlang `pg`: `register_tag`/`whereis_tag`/`kill_tag` — tag many processes, terminate the group), timers (`send_after`/`cancel`), graceful `shutdown`, introspection (`list`/`info`/`set_label`).
 - **Connectivity** — TCP (`listen`/`connect`, one process per connection) and back-pressured byte streams (`Received::Stream`).
 
 Exit signals ride the mailbox (a `Received` enum) and kill rides a `futures` abort handle —

@@ -11,6 +11,30 @@ Register a process under a name so others reach it without holding its pid:
 lock), so lookups scale with cores. For names that resolve across machines, see
 [distributed nodes](./distributed-nodes.md).
 
+## Process groups (tags)
+
+Where the registry maps **one name to one pid**, a process group (Erlang's `pg`) maps
+**one tag to many pids** — and a process may hold many tags. A process joins a group by
+tagging *itself* with `register_tag(tag)` (unprivileged, like `set_label`);
+`whereis_tag(tag)` lists the live members; `kill_tag(tag)` terminates the whole group and
+returns how many it killed; `unregister_tag(tag)` leaves. Memberships are released on exit
+by the **same reaper that releases names**, so a group only ever reports live processes —
+and tags add **zero hot-path cost** (an untagged process carries an empty list; the reaper
+loops it only at exit).
+
+`kill_tag` is the one privileged op — it terminates *other* processes — so it's gated by
+the `process-control` capability exactly like `kill` (a sandboxed guest gets `0`). That
+makes process groups the clean primitive for **scoped cancellation**: tag every process
+that belongs to one unit of work — say `plan:<id>` for the agents a request spawned — and a
+single `kill_tag("plan:<id>")` stops the whole unit immediately and authoritatively. The
+application writes only two calls — self-tag on start, gated `kill_tag` to cancel — while
+the platform owns the group registry, the reaping, and the gate. No cancel topics, no
+polling, no pid bookkeeping in app code.
+
+Same surface from both guests: `register_tag`/`kill_tag`/`whereis_tag` in `rusm-rs`,
+`Process.registerTag`/`killTag`/`whereisTag` in `rusm-ts` — backed, like everything here,
+by the Wasm-free `rusm-otp` core.
+
 ## Timers
 
 `send_after(ms, msg)` schedules a message to land in a mailbox later; `cancel`

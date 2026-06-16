@@ -366,6 +366,7 @@ hi RUSM
 still suspends the whole instance's fiber (freeing the worker), so it's cheap and
 composes with Promises. The full `Process` API (`self`/`list`/`spawn`/`send`/
 `receive`/`receiveText`/`register`/`whereis`/`isAlive`/`kill`/`setLabel`/
+`registerTag`/`killTag`/`whereisTag` ([process groups](concepts/process-management.md#process-groups-tags))/
 `openStream`/`acceptStream`), the `spawn<T>()` typed client (call / `for await`
 stream / callback args / `.cast` / `.stop()`), binary (`Uint8Array`) messages, and
 [byte streams](#streaming-from-a-component) are all typed by the **`rusm-ts` package**.
@@ -574,7 +575,8 @@ from inside a real component.
 > **From TS/JS.** The same operations are bridged to the `Process` global in the
 > [js-runner](#_5-a-ts-js-wasm-component-source-only): `Process.self()`,
 > `Process.list()`, `Process.send(to, msg)`, `Process.receive()`,
-> `Process.register/whereis/isAlive/kill/setLabel`.
+> `Process.register/whereis/isAlive/kill/setLabel`,
+> `Process.registerTag/killTag/whereisTag` (process groups).
 
 ## Streaming (from a component)
 

@@ -20,7 +20,9 @@ functions:
 | `list-processes() -> list<pid>` | all live pids |
 | `info(pid) -> option<process-info>` | links, monitors, names, label, mailbox depth, trap-exit |
 | `is-alive(pid) -> bool` / `kill(pid) -> bool` | liveness / forced termination |
-| `register(name) / whereis(name) / unregister(name)` | the named registry |
+| `register(name) / whereis(name) / unregister(name)` | the named registry (1 name → 1 pid) |
+| `register-tag(tag) / unregister-tag(tag) / whereis-tag(tag) -> list<pid>` | process groups (Erlang `pg`: 1 tag → many pids); self-tag is unprivileged |
+| `kill-tag(tag) -> u32` | terminate a whole group (returns the count); gated by **process-control**, like `kill` |
 | `set-label(label)` | a human-readable label for the observer |
 | `spawn(name) / monitor(pid) / supervise(…)` | start, watch, and supervise child components (capability-gated) |
 | `stream-open/write/close/accept/read` | back-pressured byte streams between processes |
